@@ -4,13 +4,37 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag for the release (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
 
 permissions:
   contents: write
 
 jobs:
-  build-release:
-    name: Release (${{ matrix.target }})
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure GitHub Release exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "Checking release for tag: $TAG"
+          gh release view "$TAG" || gh release create "$TAG" \
+            --title "Release $TAG" \
+            --generate-notes
+
+  upload-assets:
+    name: Build & Upload (${{ matrix.target }})
+    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,3 +69,4 @@ jobs:
           target: ${{ matrix.target }}
           archive: $bin-$tag-$target
           token: ${{ secrets.GITHUB_TOKEN }}
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
