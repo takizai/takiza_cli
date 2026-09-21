@@ -1,0 +1,22 @@
+# Build artifacts
+/target
+**/*.rs.bk
+*.bk
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Local session storage & runtime cache
+.takiza/
+*.log
+
+# OS & Editor generated files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
