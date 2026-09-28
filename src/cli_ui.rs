@@ -62,7 +62,7 @@ pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, worksp
     let th = crate::theme::current();
     let p_ansi = th.primary_ansi();
 
-    if term_cols >= 80 {
+    if term_cols >= 65 {
         let info_w = (term_cols as usize).saturating_sub(32).min(50);
         let div_w = info_w.min(48);
         let divider = "─".repeat(div_w);
@@ -90,7 +90,20 @@ pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, worksp
             row += 1;
         }
     } else {
-        // Compact banner for narrower terminals (< 80 columns)
+        // Compact layout for very narrow terminals (< 65 columns): show logo on top, then box below
+        let pad_left = (term_cols as usize).saturating_sub(crate::logo::LOGO_WIDTH) / 2;
+        let pad_str = " ".repeat(pad_left);
+        for i in 0..crate::logo::LOGO_HEIGHT {
+            let logo_part = crate::logo::LOGO_LINES[i];
+            let _ = queue!(
+                out,
+                cursor::MoveTo(0, row),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
+                crossterm::style::Print(format!("{}{}", pad_str, logo_part))
+            );
+            row += 1;
+        }
+
         let box_w = (term_cols as usize).saturating_sub(4).max(30);
         let inner_w = box_w.saturating_sub(4);
         let val_w = inner_w.saturating_sub(11);
@@ -194,16 +207,22 @@ pub fn print_help() {
     println!("  /help               - Show this help summary");
     println!("  /clear              - Clear the terminal screen");
     println!("  /theme [name]       - View or switch visual theme (amber, cyberpunk, emerald, nord, monochrome)");
+    println!("  /mode [manual|moa]  - Switch execution mode (Takiza Manual: pick model, Takiza MoA: auto)");
     println!("  /model <name>       - Switch model (e.g. /model gpt-4o, /model claude-3-5-sonnet)");
     println!("  /provider <name>    - Switch preset provider (openai, openrouter, deepseek, ollama, groq)");
     println!("  /diff               - View git diff of changes made in the workspace");
     println!("  /status             - View current session info, git status, and token usage");
+    println!("  /usage              - View daily quotas and token usage breakdown (Manual / MoA)");
     println!("  /sessions           - List saved conversation sessions");
     println!("  /reset              - Reset conversation history to start fresh");
+    println!("  /approval           - Toggle auto-approving commands vs asking permissions");
     println!("  /tools              - List available agent tools");
     println!("  /exit or /quit      - Exit Takiza Code");
     println!("  !<shell command>    - Execute bash command directly (e.g. !git status, !cargo test)");
     println!("  Ctrl+O              - Toggle expansion of command/search output (max 5 lines in standard mode)");
+    println!("\nCLI Flags (on startup):");
+    println!("  -c, --continue      - Continue previous session");
+    println!("  -y, --yes, -a       - Skip command permissions (default: ask permission before running commands)");
     execute!(stdout(), ResetColor).ok();
     println!();
 }
@@ -333,9 +352,12 @@ pub fn render_bottom_box(prompt: &str, branch_tag: &str) -> (u16, u16) {
     let box_rows = 1 + lines.len() + 1;
     let start_row = term_rows.saturating_sub(box_rows as u16);
 
-    // Position strictly at bottom of the terminal window and clear downwards
+    // Position strictly at bottom of the terminal window.
+    // Clear separator line above and the box area downwards to erase any leftover borders.
     let _ = execute!(
         out,
+        cursor::MoveTo(0, start_row.saturating_sub(1)),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
         cursor::MoveTo(0, start_row),
         crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
     );
@@ -500,16 +522,26 @@ pub fn prepare_output_line_internal(row: &mut u16, needed: u16, prompt: &str, br
     };
     let box_rows = 1 + lines_count as u16 + 1;
     let limit = term_rows.saturating_sub(box_rows + 1);
+    let start_row = term_rows.saturating_sub(box_rows as u16);
     if *row + needed >= limit {
         let scroll = (*row + needed).saturating_sub(limit) + 1;
         let mut out = stdout();
-        let start_row = term_rows.saturating_sub(box_rows as u16);
+        // Clear bottom box area BEFORE scrolling so its borders/content
+        // do not scroll up into the active transcript area
         let _ = execute!(
             out,
-            cursor::MoveTo(0, start_row),
+            cursor::MoveTo(0, start_row.saturating_sub(1)),
             crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
             crossterm::terminal::ScrollUp(scroll)
         );
+        // Wipe any rows in the transition zone above start_row
+        for r in start_row.saturating_sub(scroll + 1)..=start_row {
+            let _ = execute!(
+                out,
+                cursor::MoveTo(0, r),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine)
+            );
+        }
         *row = row.saturating_sub(scroll);
         if render_bottom {
             render_bottom_box(prompt, branch_tag);
@@ -1356,6 +1388,271 @@ pub fn print_error_internal(err: &str, row: &mut u16, prompt: &str, branch_tag: 
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionChoice {
+    AllowOnce,
+    AllowAlways,
+    Deny,
+}
+
+pub fn render_permission_bottom_box(command: &str, branch_tag: &str) -> (u16, u16) {
+    let mut out = stdout();
+    let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let box_width = get_box_width().min(term_cols.saturating_sub(1) as usize);
+    let max_content = box_width.saturating_sub(6);
+
+    let title_tag = if branch_tag.is_empty() {
+        " ⚠️  Permission required to execute command ".to_string()
+    } else {
+        format!(" ⚠️  Permission required [{}] ", branch_tag.trim())
+    };
+    let title_w = str_width(&title_tag);
+    let (safe_title, safe_title_w) = if title_w + 4 >= box_width {
+        (" ⚠️  Permission ".to_string(), 16)
+    } else {
+        (title_tag, title_w)
+    };
+    let dashes_top = box_width.saturating_sub(safe_title_w + 3);
+
+    // Command line: format with '$ '
+    let cmd_prefix = "$ ";
+    let cmd_max_w = max_content.saturating_sub(2);
+    let cmd_disp = truncate_str(command, cmd_max_w);
+    let cmd_disp_w = str_width(&cmd_disp);
+    let cmd_pad = max_content.saturating_sub(2 + cmd_disp_w);
+
+    // Choices line
+    let (choices_prefix, choices_plain) = if box_width >= 54 {
+        ("Allow? ", "Allow? [y] Yes  [n] No  [a] Always allow")
+    } else {
+        ("", "[y] Yes  [n] No  [a] Always")
+    };
+    let choices_w = str_width(choices_plain);
+    let choices_pad = max_content.saturating_sub(choices_w);
+
+    let box_rows: u16 = 4;
+    let start_row = term_rows.saturating_sub(box_rows);
+
+    let _ = execute!(
+        out,
+        cursor::MoveTo(0, start_row.saturating_sub(1)),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
+        cursor::MoveTo(0, start_row),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+    );
+
+    let th = crate::theme::current();
+    let border_color = th.border_crossterm();
+
+    // 1. Top border
+    let _ = execute!(
+        out,
+        cursor::MoveTo(0, start_row),
+        SetForegroundColor(border_color),
+        crossterm::style::Print("╭─"),
+        SetForegroundColor(Color::Yellow),
+        crossterm::style::Print(&safe_title),
+        SetForegroundColor(border_color),
+        crossterm::style::Print("─".repeat(dashes_top)),
+        crossterm::style::Print("╮"),
+        ResetColor
+    );
+
+    // 2. Line 1: Command
+    let _ = execute!(
+        out,
+        cursor::MoveTo(0, start_row + 1),
+        SetForegroundColor(border_color),
+        crossterm::style::Print("│ "),
+        SetForegroundColor(Color::Cyan),
+        crossterm::style::Print(cmd_prefix),
+        SetForegroundColor(Color::White),
+        crossterm::style::Print(&cmd_disp),
+        crossterm::style::Print(" ".repeat(cmd_pad)),
+        SetForegroundColor(border_color),
+        crossterm::style::Print(" │"),
+        ResetColor
+    );
+
+    // 3. Line 2: Choices
+    let _ = execute!(
+        out,
+        cursor::MoveTo(0, start_row + 2),
+        SetForegroundColor(border_color),
+        crossterm::style::Print("│ "),
+    );
+    if !choices_prefix.is_empty() {
+        let _ = execute!(
+            out,
+            SetForegroundColor(Color::DarkGrey),
+            crossterm::style::Print(choices_prefix),
+        );
+    }
+    let _ = execute!(
+        out,
+        SetForegroundColor(Color::Green),
+        crossterm::style::Print("[y]"),
+        SetForegroundColor(Color::White),
+        crossterm::style::Print(" Yes  "),
+        SetForegroundColor(Color::Red),
+        crossterm::style::Print("[n]"),
+        SetForegroundColor(Color::White),
+        crossterm::style::Print(" No  "),
+        SetForegroundColor(Color::Yellow),
+        crossterm::style::Print("[a]"),
+        SetForegroundColor(Color::White),
+        crossterm::style::Print(if box_width >= 54 { " Always allow" } else { " Always" }),
+        crossterm::style::Print(" ".repeat(choices_pad)),
+        SetForegroundColor(border_color),
+        crossterm::style::Print(" │"),
+        ResetColor
+    );
+
+    // 4. Bottom border
+    let hint = " [Esc] Deny ";
+    let hint_w = str_width(hint);
+    let dashes_bottom = box_width.saturating_sub(hint_w + 3);
+    let bottom_row = start_row + 3;
+
+    let _ = execute!(
+        out,
+        cursor::MoveTo(0, bottom_row),
+        SetForegroundColor(border_color),
+        crossterm::style::Print("╰"),
+        crossterm::style::Print("─".repeat(dashes_bottom)),
+        SetForegroundColor(Color::DarkGrey),
+        crossterm::style::Print(hint),
+        SetForegroundColor(border_color),
+        crossterm::style::Print("─╯"),
+        ResetColor
+    );
+    let _ = out.flush();
+
+    (0, bottom_row)
+}
+
+pub fn ask_command_permission(
+    command: &str,
+    row: &mut u16,
+    branch_tag: &str,
+) -> PermissionChoice {
+    let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let mut out = stdout();
+    let _ = execute!(out, cursor::Hide);
+
+    let box_rows: u16 = 4;
+    let start_row = term_rows.saturating_sub(box_rows);
+
+    // If output row would collide with permission box, scroll up
+    if *row >= start_row {
+        let scroll = *row - start_row + 1;
+        let _ = execute!(
+            out,
+            cursor::MoveTo(0, start_row.saturating_sub(1)),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
+            crossterm::terminal::ScrollUp(scroll)
+        );
+        for r in start_row.saturating_sub(scroll + 1)..=start_row {
+            let _ = execute!(
+                out,
+                cursor::MoveTo(0, r),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine)
+            );
+        }
+        *row = row.saturating_sub(scroll);
+    }
+
+    render_permission_bottom_box(command, branch_tag);
+
+    let choice = loop {
+        if let Ok(event) = crossterm::event::read() {
+            match event {
+                crossterm::event::Event::Resize(_, _) => {
+                    render_permission_bottom_box(command, branch_tag);
+                }
+                crossterm::event::Event::Key(key) => {
+                    if key.kind != crossterm::event::KeyEventKind::Press {
+                        continue;
+                    }
+                    match key.code {
+                        crossterm::event::KeyCode::Char('y')
+                        | crossterm::event::KeyCode::Char('Y')
+                        | crossterm::event::KeyCode::Enter => {
+                            break PermissionChoice::AllowOnce;
+                        }
+                        crossterm::event::KeyCode::Char('a')
+                        | crossterm::event::KeyCode::Char('A') => {
+                            break PermissionChoice::AllowAlways;
+                        }
+                        crossterm::event::KeyCode::Char('n')
+                        | crossterm::event::KeyCode::Char('N')
+                        | crossterm::event::KeyCode::Esc
+                        | crossterm::event::KeyCode::Char('q') => {
+                            break PermissionChoice::Deny;
+                        }
+                        crossterm::event::KeyCode::Char('c')
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            break PermissionChoice::Deny;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+
+    // 1. Clear permission bottom box from screen
+    let _ = execute!(
+        out,
+        cursor::MoveTo(0, start_row.saturating_sub(1)),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+    );
+
+    let max_w = (term_cols as usize).saturating_sub(6).max(20);
+    let cmd_disp = truncate_str(command, max_w.saturating_sub(18));
+
+    let (status_text, status_color) = match choice {
+        PermissionChoice::AllowOnce => ("✔ Command approved", Color::Green),
+        PermissionChoice::AllowAlways => (
+            "✔ Command approved (Always allowed for this session)",
+            Color::Green,
+        ),
+        PermissionChoice::Deny => ("✖ Command denied by user", Color::Red),
+    };
+
+    // 2. Print resolved decision cleanly in transcript/scrollback
+    prepare_output_line_internal(row, 1, "", branch_tag, false);
+    let _ = execute!(
+        out,
+        cursor::MoveTo(0, *row),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
+        SetForegroundColor(Color::Yellow),
+        crossterm::style::Print("  ⚠️  Permission: "),
+        SetForegroundColor(Color::Cyan),
+        crossterm::style::Print("$ "),
+        SetForegroundColor(Color::White),
+        crossterm::style::Print(&cmd_disp),
+        ResetColor
+    );
+    *row += 1;
+
+    prepare_output_line_internal(row, 1, "", branch_tag, true);
+    let _ = execute!(
+        out,
+        cursor::MoveTo(0, *row),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
+        SetForegroundColor(status_color),
+        crossterm::style::Print("     "),
+        crossterm::style::Print(status_text),
+        ResetColor
+    );
+    *row += 1;
+
+    choice
+}
+
 #[allow(dead_code)]
 pub fn print_tool_start(name: &str, args: &str) {
     let icon = get_tool_icon(name);
@@ -1444,6 +1741,7 @@ pub fn redraw_all(
     let _ = execute!(
         out,
         cursor::Hide,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         cursor::MoveTo(0, 0)
     );
     let mut row = print_banner(model, base_url, workspace, git_info);

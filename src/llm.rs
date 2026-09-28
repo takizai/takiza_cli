@@ -42,6 +42,19 @@ pub enum LlmResponse {
     ToolCalls(Vec<ToolCall>, Option<String>),
 }
 
+pub fn supports_reasoning_effort(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("o1")
+        || m.contains("o3")
+        || m.contains("o4")
+        || m.contains("reasoning")
+        || m.contains("reasoner")
+        || m.contains("deepseek-r1")
+        || m.contains("claude-3-7")
+        || m.contains("claude-3.7")
+        || m.contains("thinking")
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ThinkPhase {
     Initial,
@@ -292,13 +305,21 @@ impl LlmClient {
         let url = format!("{}/chat/completions", self.config.base_url);
         let tools = get_tool_definitions();
 
-        let body = json!({
+        let mut body = json!({
             "model": self.config.model,
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
             "max_tokens": 8192,
         });
+
+        if supports_reasoning_effort(&self.config.model) {
+            if let Some(ref effort) = self.config.effort {
+                if !effort.is_empty() {
+                    body["reasoning_effort"] = json!(effort.to_lowercase());
+                }
+            }
+        }
 
         let mut attempts = 0;
         let (status, text) = loop {
@@ -377,7 +398,7 @@ impl LlmClient {
         let url = format!("{}/chat/completions", self.config.base_url);
         let tools = get_tool_definitions();
 
-        let body = json!({
+        let mut body = json!({
             "model": self.config.model,
             "messages": messages,
             "tools": tools,
@@ -385,6 +406,14 @@ impl LlmClient {
             "stream": true,
             "max_tokens": 8192,
         });
+
+        if supports_reasoning_effort(&self.config.model) {
+            if let Some(ref effort) = self.config.effort {
+                if !effort.is_empty() {
+                    body["reasoning_effort"] = json!(effort.to_lowercase());
+                }
+            }
+        }
 
         let mut attempts = 0;
         let resp = loop {
@@ -539,11 +568,23 @@ impl LlmClient {
                                 });
                             }
                             if let Some(id) = tc.get("id").and_then(|s| s.as_str()) {
-                                accum_tools[idx].id.push_str(id);
+                                if !id.is_empty() {
+                                    if accum_tools[idx].id.is_empty() {
+                                        accum_tools[idx].id = id.to_string();
+                                    } else if !accum_tools[idx].id.contains(id) {
+                                        accum_tools[idx].id.push_str(id);
+                                    }
+                                }
                             }
                             if let Some(func) = tc.get("function") {
                                 if let Some(name) = func.get("name").and_then(|s| s.as_str()) {
-                                    accum_tools[idx].name.push_str(name);
+                                    if !name.is_empty() {
+                                        if accum_tools[idx].name.is_empty() {
+                                            accum_tools[idx].name = name.to_string();
+                                        } else if !accum_tools[idx].name.contains(name) {
+                                            accum_tools[idx].name.push_str(name);
+                                        }
+                                    }
                                 }
                                 if let Some(args) = func.get("arguments").and_then(|s| s.as_str()) {
                                     accum_tools[idx].arguments.push_str(args);

@@ -82,14 +82,29 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         has_args: true,
     },
     SlashCommand {
+        name: "/mode",
+        description: "Switch execution mode (Takiza Manual or Takiza MoA)",
+        has_args: true,
+    },
+    SlashCommand {
         name: "/model",
         description: "Switch active LLM model",
+        has_args: true,
+    },
+    SlashCommand {
+        name: "/effort",
+        description: "Set reasoning effort (low, medium, high) for reasoning models",
         has_args: true,
     },
     SlashCommand {
         name: "/provider",
         description: "Switch preset provider (openai, groq, ollama...)",
         has_args: true,
+    },
+    SlashCommand {
+        name: "/approval",
+        description: "Toggle auto-approving shell commands vs asking confirmation",
+        has_args: false,
     },
     SlashCommand {
         name: "/diff",
@@ -99,6 +114,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/status",
         description: "Show session status, token usage, and git branch",
+        has_args: false,
+    },
+    SlashCommand {
+        name: "/usage",
+        description: "Show daily quotas and token usage breakdown (Takiza Manual / MoA)",
         has_args: false,
     },
     SlashCommand {
@@ -251,6 +271,7 @@ impl LineEditor {
         let mut prev_rendered = false;
         let mut menu_selected_idx = 0;
         let mut menu_dismissed = false;
+        self.prev_total_rows = 0;
 
         let matching_cmds = if !menu_dismissed {
             get_matching_commands(&buffer)
@@ -672,7 +693,7 @@ impl LineEditor {
         prev_rendered: &mut bool,
         menu_items: &[SlashCommand],
         menu_selected_idx: usize,
-        on_redraw: &mut F,
+        _on_redraw: &mut F,
     ) -> std::io::Result<()>
     where
         F: FnMut(&str),
@@ -742,7 +763,7 @@ impl LineEditor {
         let mut out = stdout();
         queue!(out, cursor::Hide)?;
 
-        let shrank = total_rows < self.prev_total_rows;
+        let shrank = *prev_rendered && total_rows < self.prev_total_rows;
         if shrank {
             let old_start_row = term_rows.saturating_sub(self.prev_total_rows as u16);
             let new_start_row = term_rows.saturating_sub(total_rows as u16);
@@ -750,19 +771,8 @@ impl LineEditor {
                 queue!(out, cursor::MoveTo(0, r), Clear(ClearType::UntilNewLine))?;
             }
             out.flush()?;
-            on_redraw(buffer);
-            self.prev_total_rows = total_rows;
-            if menu_items.is_empty() {
-                let actual_cursor_row = start_row + 1 + cursor_row as u16;
-                queue!(out, cursor::MoveTo(cursor_col as u16, actual_cursor_row), cursor::Show)?;
-                out.flush()?;
-                *prev_cursor_row = cursor_row;
-                *prev_rendered = true;
-                return Ok(());
-            }
-        } else {
-            self.prev_total_rows = total_rows;
         }
+        self.prev_total_rows = total_rows;
 
         // 1. Draw Top border: ╭─ You [branch] ────────────────────────────────────────╮
         let title_tag = if branch_tag.is_empty() {
@@ -785,6 +795,7 @@ impl LineEditor {
         queue!(
             out,
             cursor::MoveTo(0, start_row),
+            Clear(ClearType::FromCursorDown),
             SetForegroundColor(border_color),
             Print("╭─"),
             SetForegroundColor(primary_color),

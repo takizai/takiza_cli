@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::prompt::{str_width, truncate_visible};
 use crate::session::Session;
-use crate::theme::{self, Theme};
+use crate::theme::{self, AppMode, Theme};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind},
@@ -1072,6 +1072,520 @@ pub fn select_theme_interactive(ctx: &ScreenContext, initial: Theme) -> std::io:
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct CuratedModel {
+    pub provider: &'static str,
+    pub id: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub is_expensive: bool,
+}
+
+pub const CURATED_MODELS: &[CuratedModel] = &[
+    CuratedModel {
+        provider: "OpenAI",
+        id: "cx/gpt-6-astra",
+        name: "GPT-6 Astra",
+        description: "OpenAI flagship for demanding end-to-end work, advanced analysis & coding",
+        is_expensive: true,
+    },
+    CuratedModel {
+        provider: "OpenAI",
+        id: "cx/gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        description: "High-level reasoning & complex STEM architecture with long context",
+        is_expensive: false,
+    },
+    CuratedModel {
+        provider: "Anthropic",
+        id: "cc/claude-opus-5",
+        name: "Claude Opus 5",
+        description: "Anthropic flagship for long-horizon agentic workflows and full-stack coding",
+        is_expensive: false,
+    },
+    CuratedModel {
+        provider: "Anthropic",
+        id: "cc/claude-sonnet-5",
+        name: "Claude Sonnet 5",
+        description: "Frontier performance across autonomous engineering, coding and reasoning",
+        is_expensive: false,
+    },
+    CuratedModel {
+        provider: "Google",
+        id: "ag/gemini-3.7-flash-high",
+        name: "Gemini 3.7 Flash High",
+        description: "Google high-velocity multimodal model with advanced reasoning & tool orchestration",
+        is_expensive: false,
+    },
+    CuratedModel {
+        provider: "Google",
+        id: "ag/gemini-3.1-pro-low",
+        name: "Gemini 3.1 Pro Low",
+        description: "Balanced reasoning & complex codebase analysis at cost-effective inference",
+        is_expensive: false,
+    },
+    CuratedModel {
+        provider: "Moonshot AI",
+        id: "kmc/k3",
+        name: "Kimi K3",
+        description: "Frontier multimodal reasoning with 256k context and full tool execution",
+        is_expensive: false,
+    },
+    CuratedModel {
+        provider: "Moonshot AI",
+        id: "kmc/kimi-for-coding",
+        name: "Kimi for Coding",
+        description: "Specialized code generation & bug localization champion with vision capabilities",
+        is_expensive: false,
+    },
+];
+
+pub fn is_curated_model_match(model_a: &str, model_b: &str) -> bool {
+    let a = model_a.trim();
+    let b = model_b.trim();
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a.eq_ignore_ascii_case(b) {
+        return true;
+    }
+    if a.ends_with(b) || b.ends_with(a) {
+        return true;
+    }
+    let base_a = a.split('/').last().unwrap_or(a);
+    let base_b = b.split('/').last().unwrap_or(b);
+    !base_a.is_empty() && base_a.eq_ignore_ascii_case(base_b)
+}
+
+pub fn select_mode_interactive(ctx: &ScreenContext, current_mode: AppMode) -> std::io::Result<Option<AppMode>> {
+    enable_raw_mode()?;
+    let modes = [AppMode::Manual, AppMode::MoA];
+    let mut selected_idx = modes.iter().position(|&m| m == current_mode).unwrap_or(0);
+    let mut needs_clear = true;
+
+    loop {
+        let (_term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let box_w = crate::cli_ui::get_box_width();
+        let inner_w = box_w.saturating_sub(4);
+        let th = theme::current();
+        let b_color = th.border_crossterm();
+        let p_color = th.primary_crossterm();
+        let p_ansi = th.primary_ansi();
+
+        let mut out = stdout();
+        if needs_clear {
+            queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+            needs_clear = false;
+        } else {
+            queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
+        }
+        let _ = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
+
+        let two_lines = term_rows >= 22;
+        let item_lines = if two_lines { 2 } else { 1 };
+        let content_rows = modes.len() * item_lines;
+        let total_box_height = 1 + content_rows + 1;
+        let start_row = term_rows.saturating_sub(total_box_height as u16);
+
+        let title = if ctx.branch_tag.is_empty() {
+            "Select Execution Mode".to_string()
+        } else {
+            format!("Select Execution Mode [{}]", ctx.branch_tag.trim())
+        };
+        draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
+
+        let mut cur_row = start_row + 1;
+        for (i, &m) in modes.iter().enumerate() {
+            let is_sel = i == selected_idx;
+            let is_curr = m == current_mode;
+
+            let prefix = if is_sel { "> " } else { "  " };
+            let (mark_str, mark_vis) = if is_curr {
+                ("\x1b[1;38;2;40;220;120m[active]\x1b[0m", 8)
+            } else {
+                ("        ", 8)
+            };
+
+            let (badge_str, badge_vis) = match m {
+                AppMode::MoA => (" \x1b[1;38;2;40;220;120m[⚡ ~45% Cheaper]\x1b[0m", str_width(" [⚡ ~45% Cheaper]")),
+                AppMode::Manual => ("", 0),
+            };
+
+            if two_lines {
+                let line1 = if is_sel {
+                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{}\x1b[1m{:<14}\x1b[0m{}  {}", prefix, p_ansi, m.name(), badge_str, mark_str)
+                } else {
+                    format!("\x1b[38;2;160;160;165m{}\x1b[0m\x1b[38;2;220;220;225m{:<14}\x1b[0m{}  {}", prefix, m.name(), badge_str, mark_str)
+                };
+                let line1_vis = 2 + 14 + badge_vis + 2 + mark_vis;
+                draw_bottom_box_line(&mut out, cur_row, &line1, line1_vis, box_w, b_color)?;
+                cur_row += 1;
+
+                let desc_max = inner_w.saturating_sub(6);
+                let desc_trunc = truncate_visible(m.description(), desc_max);
+                let line2 = match m {
+                    AppMode::MoA => format!("      \x1b[38;2;40;200;120m{}\x1b[0m", desc_trunc),
+                    AppMode::Manual => format!("      \x1b[38;2;130;130;135m{}\x1b[0m", desc_trunc),
+                };
+                let line2_vis = 6 + str_width(&desc_trunc);
+                draw_bottom_box_line(&mut out, cur_row, &line2, line2_vis, box_w, b_color)?;
+                cur_row += 1;
+            } else {
+                let fixed_w = 2 + 14 + badge_vis + 2 + mark_vis;
+                let desc_avail = inner_w.saturating_sub(fixed_w + 3);
+                let desc_part = if desc_avail >= 10 {
+                    let desc_trunc = truncate_visible(m.description(), desc_avail);
+                    (format!("  \x1b[38;2;120;120;125m{}\x1b[0m", desc_trunc), 2 + str_width(&desc_trunc))
+                } else {
+                    (String::new(), 0)
+                };
+
+                let line = if is_sel {
+                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{}\x1b[1m{:<14}\x1b[0m{}  {}{}", prefix, p_ansi, m.name(), badge_str, mark_str, desc_part.0)
+                } else {
+                    format!("\x1b[38;2;160;160;165m{}\x1b[0m\x1b[38;2;220;220;225m{:<14}\x1b[0m{}  {}{}", prefix, m.name(), badge_str, mark_str, desc_part.0)
+                };
+                let line_vis = fixed_w + desc_part.1;
+                draw_bottom_box_line(&mut out, cur_row, &line, line_vis, box_w, b_color)?;
+                cur_row += 1;
+            }
+        }
+
+        draw_bottom_box_bottom(&mut out, cur_row, "Enter: Select  •  Esc: Cancel", box_w, b_color)?;
+        out.flush()?;
+
+        match event::read()? {
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if selected_idx > 0 {
+                            selected_idx -= 1;
+                        } else {
+                            selected_idx = modes.len() - 1;
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if selected_idx + 1 < modes.len() {
+                            selected_idx += 1;
+                        } else {
+                            selected_idx = 0;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        disable_raw_mode()?;
+                        return Ok(Some(modes[selected_idx]));
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        disable_raw_mode()?;
+                        return Ok(None);
+                    }
+                    _ => {}
+                }
+            }
+            Event::Resize(_, _) => {
+                needs_clear = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn select_effort_interactive(ctx: &ScreenContext, current_effort: &str) -> std::io::Result<Option<String>> {
+    enable_raw_mode()?;
+    let efforts = [
+        ("low", "Low", "Fast response, minimal reasoning tokens"),
+        ("medium", "Medium", "Balanced reasoning depth (default)"),
+        ("high", "High", "Deep analysis, exhaustive reasoning"),
+    ];
+    let cur = current_effort.to_lowercase();
+    let mut selected_idx = efforts.iter().position(|&(id, _, _)| id == cur).unwrap_or(1);
+    let mut needs_clear = true;
+
+    loop {
+        let (_term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let box_w = crate::cli_ui::get_box_width();
+        let inner_w = box_w.saturating_sub(4);
+        let th = theme::current();
+        let b_color = th.border_crossterm();
+        let p_color = th.primary_crossterm();
+        let p_ansi = th.primary_ansi();
+
+        let mut out = stdout();
+        if needs_clear {
+            queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+            needs_clear = false;
+        } else {
+            queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
+        }
+        let _ = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
+
+        let two_lines = term_rows >= 22;
+        let item_lines = if two_lines { 2 } else { 1 };
+        let content_rows = efforts.len() * item_lines;
+        let total_box_height = 1 + content_rows + 1;
+        let start_row = term_rows.saturating_sub(total_box_height as u16);
+
+        let title = if ctx.branch_tag.is_empty() {
+            "Select Reasoning Effort".to_string()
+        } else {
+            format!("Select Reasoning Effort [{}]", ctx.branch_tag.trim())
+        };
+        draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
+
+        let mut cur_row = start_row + 1;
+        for (i, &(id, name, desc)) in efforts.iter().enumerate() {
+            let is_sel = i == selected_idx;
+            let is_curr = id == cur;
+
+            let prefix = if is_sel { "> " } else { "  " };
+            let (mark_str, mark_vis) = if is_curr {
+                ("\x1b[1;38;2;40;220;120m[active]\x1b[0m", 8)
+            } else {
+                ("        ", 8)
+            };
+
+            if two_lines {
+                let line1 = if is_sel {
+                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{}\x1b[1m{:<12}\x1b[0m  {}", prefix, p_ansi, name, mark_str)
+                } else {
+                    format!("\x1b[38;2;160;160;165m{}\x1b[0m\x1b[38;2;220;220;225m{:<12}\x1b[0m  {}", prefix, name, mark_str)
+                };
+                let line1_vis = 2 + 12 + 2 + mark_vis;
+                draw_bottom_box_line(&mut out, cur_row, &line1, line1_vis, box_w, b_color)?;
+                cur_row += 1;
+
+                let desc_max = inner_w.saturating_sub(6);
+                let desc_trunc = truncate_visible(desc, desc_max);
+                let line2 = format!("      \x1b[38;2;130;130;135m{}\x1b[0m", desc_trunc);
+                let line2_vis = 6 + str_width(&desc_trunc);
+                draw_bottom_box_line(&mut out, cur_row, &line2, line2_vis, box_w, b_color)?;
+                cur_row += 1;
+            } else {
+                let fixed_w = 2 + 12 + 2 + mark_vis;
+                let desc_avail = inner_w.saturating_sub(fixed_w + 3);
+                let desc_part = if desc_avail >= 10 {
+                    let desc_trunc = truncate_visible(desc, desc_avail);
+                    (format!("  \x1b[38;2;120;120;125m{}\x1b[0m", desc_trunc), 2 + str_width(&desc_trunc))
+                } else {
+                    (String::new(), 0)
+                };
+
+                let line = if is_sel {
+                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{}\x1b[1m{:<12}\x1b[0m  {}{}", prefix, p_ansi, name, mark_str, desc_part.0)
+                } else {
+                    format!("\x1b[38;2;160;160;165m{}\x1b[0m\x1b[38;2;220;220;225m{:<12}\x1b[0m  {}{}", prefix, name, mark_str, desc_part.0)
+                };
+                let line_vis = fixed_w + desc_part.1;
+                draw_bottom_box_line(&mut out, cur_row, &line, line_vis, box_w, b_color)?;
+                cur_row += 1;
+            }
+        }
+
+        draw_bottom_box_bottom(&mut out, cur_row, "Enter: Select  •  Esc: Cancel", box_w, b_color)?;
+        out.flush()?;
+
+        match event::read()? {
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if selected_idx > 0 {
+                            selected_idx -= 1;
+                        } else {
+                            selected_idx = efforts.len() - 1;
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if selected_idx + 1 < efforts.len() {
+                            selected_idx += 1;
+                        } else {
+                            selected_idx = 0;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        disable_raw_mode()?;
+                        return Ok(Some(efforts[selected_idx].0.to_string()));
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        disable_raw_mode()?;
+                        return Ok(None);
+                    }
+                    _ => {}
+                }
+            }
+            Event::Resize(_, _) => {
+                needs_clear = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str) -> std::io::Result<Option<&'static CuratedModel>> {
+    enable_raw_mode()?;
+    let mut selected_idx = CURATED_MODELS
+        .iter()
+        .position(|m| is_curated_model_match(m.id, current_model))
+        .unwrap_or(0);
+    let mut needs_clear = true;
+
+    loop {
+        let (_term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let box_w = crate::cli_ui::get_box_width();
+        let inner_w = box_w.saturating_sub(4);
+        let th = theme::current();
+        let b_color = th.border_crossterm();
+        let p_color = th.primary_crossterm();
+        let p_ansi = th.primary_ansi();
+
+        let mut out = stdout();
+        if needs_clear {
+            queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+            needs_clear = false;
+        } else {
+            queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
+        }
+        let _ = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
+
+        let two_lines = term_rows >= 32;
+        let item_lines = if two_lines { 2 } else { 1 };
+        let content_rows = CURATED_MODELS.len() * item_lines;
+        let total_box_height = 1 + content_rows + 1;
+        let start_row = term_rows.saturating_sub(total_box_height as u16);
+
+        let title = if ctx.branch_tag.is_empty() {
+            "Takiza Manual - Select Model".to_string()
+        } else {
+            format!("Takiza Manual - Select Model [{}]", ctx.branch_tag.trim())
+        };
+        draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
+
+        let mut cur_row = start_row + 1;
+        for (i, m) in CURATED_MODELS.iter().enumerate() {
+            let is_sel = i == selected_idx;
+            let is_curr = is_curated_model_match(m.id, current_model);
+
+            let prefix = if is_sel { "> " } else { "  " };
+            let (mark_str, mark_vis) = if is_curr {
+                ("\x1b[1;38;2;40;220;120m[active]\x1b[0m", 8)
+            } else {
+                ("        ", 8)
+            };
+
+            let prov_styled = match m.provider {
+                "OpenAI" => "\x1b[38;2;16;163;127m[OpenAI]\x1b[0m",
+                "Anthropic" => "\x1b[38;2;217;119;87m[Anthropic]\x1b[0m",
+                "Google" => "\x1b[38;2;66;133;244m[Google]\x1b[0m",
+                "Moonshot AI" => "\x1b[38;2;147;112;219m[Moonshot]\x1b[0m",
+                _ => "\x1b[38;2;160;160;165m[Model]\x1b[0m",
+            };
+            let prov_vis = match m.provider {
+                "OpenAI" => 8,
+                "Anthropic" => 11,
+                "Google" => 8,
+                "Moonshot AI" => 10,
+                _ => 7,
+            };
+
+            let (cost_tag, cost_vis) = if m.is_expensive {
+                (" \x1b[1;38;2;255;95;80m[⚠ $$$ / High Cost]\x1b[0m", str_width(" [⚠ $$$ / High Cost]"))
+            } else {
+                ("", 0)
+            };
+
+            if two_lines {
+                let name_line = if is_sel {
+                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1m{:<22}\x1b[0m{}  {}", prefix, prov_styled, p_ansi, m.name, cost_tag, mark_str)
+                } else {
+                    format!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225m{:<22}\x1b[0m{}  {}", prefix, prov_styled, m.name, cost_tag, mark_str)
+                };
+                let name_vis = 2 + prov_vis + 1 + 22 + cost_vis + 2 + mark_vis;
+                draw_bottom_box_line(&mut out, cur_row, &name_line, name_vis, box_w, b_color)?;
+                cur_row += 1;
+
+                let desc_max = inner_w.saturating_sub(6);
+                let desc_text = if m.is_expensive {
+                    format!("⚠ High Cost ($10/1M in, $50/1M out)! {}", m.description)
+                } else {
+                    m.description.to_string()
+                };
+                let desc_trunc = truncate_visible(&desc_text, desc_max);
+                let line2 = if m.is_expensive {
+                    format!("      \x1b[38;2;255;130;100m{}\x1b[0m", desc_trunc)
+                } else {
+                    format!("      \x1b[38;2;130;130;135m{}\x1b[0m", desc_trunc)
+                };
+                let line2_vis = 6 + str_width(&desc_trunc);
+                draw_bottom_box_line(&mut out, cur_row, &line2, line2_vis, box_w, b_color)?;
+                cur_row += 1;
+            } else {
+                let fixed_vis = 2 + prov_vis + 1 + str_width(m.name) + cost_vis + 2 + mark_vis;
+                let desc_avail = inner_w.saturating_sub(fixed_vis + 3);
+                let desc_part = if desc_avail >= 12 {
+                    let desc_trunc = truncate_visible(m.description, desc_avail);
+                    (format!("  \x1b[38;2;120;120;125m• {}\x1b[0m", desc_trunc), 4 + str_width(&desc_trunc))
+                } else {
+                    (String::new(), 0)
+                };
+
+                let line = if is_sel {
+                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1m{}\x1b[0m{}  {}{}", prefix, prov_styled, p_ansi, m.name, cost_tag, mark_str, desc_part.0)
+                } else {
+                    format!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225m{}\x1b[0m{}  {}{}", prefix, prov_styled, m.name, cost_tag, mark_str, desc_part.0)
+                };
+                let line_vis = fixed_vis + desc_part.1;
+                draw_bottom_box_line(&mut out, cur_row, &line, line_vis, box_w, b_color)?;
+                cur_row += 1;
+            }
+        }
+
+        draw_bottom_box_bottom(&mut out, cur_row, "Enter: Select Model  •  Esc: Cancel", box_w, b_color)?;
+        out.flush()?;
+
+        match event::read()? {
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if selected_idx > 0 {
+                            selected_idx -= 1;
+                        } else {
+                            selected_idx = CURATED_MODELS.len() - 1;
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if selected_idx + 1 < CURATED_MODELS.len() {
+                            selected_idx += 1;
+                        } else {
+                            selected_idx = 0;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        disable_raw_mode()?;
+                        return Ok(Some(&CURATED_MODELS[selected_idx]));
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        disable_raw_mode()?;
+                        return Ok(None);
+                    }
+                    _ => {}
+                }
+            }
+            Event::Resize(_, _) => {
+                needs_clear = true;
+            }
+            _ => {}
+        }
+    }
+}
+
 pub enum SessionAction {
     Resume(Session),
     Deleted(String),
@@ -1329,11 +1843,11 @@ pub fn show_interactive_diff(ctx: &ScreenContext, diff: &str, workspace: &Path) 
                         // Commit action
                         if let Some(msg) = prompt_string_input(ctx, "Git Commit", "Commit message:", "")? {
                             if !msg.trim().is_empty() {
-                                let _ = std::process::Command::new("git")
+                                let _ = crate::git::create_git_command()
                                     .args(["add", "-A"])
                                     .current_dir(workspace)
                                     .output();
-                                let res = std::process::Command::new("git")
+                                let res = crate::git::create_git_command()
                                     .args(["commit", "-m", &msg])
                                     .current_dir(workspace)
                                     .output();
@@ -1349,7 +1863,7 @@ pub fn show_interactive_diff(ctx: &ScreenContext, diff: &str, workspace: &Path) 
                         // Revert action
                         if let Some(confirm) = prompt_string_input(ctx, "Revert Workspace Changes", "Revert all unstaged files? (yes/no):", "no")? {
                             if confirm.eq_ignore_ascii_case("yes") || confirm.eq_ignore_ascii_case("y") {
-                                let _ = std::process::Command::new("git")
+                                let _ = crate::git::create_git_command()
                                     .args(["checkout", "--", "."])
                                     .current_dir(workspace)
                                     .output();
@@ -1377,6 +1891,8 @@ pub fn show_interactive_diff(ctx: &ScreenContext, diff: &str, workspace: &Path) 
 pub enum StatusAction {
     ChangeProvider,
     ChangeModel,
+    ChangeMode,
+    ShowUsage,
     ChangeTheme,
     Reset,
 }
@@ -1409,10 +1925,18 @@ pub fn show_interactive_status(
         "(not set)".to_string()
     };
 
+    let approval_str = if config.auto_approve {
+        "Auto-approve (skip permissions)"
+    } else {
+        "Ask on command (default)"
+    };
+
     let items = [
         ("AI Model", config.model.as_str()),
+        ("Mode", config.mode.name()),
         ("Endpoint", config.base_url.as_str()),
         ("API Key", masked_key.as_str()),
+        ("Approval", approval_str),
         ("Visual Theme", th.name()),
         ("Workspace", config.workspace_dir.to_str().unwrap_or(".")),
         ("Git Branch", if branch.is_empty() { "(no git)" } else { branch }),
@@ -1420,7 +1944,7 @@ pub fn show_interactive_status(
         ("Messages", &msg_count.to_string()),
     ];
 
-    let total_box_height = 1 + items.len() + 1 + 1 + 1; // 12 lines
+    let total_box_height = 1 + items.len() + 1 + 1 + 1; // 13 lines
     let start_row = term_rows.saturating_sub(total_box_height as u16);
 
     let title = if branch.is_empty() {
@@ -1444,7 +1968,7 @@ pub fn show_interactive_status(
     draw_bottom_box_divider(&mut out, cur_row, box_w, b_color)?;
     cur_row += 1;
 
-    let actions_hint = "Actions: [p] Provider  •  [m] Model  •  [t] Theme  •  [r] Reset  •  [Esc] Back";
+    let actions_hint = "Actions: [p] Provider  •  [m] Model  •  [o] Mode  •  [u] Usage  •  [t] Theme  •  [r] Reset  •  [Esc] Back";
     let actions_trunc = truncate_visible(actions_hint, inner_w);
     let actions_vis = str_width(&actions_trunc);
     draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[1;38;2;255;255;255m{}\x1b[0m", actions_trunc), actions_vis, box_w, b_color)?;
@@ -1462,6 +1986,8 @@ pub fn show_interactive_status(
             match key.code {
                 KeyCode::Char('p') | KeyCode::Char('P') => return Ok(Some(StatusAction::ChangeProvider)),
                 KeyCode::Char('m') | KeyCode::Char('M') => return Ok(Some(StatusAction::ChangeModel)),
+                KeyCode::Char('o') | KeyCode::Char('O') => return Ok(Some(StatusAction::ChangeMode)),
+                KeyCode::Char('u') | KeyCode::Char('U') => return Ok(Some(StatusAction::ShowUsage)),
                 KeyCode::Char('t') | KeyCode::Char('T') => return Ok(Some(StatusAction::ChangeTheme)),
                 KeyCode::Char('r') | KeyCode::Char('R') => return Ok(Some(StatusAction::Reset)),
                 _ => return Ok(None),
@@ -1530,5 +2056,142 @@ pub fn show_interactive_tools(ctx: &ScreenContext) -> std::io::Result<()> {
             disable_raw_mode()?;
             return Ok(());
         }
+    }
+}
+
+/// Interactive Quota & Token Usage dashboard rendered in bottom box replacing the input field.
+pub fn show_interactive_usage(ctx: &ScreenContext, config: &Config) -> std::io::Result<()> {
+    enable_raw_mode()?;
+    let (_term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let box_w = crate::cli_ui::get_box_width();
+    let inner_w = box_w.saturating_sub(4);
+    let th = theme::current();
+    let b_color = th.border_crossterm();
+    let p_color = th.primary_crossterm();
+
+    let mut out = stdout();
+    queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+    let _ = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
+
+    let total_box_height = 13;
+    let start_row = term_rows.saturating_sub(total_box_height as u16);
+
+    let title = if ctx.branch_tag.is_empty() {
+        "Token & Quota Usage [Mock]".to_string()
+    } else {
+        format!("Token & Quota Usage [Mock] [{}]", ctx.branch_tag.trim())
+    };
+    draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
+
+    let mut cur_row = start_row + 1;
+
+    // Header intro
+    let intro = "Daily API quotas and token limits breakdown for active modes:";
+    let intro_trunc = truncate_visible(intro, inner_w);
+    let intro_vis = str_width(&intro_trunc);
+    draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[38;2;160;160;165m{}\x1b[0m", intro_trunc), intro_vis, box_w, b_color)?;
+    cur_row += 1;
+
+    draw_bottom_box_divider(&mut out, cur_row, box_w, b_color)?;
+    cur_row += 1;
+
+    // 1. Takiza Manual Quota
+    let m_active = if config.mode == crate::theme::AppMode::Manual { " \x1b[1;38;2;40;220;120m[active]\x1b[0m" } else { "" };
+    let m_header_plain = if config.mode == crate::theme::AppMode::Manual { "• Takiza Manual Quota [active]" } else { "• Takiza Manual Quota" };
+    let m_header = format!("\x1b[1;38;2;0;220;255m• Takiza Manual Quota\x1b[0m{}", m_active);
+    draw_bottom_box_line(&mut out, cur_row, &m_header, str_width(m_header_plain), box_w, b_color)?;
+    cur_row += 1;
+
+    let m_bar_plain = "    [██████████░░░░░░░░░░]  520,000 / 1,000,000 tokens (52% used)";
+    let m_bar = format!("    \x1b[38;2;255;195;0m[██████████░░░░░░░░░░]\x1b[0m  \x1b[1;38;2;240;240;245m520,000\x1b[0m \x1b[38;2;140;140;145m/ 1,000,000 tokens (52% used)\x1b[0m");
+    draw_bottom_box_line(&mut out, cur_row, &m_bar, str_width(m_bar_plain), box_w, b_color)?;
+    cur_row += 1;
+
+    let m_det = "    Limit: 1.0M tokens/day  •  Remaining: 480k (48%)  •  Resets in: 4h 18m";
+    let m_det_trunc = truncate_visible(m_det, inner_w);
+    let m_det_vis = str_width(&m_det_trunc);
+    draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[38;2;130;130;135m{}\x1b[0m", m_det_trunc), m_det_vis, box_w, b_color)?;
+    cur_row += 1;
+
+    draw_bottom_box_divider(&mut out, cur_row, box_w, b_color)?;
+    cur_row += 1;
+
+    // 2. Takiza MoA Quota
+    let moa_active = if config.mode == crate::theme::AppMode::MoA { " \x1b[1;38;2;40;220;120m[active]\x1b[0m" } else { "" };
+    let moa_header_plain = if config.mode == crate::theme::AppMode::MoA {
+        "• Takiza MoA Quota [⚡ ~45% Cheaper] [active]"
+    } else {
+        "• Takiza MoA Quota [⚡ ~45% Cheaper]"
+    };
+    let moa_header = format!("\x1b[1;38;2;40;220;120m• Takiza MoA Quota\x1b[0m \x1b[1;38;2;40;220;120m[⚡ ~45% Cheaper]\x1b[0m{}", moa_active);
+    draw_bottom_box_line(&mut out, cur_row, &moa_header, str_width(moa_header_plain), box_w, b_color)?;
+    cur_row += 1;
+
+    let moa_bar_plain = "    [████░░░░░░░░░░░░░░░░]  210,000 / 1,000,000 tokens (21% used)";
+    let moa_bar = format!("    \x1b[38;2;40;220;120m[████░░░░░░░░░░░░░░░░]\x1b[0m  \x1b[1;38;2;240;240;245m210,000\x1b[0m \x1b[38;2;140;140;145m/ 1,000,000 tokens (21% used)\x1b[0m");
+    draw_bottom_box_line(&mut out, cur_row, &moa_bar, str_width(moa_bar_plain), box_w, b_color)?;
+    cur_row += 1;
+
+    let moa_det = "    Limit: 1.0M tokens/day  •  Remaining: 790k (79%)  •  Saved via MoA: ~172k tokens";
+    let moa_det_trunc = truncate_visible(moa_det, inner_w);
+    let moa_det_vis = str_width(&moa_det_trunc);
+    draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[38;2;130;130;135m{}\x1b[0m", moa_det_trunc), moa_det_vis, box_w, b_color)?;
+    cur_row += 1;
+
+    draw_bottom_box_divider(&mut out, cur_row, box_w, b_color)?;
+    cur_row += 1;
+
+    let footer = format!("  Active mode: {}  •  Daily quotas reset at 00:00 UTC (mock data)", config.mode.name());
+    let footer_trunc = truncate_visible(&footer, inner_w);
+    let footer_vis = str_width(&footer_trunc);
+    draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[38;2;160;160;165m{}\x1b[0m", footer_trunc), footer_vis, box_w, b_color)?;
+    cur_row += 1;
+
+    draw_bottom_box_bottom(&mut out, cur_row, "Press [Enter] or [Esc] to return to chat", box_w, b_color)?;
+    out.flush()?;
+
+    loop {
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            disable_raw_mode()?;
+            return Ok(());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_curated_models_constraints() {
+        assert!(CURATED_MODELS.len() <= 10, "Curated models count must not exceed 10");
+
+        let openai_count = CURATED_MODELS.iter().filter(|m| m.provider == "OpenAI").count();
+        let anthropic_count = CURATED_MODELS.iter().filter(|m| m.provider == "Anthropic").count();
+        let google_count = CURATED_MODELS.iter().filter(|m| m.provider == "Google").count();
+        let moonshot_count = CURATED_MODELS.iter().filter(|m| m.provider == "Moonshot AI").count();
+
+        assert!(openai_count >= 2, "Must have at least 2 OpenAI models, found {}", openai_count);
+        assert!(anthropic_count >= 2, "Must have at least 2 Anthropic models, found {}", anthropic_count);
+        assert!(google_count >= 2, "Must have at least 2 Google models, found {}", google_count);
+        assert!(moonshot_count >= 2, "Must have at least 2 Moonshot AI models, found {}", moonshot_count);
+
+        let expensive_models: Vec<&str> = CURATED_MODELS.iter().filter(|m| m.is_expensive).map(|m| m.id).collect();
+        assert_eq!(expensive_models, vec!["cx/gpt-6-astra"], "Only cx/gpt-6-astra should have expensive badge");
+
+        for m in CURATED_MODELS {
+            assert!(!m.id.is_empty());
+            assert!(!m.name.is_empty());
+            assert!(!m.description.is_empty());
+        }
+
+        assert!(is_curated_model_match("cx/gpt-6-astra", "cx/gpt-6-astra"));
+        assert!(is_curated_model_match("cx/gpt-6-astra", "gpt-6-astra"));
+        assert!(is_curated_model_match("cx/gpt-6-astra", "openai/gpt-6-astra"));
+        assert!(is_curated_model_match("kmc/k3", "k3"));
+        assert!(!is_curated_model_match("kmc/k3", "kmc/kimi-for-coding"));
     }
 }

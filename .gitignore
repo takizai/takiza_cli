@@ -20,3 +20,9 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# ML router training scripts, datasets, and LoRA checkpoints
+scripts/
+*.safetensors
+*.pt
+*.pth

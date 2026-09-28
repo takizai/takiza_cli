@@ -5,6 +5,13 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionResponse {
+    AllowOnce,
+    AllowAlways,
+    Deny,
+}
+
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum AgentEvent {
@@ -14,6 +21,12 @@ pub enum AgentEvent {
     AssistantThought(String),
     AssistantToken(String),
     ThoughtToken(String),
+    PermissionRequest {
+        id: String,
+        name: String,
+        command: String,
+        responder: Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<PermissionResponse>>>>,
+    },
     ToolStart { id: String, name: String, args: String },
     ToolLog(String),
     ToolEnd { id: String, name: String, args: String, result: String, is_error: bool },
@@ -22,7 +35,7 @@ pub enum AgentEvent {
 }
 
 pub struct Agent {
-    _config: Config,
+    pub config: Config,
     llm: LlmClient,
     tools: Arc<ToolExecutor>,
     messages: Vec<ChatMessage>,
@@ -116,7 +129,7 @@ impl Agent {
         });
 
         Self {
-            _config: config,
+            config,
             llm,
             tools,
             messages,
@@ -287,6 +300,59 @@ impl Agent {
                                 .send(AgentEvent::Error("Interrupted (Ctrl+C)".to_string()))
                                 .await;
                             break;
+                        }
+
+                        // Check permission for command execution if auto_approve is disabled
+                        if tc.name == "run_command" && !self.config.auto_approve {
+                            let cmd_str = match serde_json::from_str::<serde_json::Value>(&tc.arguments) {
+                                Ok(v) => v.get("command").and_then(|c| c.as_str()).unwrap_or(&tc.arguments).to_string(),
+                                Err(_) => tc.arguments.clone(),
+                            };
+
+                            let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                            let responder = Arc::new(std::sync::Mutex::new(Some(resp_tx)));
+
+                            let _ = event_tx
+                                .send(AgentEvent::PermissionRequest {
+                                    id: tc.id.clone(),
+                                    name: tc.name.clone(),
+                                    command: cmd_str.clone(),
+                                    responder,
+                                })
+                                .await;
+
+                            let response = match resp_rx.await {
+                                Ok(r) => r,
+                                Err(_) => PermissionResponse::Deny,
+                            };
+
+                            match response {
+                                PermissionResponse::AllowOnce => {}
+                                PermissionResponse::AllowAlways => {
+                                    self.config.auto_approve = true;
+                                }
+                                PermissionResponse::Deny => {
+                                    let denied_msg = format!("Command execution denied by user: permission rejected for command: {}", cmd_str);
+                                    let _ = event_tx
+                                        .send(AgentEvent::ToolEnd {
+                                            id: tc.id.clone(),
+                                            name: tc.name.clone(),
+                                            args: tc.arguments.clone(),
+                                            result: denied_msg.clone(),
+                                            is_error: true,
+                                        })
+                                        .await;
+
+                                    self.messages.push(ChatMessage {
+                                        role: "tool".to_string(),
+                                        content: Some(denied_msg),
+                                        tool_calls: None,
+                                        tool_call_id: Some(tc.id),
+                                        name: Some(tc.name),
+                                    });
+                                    continue;
+                                }
+                            }
                         }
 
                         let _ = event_tx

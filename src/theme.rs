@@ -125,6 +125,51 @@ pub fn set_current(theme: Theme) {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppMode {
+    Manual,
+    MoA,
+}
+
+impl Default for AppMode {
+    fn default() -> Self {
+        AppMode::Manual
+    }
+}
+
+impl AppMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            AppMode::Manual => "Takiza Manual",
+            AppMode::MoA => "Takiza MoA",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            AppMode::Manual => "Manual model selection from frontier LLM catalog",
+            AppMode::MoA => "Mixture of Agents: smart auto-routing (~45% lower token costs)",
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AppMode::Manual => "manual",
+            AppMode::MoA => "moa",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Option<AppMode> {
+        let clean = s.trim().to_lowercase();
+        match clean.as_str() {
+            "manual" | "takiza manual" | "m" | "1" => Some(AppMode::Manual),
+            "moa" | "takiza moa" | "auto" | "2" => Some(AppMode::MoA),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserPreferences {
     pub agreed_to_terms: bool,
@@ -139,6 +184,10 @@ pub struct UserPreferences {
     pub base_url: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 impl Default for UserPreferences {
@@ -152,6 +201,8 @@ impl Default for UserPreferences {
             model: None,
             base_url: None,
             api_key: None,
+            mode: None,
+            effort: None,
         }
     }
 }
@@ -192,10 +243,22 @@ impl UserPreferences {
     }
 }
 
-fn dirs_next_or_home() -> Option<PathBuf> {
+pub fn dirs_next_or_home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .or_else(|| {
+            let drive = std::env::var_os("HOMEDRIVE");
+            let path = std::env::var_os("HOMEPATH");
+            match (drive, path) {
+                (Some(d), Some(p)) => {
+                    let mut b = PathBuf::from(d);
+                    b.push(p);
+                    Some(b)
+                }
+                _ => None,
+            }
+        })
 }
 
 #[cfg(test)]
@@ -245,5 +308,20 @@ mod tests {
         assert_eq!(current(), Theme::Emerald);
         set_current(Theme::Amber);
         assert_eq!(current(), Theme::Amber);
+    }
+
+    #[test]
+    fn test_app_mode() {
+        assert_eq!(AppMode::from_str_loose("manual"), Some(AppMode::Manual));
+        assert_eq!(AppMode::from_str_loose("takiza manual"), Some(AppMode::Manual));
+        assert_eq!(AppMode::from_str_loose("moa"), Some(AppMode::MoA));
+        assert_eq!(AppMode::from_str_loose("takiza moa"), Some(AppMode::MoA));
+        assert_eq!(AppMode::from_str_loose("auto"), Some(AppMode::MoA));
+        assert_eq!(AppMode::from_str_loose("invalid"), None);
+
+        assert_eq!(AppMode::Manual.name(), "Takiza Manual");
+        assert_eq!(AppMode::MoA.name(), "Takiza MoA");
+        assert_eq!(AppMode::Manual.as_str(), "manual");
+        assert_eq!(AppMode::MoA.as_str(), "moa");
     }
 }

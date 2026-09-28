@@ -614,12 +614,39 @@ impl ToolExecutor {
             let _ = tx.send(ToolOutputEvent::Log(format!("$ {cmd_str}"))).await;
         }
 
-        let mut child = Command::new("bash")
-            .arg("-c")
+        #[cfg(windows)]
+        let (shell, flag) = {
+            if std::path::Path::new(r"C:\Program Files\Git\bin\bash.exe").exists() {
+                (r"C:\Program Files\Git\bin\bash.exe", "-c")
+            } else if std::path::Path::new(r"C:\Program Files (x86)\Git\bin\bash.exe").exists() {
+                (r"C:\Program Files (x86)\Git\bin\bash.exe", "-c")
+            } else if let Ok(path_var) = std::env::var("PATH") {
+                if std::env::split_paths(&path_var).any(|p| p.join("bash.exe").is_file()) {
+                    ("bash.exe", "-c")
+                } else {
+                    ("cmd.exe", "/C")
+                }
+            } else {
+                ("cmd.exe", "/C")
+            }
+        };
+
+        #[cfg(not(windows))]
+        let (shell, flag) = ("bash", "-c");
+
+        let mut cmd = Command::new(shell);
+        cmd.arg(flag)
             .arg(cmd_str)
             .current_dir(&self.workspace_root)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(0x08000000);
+        }
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn command '{cmd_str}': {e}"))?;
 

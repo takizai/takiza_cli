@@ -91,6 +91,17 @@ impl Session {
 
     #[allow(dead_code)]
     pub fn latest(workspace: &Path) -> Option<Self> {
+        // 1. Scan sessions ordered by most recent activity (last modified timestamp)
+        for id in Self::list_by_activity(workspace) {
+            if let Some(session) = Self::load(workspace, &id) {
+                // Must have actual activity (non-empty messages)
+                if !session.messages.is_empty() {
+                    return Some(session);
+                }
+            }
+        }
+
+        // 2. Fallback to latest_session pointer file if present
         let latest_file = workspace.join(".takiza").join("latest_session");
         if let Ok(id) = fs::read_to_string(latest_file) {
             let id = id.trim();
@@ -102,31 +113,33 @@ impl Session {
                 }
             }
         }
-        // Fallback: search newest non-empty session from list
-        for id in Self::list(workspace) {
-            if let Some(session) = Self::load(workspace, &id) {
-                if !session.messages.is_empty() {
-                    return Some(session);
-                }
-            }
-        }
+
         None
     }
 
-    pub fn list(workspace: &Path) -> Vec<String> {
+    pub fn list_by_activity(workspace: &Path) -> Vec<String> {
         let dir = Self::sessions_dir(workspace);
-        let mut list = Vec::new();
+        let mut entries_with_mtime = Vec::new();
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.ends_with(".json") {
-                    list.push(name.trim_end_matches(".json").to_string());
+                    let mtime = entry
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    let id = name.trim_end_matches(".json").to_string();
+                    entries_with_mtime.push((mtime, id));
                 }
             }
         }
-        list.sort();
-        list.reverse();
-        list
+        // Sort descending by last modified time (most recently active first)
+        entries_with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
+        entries_with_mtime.into_iter().map(|(_, id)| id).collect()
+    }
+
+    pub fn list(workspace: &Path) -> Vec<String> {
+        Self::list_by_activity(workspace)
     }
 
     pub fn load(workspace: &Path, id: &str) -> Option<Self> {
