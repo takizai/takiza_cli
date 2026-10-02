@@ -1,4 +1,7 @@
 mod agent;
+mod attachments;
+mod checkpoints;
+mod clipboard;
 mod cli_ui;
 mod config;
 mod git;
@@ -13,14 +16,15 @@ mod session;
 mod theme;
 mod tools;
 mod moa_router;
+pub mod skills;
 
 use agent::{Agent, AgentEvent};
+use anyhow::Context;
 use config::Config;
 use crossterm::{
     cursor,
     execute,
     queue,
-    style::Color,
     terminal::{Clear, ClearType},
 };
 use git::GitInfo;
@@ -32,7 +36,30 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tools::{ToolExecutor, ToolOutputEvent};
 
+type PendingTitle = Option<(String, tokio::task::JoinHandle<anyhow::Result<String>>)>;
+
+fn collect_chat_title(pending: &mut PendingTitle, session: &mut Session, workspace: &std::path::Path,
+    history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>) -> bool {
+    use futures_util::FutureExt;
+    if !pending.as_ref().is_some_and(|(_, handle)| handle.is_finished()) { return false; }
+    let (session_id, handle) = pending.take().unwrap();
+    if session_id != session.id { return false; }
+    match handle.now_or_never() {
+        Some(Ok(Ok(title))) => {
+            cli_ui::set_active_chat_title(&title);
+            session.title = Some(title);
+            let _ = session.save(workspace);
+        }
+        Some(Ok(Err(error))) => {
+            history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(format!("Chat title unavailable: {error:#}")));
+        }
+        _ => return false,
+    }
+    true
+}
+
 fn clear_screen_and_banner(config: &Config) -> u16 {
+    cli_ui::invalidate_content_frame();
     let git_info = GitInfo::get(&config.workspace_dir);
     let git_display = match &git_info.branch {
         Some(b) => {
@@ -61,7 +88,7 @@ fn clear_screen_and_banner(config: &Config) -> u16 {
 }
 
 fn redraw_full_screen(config: &Config, history: &[cli_ui::HistoryItem]) -> u16 {
-    let current_git = GitInfo::get(&config.workspace_dir);
+    let current_git = GitInfo::get_cached(&config.workspace_dir);
     let git_display = match &current_git.branch {
         Some(b) => {
             if current_git.is_dirty {
@@ -94,200 +121,256 @@ fn redraw_full_screen(config: &Config, history: &[cli_ui::HistoryItem]) -> u16 {
     )
 }
 
-fn spawn_sig_listener(cancel_token: CancellationToken, branch_tag: String) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            let has_event = tokio::task::spawn_blocking(|| {
-                crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap_or(false)
-            })
-            .await
-            .unwrap_or(false);
+async fn redraw_active_view(
+    config: &Config,
+    history: &[cli_ui::HistoryItem],
+    _branch_tag: &str,
+    output_row: &Arc<StdMutex<u16>>,
+    spinner: &mut Option<cli_ui::Spinner>,
+    stream_writer: &mut Option<String>,
+) {
+    // Streaming and browsing share the same Markdown layout and content viewport.
+    // Never replay the response through terminal scrolling commands.
+    if stream_writer.is_some() {
+        if let Some(active_spinner) = spinner.take() { active_spinner.stop().await; }
+    }
+    let _update = cli_ui::begin_content_update();
+    let mut snapshot = history.to_vec();
+    if let Some(text) = stream_writer.as_ref() {
+        if !text.is_empty() { snapshot.push(cli_ui::HistoryItem::AssistantMessage(text.clone())); }
+    }
+    *output_row.lock().unwrap() = redraw_full_screen(config, &snapshot);
+}
 
+async fn redraw_active_editor(
+    config: &Config, history: &[cli_ui::HistoryItem], branch_tag: &str,
+    output_row: &Arc<StdMutex<u16>>, spinner: &mut Option<cli_ui::Spinner>,
+    stream_writer: &mut Option<String>,
+) {
+    // Stop concurrent terminal writes before opening one frame for content and editor.
+    if stream_writer.is_some() {
+        if let Some(active_spinner) = spinner.take() { active_spinner.stop().await; }
+    }
+    let _update = cli_ui::begin_content_update();
+    redraw_active_view(config, history, branch_tag, output_row, spinner, stream_writer).await;
+    let (x, y) = cli_ui::render_bottom_box("", branch_tag);
+    cli_ui::position_input_cursor(x, y);
+}
+
+struct SigListener {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for SigListener {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl SigListener {
+    async fn stop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.await;
+        }
+    }
+}
+
+enum TerminalEvent {
+    Resize,
+    ToggleOutput,
+    Scroll { delta: i32, row: u16 },
+    Key(crossterm::event::KeyEvent),
+    Mouse(crossterm::event::MouseEvent),
+    Paste(String),
+}
+
+fn spawn_sig_listener(terminal_tx: mpsc::UnboundedSender<TerminalEvent>) -> SigListener {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let listener_stop = stop.clone();
+    let handle = tokio::task::spawn_blocking(move || {
+        let mut pending_event = None;
+        // Finish this reader before handing terminal input to a modal UI.
+        // Aborting an async wrapper does not stop a blocking event::read.
+        while !listener_stop.load(std::sync::atomic::Ordering::Acquire) {
+            let has_event = pending_event.is_some() || crossterm::event::poll(std::time::Duration::from_millis(50))
+                .unwrap_or(false);
+            if listener_stop.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
             if has_event {
-                if let Ok(Ok(ev)) = tokio::task::spawn_blocking(crossterm::event::read).await {
+                if let Ok(ev) = pending_event.take().map(Ok).unwrap_or_else(crossterm::event::read) {
                     match ev {
                         crossterm::event::Event::Key(k) => {
                             if k.kind == crossterm::event::KeyEventKind::Press {
                                 if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
-                                    && k.code == crossterm::event::KeyCode::Char('c')
-                                {
-                                    cancel_token.cancel();
-                                    break;
-                                }
-                                if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                                     && k.code == crossterm::event::KeyCode::Char('o')
                                 {
-                                    cli_ui::toggle_expanded_output();
-                                    let _ = cli_ui::render_bottom_box("", &branch_tag);
+                                    let _ = terminal_tx.send(TerminalEvent::ToggleOutput);
+                                } else if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                                    && k.code == crossterm::event::KeyCode::Char('v') {
+                                    match clipboard::paste() {
+                                        Ok(text) => { let _ = terminal_tx.send(TerminalEvent::Paste(text)); }
+                                        Err(error) => logger::log_warn("Clipboard", &error),
+                                    }
+                                } else {
+                                    let _ = terminal_tx.send(TerminalEvent::Key(k));
                                 }
                             }
                         }
+                        crossterm::event::Event::Mouse(mouse) => {
+                            if let Some(delta) = cli_ui::history_scroll_mouse(mouse) {
+                                let delta = cli_ui::coalesce_scroll(delta, &mut pending_event);
+                                let _ = terminal_tx.send(TerminalEvent::Scroll { delta, row: mouse.row });
+                            } else {
+                                let _ = terminal_tx.send(TerminalEvent::Mouse(mouse));
+                            }
+                        }
+                        crossterm::event::Event::Paste(text) => {
+                            let _ = terminal_tx.send(TerminalEvent::Paste(text));
+                        }
                         crossterm::event::Event::Resize(_, _) => {
-                            let _ = cli_ui::render_bottom_box("", &branch_tag);
+                            let _ = terminal_tx.send(TerminalEvent::Resize);
                         }
                         _ => {}
                     }
                 }
             }
         }
-    })
+    });
+    SigListener { stop, handle: Some(handle) }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli_args = config::CliArgs::parse();
 
-    if cli_args.show_help {
-        println!("Takiza Code v{} - Autonomous AI Software Engineering Agent\n", env!("CARGO_PKG_VERSION"));
-        println!("USAGE:");
-        println!("    takiza [OPTIONS] [PROMPT]\n");
-        println!("OPTIONS:");
-        println!("    -c, --continue, --resume");
-        println!("            Continue previous conversation session from where you left off\n");
-        println!("    -y, --yes, -a, --auto-approve, --dangerously-skip-permissions");
-        println!("            Skip asking for permission before executing commands (auto-approve)");
-        println!("            (Default: ask user for permission before running each command)\n");
-        println!("    -h, --help");
-        println!("            Print help information\n");
-        println!("    -v, -V, --version");
-        println!("            Print version information\n");
-        println!("ARGS:");
-        println!("    [PROMPT]");
-        println!("            Optional initial prompt to send to the agent\n");
-        return Ok(());
+#[derive(Default)]
+struct PromptQueue {
+    next_id: usize,
+    pending: std::collections::VecDeque<(usize, String)>,
+}
+
+impl PromptQueue {
+    fn marker(id: usize, text: &str) -> String { format!("⏳ Queued #{id}: {text}") }
+    fn push(&mut self, text: String, history: &mut Vec<cli_ui::HistoryItem>) {
+        self.next_id += 1;
+        history.push(cli_ui::HistoryItem::ToolLog(Self::marker(self.next_id, &text)));
+        self.pending.push_back((self.next_id, text));
     }
-
-    if cli_args.show_version {
-        println!("takiza {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+    fn pop(&mut self, history: &mut Vec<cli_ui::HistoryItem>) -> Option<String> {
+        let (id, text) = self.pending.pop_front()?;
+        let marker = Self::marker(id, &text);
+        history.retain(|item| !matches!(item, cli_ui::HistoryItem::ToolLog(log) if log == &marker));
+        Some(text)
     }
-
-    // 1. Run onboarding wizard if user has not yet accepted terms
-    let (mut user_prefs, onboarding_shown) = onboarding::Onboarding::run_if_needed()?;
-    theme::set_current(user_prefs.theme);
-
-    // If onboarding was not shown, purge previous terminal output (e.g. `cargo run`).
-    // If onboarding was shown, it already purged previous output on startup.
-    if !onboarding_shown {
-        let _ = execute!(stdout(), Clear(ClearType::All), Clear(ClearType::Purge), cursor::MoveTo(0, 0));
+    fn clear(&mut self, history: &mut Vec<cli_ui::HistoryItem>) {
+        while self.pop(history).is_some() {}
     }
+}
 
-    let mut config = Config::load_with_args(&cli_args);
-    let mut initial_prompt = cli_args.prompt;
-    let mut line_editor = LineEditor::new();
-    let agent = Arc::new(Mutex::new(Agent::new(config.clone())));
-    let tools_executor = Arc::new(ToolExecutor::new(config.workspace_dir.clone()));
+#[derive(PartialEq)]
+enum CommandResult { Handled, Exit, InsertSkill(skills::Skill) }
 
-    // Spawn a fresh new chat session on startup or continue previous session
-    let mut current_session = Session::new(config.model.clone());
-    cli_ui::set_active_chat_title("");
-    let history = Arc::new(StdMutex::new(Vec::new()));
+struct ActiveAgent {
+    cancel: CancellationToken,
+    task: Option<tokio::task::JoinHandle<()>>,
+    events: mpsc::Receiver<AgentEvent>,
+}
 
-    let output_row = Arc::new(StdMutex::new(0));
-
-    if config.continue_session {
-        if let Some(loaded) = Session::latest(&config.workspace_dir) {
-            let mut locked = agent.lock().await;
-            locked.set_messages(loaded.messages.clone());
-            let restored_history = loaded.build_history_from_messages();
-            current_session = loaded;
-            let _ = current_session.save(&config.workspace_dir);
-            cli_ui::set_active_chat_title(&current_session.title());
-            *history.lock().unwrap() = restored_history.clone();
-            *output_row.lock().unwrap() = redraw_full_screen(&config, &restored_history);
-        } else {
-            *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-            println!("  ℹ  No previous session found in .takiza/sessions. Started a new session.\n");
-        }
-    } else {
-        *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-    }
-
-    loop {
-        let current_git = GitInfo::get(&config.workspace_dir);
-        let branch_tag = match &current_git.branch {
-            Some(b) => {
-                if current_git.is_dirty {
-                    format!("{}*", b)
-                } else {
-                    b.clone()
-                }
-            }
-            None => "".to_string(),
-        };
-
-        let line = if let Some(p) = initial_prompt.take() {
-            p
-        } else {
-            let history_clone = history.clone();
-            let config_clone = config.clone();
-            let branch_tag_for_redraw = branch_tag.clone();
-            let output_row_for_redraw = output_row.clone();
-
-            let input_res = line_editor.read_line_with_redraw(&branch_tag, move |current_buffer| {
-                let git_info = GitInfo::get(&config_clone.workspace_dir);
-                let git_display = match &git_info.branch {
-                    Some(b) => {
-                        if git_info.is_dirty {
-                            format!("{} (dirty)", b)
-                        } else {
-                            format!("{} (clean)", b)
-                        }
+impl ActiveAgent {
+    async fn stop(&mut self, history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>) {
+        self.cancel.cancel();
+        if let Some(mut task) = self.task.take() {
+            // Drain bounded output while cancellation releases the agent lock.
+            loop {
+                tokio::select! {
+                    _ = &mut task => break,
+                    event = self.events.recv() => match event {
+                        Some(AgentEvent::AssistantMessage(message)) => history.lock().unwrap().push(cli_ui::HistoryItem::AssistantMessage(message)),
+                        Some(_) => {}, // Dropping modal responders unblocks tool requests.
+                        None => { let _ = task.await; break; }
                     }
-                    None => "(no git)".to_string(),
-                };
-                let hist = history_clone.lock().unwrap().clone();
-                let new_row = cli_ui::redraw_all(
-                    &config_clone.model,
-                    &config_clone.base_url,
-                    &config_clone.workspace_dir.display().to_string(),
-                    &git_display,
-                    &hist,
-                    &branch_tag_for_redraw,
-                    current_buffer,
-                );
-                *output_row_for_redraw.lock().unwrap() = new_row;
-            })?;
-
-            match input_res {
-                PromptResult::Exit => {
-                    println!("Goodbye!");
-                    break;
                 }
-                PromptResult::Interrupted => {
-                    println!("^C");
-                    continue;
-                }
-                PromptResult::Line(l) => l,
             }
-        };
-
-        if line.is_empty() {
-            continue;
         }
+    }
+}
 
+async fn command_agent<'a>(
+    agent: &'a Arc<Mutex<Agent>>, active: &mut Option<ActiveAgent>,
+    session: &mut Session, history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>, config: &Config,
+) -> tokio::sync::MutexGuard<'a, Agent> {
+    if let Some(running) = active.as_mut() {
+        if running.task.is_some() {
+            running.stop(history).await;
+            let locked = agent.lock().await;
+            session.messages = locked.get_messages().to_vec();
+            session.history = history.lock().unwrap().clone();
+            let _ = session.save(&config.workspace_dir);
+            return locked;
+        }
+    }
+    agent.lock().await
+}
+
+async fn handle_tui_command(
+    line: &str, config: &mut Config, user_prefs: &mut theme::UserPreferences,
+    agent: &Arc<Mutex<Agent>>, current_session: &mut Session,
+    history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>, output_row: &Arc<StdMutex<u16>>,
+    branch_tag: &str, active: &mut Option<ActiveAgent>,
+) -> anyhow::Result<CommandResult> {
+    cli_ui::invalidate_content_frame();
         // Handle slash commands
         if line == "/exit" || line == "/quit" {
             println!("Goodbye!");
-            break;
+            return Ok(CommandResult::Exit);
         }
 
-        if line == "/clear" {
-            history.lock().unwrap().clear();
-            *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-            continue;
+        if matches!(line.split_whitespace().next(), Some("/rewind" | "/restore")) {
+            // Freeze tool execution before inspecting or replacing files.
+            let mut locked = command_agent(agent, active, current_session, history, config).await;
+            current_session.messages = locked.get_messages().to_vec();
+            current_session.history = history.lock().unwrap().clone();
+            let result = (|| -> anyhow::Result<Option<Session>> {
+                let points = checkpoints::list(&config.workspace_dir, &current_session.id)?;
+                let ctx = interactive::ScreenContext::from_config(config);
+                let choices = points.iter().map(|point| format!("{}  {}", point.created_at, point.label)).collect::<Vec<_>>();
+                let Some(selected) = interactive::rewind_menu(&ctx, "Restore workspace checkpoint", &[], &choices)? else { return Ok(None); };
+                let point = &points[selected];
+                let changes = checkpoints::preview(&config.workspace_dir, point)?;
+                let conversation = checkpoints::conversation_at(point, current_session)?;
+                let mut changes = changes;
+                changes.push("Restore chat to this checkpoint; later prompts, answers and tool results will be removed".into());
+                let options = vec!["Cancel".to_string(), "Restore files and chat".to_string()];
+                if interactive::rewind_menu(&ctx, "Review restore · a safety checkpoint will be saved", &changes, &options)? != Some(1) { return Ok(None); }
+                checkpoints::restore_session(&config.workspace_dir, point, current_session)?;
+                Ok(Some(conversation))
+            })();
+            match result {
+                Ok(Some(conversation)) => {
+                    current_session.history = conversation.build_history_from_messages();
+                    current_session.messages = conversation.messages;
+                    locked.set_messages(current_session.messages.clone());
+                    *history.lock().unwrap() = current_session.history.clone();
+                    cli_ui::scroll_history(i32::MIN);
+                    current_session.save(&config.workspace_dir)?;
+                }
+                Ok(None) => {}
+                Err(error) => history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(format!("Restore unavailable: {error:#}"))),
+            }
+            *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
+            return Ok(CommandResult::Handled);
         }
 
         if line == "/help" {
             clear_screen_and_banner(&config);
             cli_ui::print_user_cmd(&line);
             cli_ui::print_help();
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line == "/approval" || line == "/permissions" {
             config.auto_approve = !config.auto_approve;
-            let mut locked = agent.lock().await;
+            let mut locked = command_agent(agent, active, current_session, history, config).await;
             locked.config.auto_approve = config.auto_approve;
             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
             cli_ui::print_user_cmd(&line);
@@ -296,7 +379,7 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 println!("Command execution approval: ASK (permission requested before each command)\n");
             }
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line.starts_with("/theme") {
@@ -327,7 +410,7 @@ async fn main() -> anyhow::Result<()> {
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 }
             }
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line.starts_with("/mode") {
@@ -345,9 +428,9 @@ async fn main() -> anyhow::Result<()> {
                                 user_prefs.mode = Some("manual".to_string());
                                 user_prefs.model = Some(chosen.clone());
                                 let _ = user_prefs.save();
-                                let mut locked = agent.lock().await;
+                                let mut locked = command_agent(agent, active, current_session, history, config).await;
                                 locked.reset(config.clone());
-                                current_session = Session::new(config.model.clone());
+                                *current_session = Session::new(config.model.clone());
                                 *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                                 cli_ui::print_user_cmd(&line);
                                 println!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nActive model: \x1b[1;38;2;0;220;255m{}\x1b[0m", config.model);
@@ -363,9 +446,9 @@ async fn main() -> anyhow::Result<()> {
                                 user_prefs.mode = Some("manual".to_string());
                                 user_prefs.model = Some(curated.id.to_string());
                                 let _ = user_prefs.save();
-                                let mut locked = agent.lock().await;
+                                let mut locked = command_agent(agent, active, current_session, history, config).await;
                                 locked.reset(config.clone());
-                                current_session = Session::new(config.model.clone());
+                                *current_session = Session::new(config.model.clone());
                                 *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                                 cli_ui::print_user_cmd(&line);
                                 println!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nSelected Model: \x1b[1;38;2;0;220;255m{} ({})\x1b[0m • {}", curated.name, curated.provider, curated.description);
@@ -400,9 +483,9 @@ async fn main() -> anyhow::Result<()> {
                             user_prefs.mode = Some("manual".to_string());
                             user_prefs.model = Some(curated.id.to_string());
                             let _ = user_prefs.save();
-                            let mut locked = agent.lock().await;
+                            let mut locked = command_agent(agent, active, current_session, history, config).await;
                             locked.reset(config.clone());
-                            current_session = Session::new(config.model.clone());
+                            *current_session = Session::new(config.model.clone());
                             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                             cli_ui::print_user_cmd(&line);
                             println!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nSelected Model: \x1b[1;38;2;0;220;255m{} ({})\x1b[0m • {}", curated.name, curated.provider, curated.description);
@@ -426,21 +509,28 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 *output_row.lock().unwrap() = clear_screen_and_banner(&config);
             }
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line == "/usage" || line == "/quota" {
             let ctx = interactive::ScreenContext::from_config(&config);
             interactive::show_interactive_usage(&ctx, &config)?;
             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-            continue;
+            return Ok(CommandResult::Handled);
+        }
+
+        if line == "/skills" {
+            let ctx = interactive::ScreenContext::from_config(config);
+            let selected = interactive::show_interactive_skills(&ctx, &config.workspace_dir)?;
+            *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
+            return Ok(selected.map(CommandResult::InsertSkill).unwrap_or(CommandResult::Handled));
         }
 
         if line == "/tools" {
             let ctx = interactive::ScreenContext::from_config(&config);
             interactive::show_interactive_tools(&ctx)?;
             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line == "/diff" {
@@ -459,7 +549,7 @@ async fn main() -> anyhow::Result<()> {
                 cli_ui::print_user_cmd(&line);
                 println!("No git repository found in workspace.\n");
             }
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line.starts_with("/model") {
@@ -470,9 +560,9 @@ async fn main() -> anyhow::Result<()> {
                 user_prefs.mode = Some("manual".to_string());
                 user_prefs.model = Some(config.model.clone());
                 let _ = user_prefs.save();
-                let mut locked = agent.lock().await;
+                let mut locked = command_agent(agent, active, current_session, history, config).await;
                 locked.reset(config.clone());
-                current_session = Session::new(config.model.clone());
+                *current_session = Session::new(config.model.clone());
                 *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 cli_ui::print_user_cmd(&line);
                 println!("Switched model to: {}\n", config.model);
@@ -484,9 +574,9 @@ async fn main() -> anyhow::Result<()> {
                     user_prefs.mode = Some("manual".to_string());
                     user_prefs.model = Some(chosen_model);
                     let _ = user_prefs.save();
-                    let mut locked = agent.lock().await;
+                    let mut locked = command_agent(agent, active, current_session, history, config).await;
                     locked.reset(config.clone());
-                    current_session = Session::new(config.model.clone());
+                    *current_session = Session::new(config.model.clone());
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
                     println!("Switched model to: {}\n", config.model);
@@ -494,7 +584,7 @@ async fn main() -> anyhow::Result<()> {
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 }
             }
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line.starts_with("/effort") {
@@ -526,7 +616,7 @@ async fn main() -> anyhow::Result<()> {
                 config.effort = Some(eff.clone());
                 user_prefs.effort = Some(eff.clone());
                 let _ = user_prefs.save();
-                let mut locked = agent.lock().await;
+                let mut locked = command_agent(agent, active, current_session, history, config).await;
                 locked.reset(config.clone());
                 *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 cli_ui::print_user_cmd(&line);
@@ -537,7 +627,7 @@ async fn main() -> anyhow::Result<()> {
                     println!("Set reasoning effort to: {} (Note: current model '{}' may not use reasoning effort; setting will apply when switching to o1, o3-mini, claude-3-7, deepseek-r1, etc.)\n", eff, config.model);
                 }
             }
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line.starts_with("/provider") {
@@ -552,9 +642,9 @@ async fn main() -> anyhow::Result<()> {
                     user_prefs.model = Some(config.model.clone());
                     let _ = user_prefs.save();
 
-                    let mut locked = agent.lock().await;
+                    let mut locked = command_agent(agent, active, current_session, history, config).await;
                     locked.reset(config.clone());
-                    current_session = Session::new(config.model.clone());
+                    *current_session = Session::new(config.model.clone());
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
                     println!("Switched provider: {}\n  Endpoint: {}\n  Model:    {}\n", preset.name, config.base_url, config.model);
@@ -577,9 +667,9 @@ async fn main() -> anyhow::Result<()> {
                     user_prefs.model = Some(config.model.clone());
                     let _ = user_prefs.save();
 
-                    let mut locked = agent.lock().await;
+                    let mut locked = command_agent(agent, active, current_session, history, config).await;
                     locked.reset(config.clone());
-                    current_session = Session::new(config.model.clone());
+                    *current_session = Session::new(config.model.clone());
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
                     println!("Switched provider: {}\n  Endpoint: {}\n  Model:    {}\n", selected_provider.name, config.base_url, config.model);
@@ -587,14 +677,11 @@ async fn main() -> anyhow::Result<()> {
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 }
             }
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line == "/status" {
-            let msg_count = {
-                let locked = agent.lock().await;
-                locked.message_count()
-            };
+            let msg_count = agent.try_lock().map(|a| a.message_count()).unwrap_or_else(|_| current_session.message_count());
             let ctx = interactive::ScreenContext::from_config(&config);
             if let Ok(Some(action)) = interactive::show_interactive_status(&ctx, &config, &current_session, msg_count, &branch_tag) {
                 match action {
@@ -612,9 +699,9 @@ async fn main() -> anyhow::Result<()> {
                             user_prefs.model = Some(config.model.clone());
                             let _ = user_prefs.save();
 
-                            let mut locked = agent.lock().await;
+                            let mut locked = command_agent(agent, active, current_session, history, config).await;
                             locked.reset(config.clone());
-                            current_session = Session::new(config.model.clone());
+                            *current_session = Session::new(config.model.clone());
                         }
                     }
                     interactive::StatusAction::ChangeModel => {
@@ -623,9 +710,9 @@ async fn main() -> anyhow::Result<()> {
                             config.model = chosen_model.clone();
                             user_prefs.model = Some(chosen_model);
                             let _ = user_prefs.save();
-                            let mut locked = agent.lock().await;
+                            let mut locked = command_agent(agent, active, current_session, history, config).await;
                             locked.reset(config.clone());
-                            current_session = Session::new(config.model.clone());
+                            *current_session = Session::new(config.model.clone());
                         }
                     }
                     interactive::StatusAction::ChangeMode => {
@@ -639,9 +726,9 @@ async fn main() -> anyhow::Result<()> {
                                         user_prefs.mode = Some("manual".to_string());
                                         user_prefs.model = Some(curated.id.to_string());
                                         let _ = user_prefs.save();
-                                        let mut locked = agent.lock().await;
+                                        let mut locked = command_agent(agent, active, current_session, history, config).await;
                                         locked.reset(config.clone());
-                                        current_session = Session::new(config.model.clone());
+                                        *current_session = Session::new(config.model.clone());
                                     }
                                 }
                                 theme::AppMode::MoA => {
@@ -669,9 +756,9 @@ async fn main() -> anyhow::Result<()> {
                             current_session.history = history.lock().unwrap().clone();
                             let _ = current_session.save(&config.workspace_dir);
                         }
-                        let mut locked = agent.lock().await;
+                        let mut locked = command_agent(agent, active, current_session, history, config).await;
                         locked.reset(config.clone());
-                        current_session = Session::new(config.model.clone());
+                        *current_session = Session::new(config.model.clone());
                         cli_ui::set_active_chat_title("");
                         history.lock().unwrap().clear();
                     }
@@ -679,23 +766,23 @@ async fn main() -> anyhow::Result<()> {
             }
             let hist = history.lock().unwrap().clone();
             *output_row.lock().unwrap() = redraw_full_screen(&config, &hist);
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
-        if line == "/reset" || line == "/new" {
+        if line == "/reset" || line == "/new" || line == "/clear" {
             if !current_session.messages.is_empty() {
                 current_session.history = history.lock().unwrap().clone();
                 let _ = current_session.save(&config.workspace_dir);
             }
-            let mut locked = agent.lock().await;
+            let mut locked = command_agent(agent, active, current_session, history, config).await;
             locked.reset(config.clone());
-            current_session = Session::new(config.model.clone());
+            *current_session = Session::new(config.model.clone());
             cli_ui::set_active_chat_title("");
             history.lock().unwrap().clear();
             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
             cli_ui::print_user_cmd(&line);
             println!("Conversation reset. Started a new session.\n");
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line == "/history" {
@@ -724,7 +811,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("  ... and {} more (use /sessions to browse)", session_ids.len() - 8);
             }
             println!("\nTip: Use /sessions to interactively resume or delete past sessions.\n");
-            continue;
+            return Ok(CommandResult::Handled);
         }
 
         if line.starts_with("/resume") || line == "/sessions" {
@@ -736,12 +823,12 @@ async fn main() -> anyhow::Result<()> {
                         current_session.history = history.lock().unwrap().clone();
                         let _ = current_session.save(&config.workspace_dir);
                     }
-                    let mut locked = agent.lock().await;
+                    let mut locked = command_agent(agent, active, current_session, history, config).await;
                     locked.set_messages(loaded.messages.clone());
                     let restored_history = loaded.build_history_from_messages();
-                    current_session = loaded;
+                    *current_session = loaded;
                     let _ = current_session.save(&config.workspace_dir);
-                    cli_ui::set_active_chat_title(&current_session.title());
+                    cli_ui::set_active_chat_title(current_session.title.as_deref().unwrap_or(""));
                     *history.lock().unwrap() = restored_history.clone();
 
                     *output_row.lock().unwrap() = redraw_full_screen(&config, &restored_history);
@@ -764,12 +851,12 @@ async fn main() -> anyhow::Result<()> {
                                 current_session.history = history.lock().unwrap().clone();
                                 let _ = current_session.save(&config.workspace_dir);
                             }
-                            let mut locked = agent.lock().await;
+                            let mut locked = command_agent(agent, active, current_session, history, config).await;
                             locked.set_messages(resumed.messages.clone());
                             let restored_history = resumed.build_history_from_messages();
-                            current_session = resumed;
+                            *current_session = resumed;
                             let _ = current_session.save(&config.workspace_dir);
-                            cli_ui::set_active_chat_title(&current_session.title());
+                            cli_ui::set_active_chat_title(current_session.title.as_deref().unwrap_or(""));
                             *history.lock().unwrap() = restored_history.clone();
 
                             *output_row.lock().unwrap() = redraw_full_screen(&config, &restored_history);
@@ -786,6 +873,173 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            return Ok(CommandResult::Handled);
+        }
+
+
+    cli_ui::print_user_cmd(line);
+    println!("Unknown command: {line}. Use /help to see available commands.");
+    Ok(CommandResult::Handled)
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let cli_args = config::CliArgs::parse();
+
+    if cli_args.show_help {
+        println!("Takiza Code v{} - Autonomous AI Software Engineering Agent\n", env!("TAKIZA_VERSION"));
+        println!("USAGE:");
+        println!("    takiza [OPTIONS] [PROMPT]\n");
+        println!("OPTIONS:");
+        println!("    -c, --continue, --resume");
+        println!("            Continue previous conversation session from where you left off\n");
+        println!("    -y, --yes, -a, --auto-approve, --dangerously-skip-permissions");
+        println!("            Skip asking for permission before executing commands (auto-approve)");
+        println!("            (Default: ask user for permission before running each command)\n");
+        println!("    -h, --help");
+        println!("            Print help information\n");
+        println!("    -v, -V, --version");
+        println!("            Print version information\n");
+        println!("ARGS:");
+        println!("    [PROMPT]");
+        println!("            Optional initial prompt to send to the agent\n");
+        return Ok(());
+    }
+
+    if cli_args.show_version {
+        println!("takiza {}", env!("TAKIZA_VERSION"));
+        return Ok(());
+    }
+
+    let _terminal_screen = cli_ui::TerminalScreen::enter()?;
+
+    // 1. Run onboarding wizard if user has not yet accepted terms
+    let (mut user_prefs, onboarding_shown) = onboarding::Onboarding::run_if_needed()?;
+    theme::set_current(user_prefs.theme);
+
+    // If onboarding was not shown, purge previous terminal output (e.g. `cargo run`).
+    // If onboarding was shown, it already purged previous output on startup.
+    if !onboarding_shown {
+        let _ = execute!(stdout(), Clear(ClearType::All), Clear(ClearType::Purge), cursor::MoveTo(0, 0));
+    }
+
+    let mut config = Config::load_with_args(&cli_args);
+    let mut initial_prompt = cli_args.prompt;
+    let mut line_editor = LineEditor::new();
+    let agent = Arc::new(Mutex::new(Agent::new(config.clone())));
+    let tools_executor = Arc::new(ToolExecutor::new(config.workspace_dir.clone()));
+
+    // Spawn a fresh new chat session on startup or continue previous session
+    let mut current_session = Session::new(config.model.clone());
+    cli_ui::set_active_chat_title("");
+    let history = Arc::new(StdMutex::new(Vec::new()));
+
+    let output_row = Arc::new(StdMutex::new(0));
+
+    if config.continue_session {
+        if let Some(loaded) = Session::latest(&config.workspace_dir) {
+            let mut locked = agent.lock().await;
+            locked.set_messages(loaded.messages.clone());
+            let restored_history = loaded.build_history_from_messages();
+            current_session = loaded;
+            let _ = current_session.save(&config.workspace_dir);
+            cli_ui::set_active_chat_title(current_session.title.as_deref().unwrap_or(""));
+            *history.lock().unwrap() = restored_history.clone();
+            *output_row.lock().unwrap() = redraw_full_screen(&config, &restored_history);
+        } else {
+            *output_row.lock().unwrap() = clear_screen_and_banner(&config);
+            println!("  ℹ  No previous session found in .takiza/sessions. Started a new session.\n");
+        }
+    } else {
+        *output_row.lock().unwrap() = clear_screen_and_banner(&config);
+    }
+
+    let mut prompt_queue = PromptQueue::default();
+    let mut ready_commands = std::collections::VecDeque::new();
+    let mut pending_title: PendingTitle = None;
+    let mut title_attempted_sessions = std::collections::HashSet::new();
+    'chat: loop {
+        let current_git = GitInfo::get(&config.workspace_dir);
+        let branch_tag = match &current_git.branch {
+            Some(b) => {
+                if current_git.is_dirty {
+                    format!("{}*", b)
+                } else {
+                    b.clone()
+                }
+            }
+            None => "".to_string(),
+        };
+
+        let command = ready_commands.pop_front();
+        let queued = if command.is_none() { prompt_queue.pop(&mut history.lock().unwrap()) } else { None };
+        cli_ui::set_pending_prompt_count(prompt_queue.pending.len());
+        let line = if let Some(command) = command {
+            command
+        } else if let Some(p) = queued {
+            *output_row.lock().unwrap() = redraw_full_screen(&config, &history.lock().unwrap());
+            p
+        } else if let Some(p) = initial_prompt.take() {
+            p
+        } else {
+            let history_clone = history.clone();
+            let config_clone = config.clone();
+            let branch_tag_for_redraw = branch_tag.clone();
+            let output_row_for_redraw = output_row.clone();
+
+            let input_res = line_editor.read_line_with_updates(&branch_tag, move |current_buffer| {
+                let git_info = GitInfo::get_cached(&config_clone.workspace_dir);
+                let git_display = match &git_info.branch {
+                    Some(b) => {
+                        if git_info.is_dirty {
+                            format!("{} (dirty)", b)
+                        } else {
+                            format!("{} (clean)", b)
+                        }
+                    }
+                    None => "(no git)".to_string(),
+                };
+                let hist = history_clone.lock().unwrap().clone();
+                let new_row = cli_ui::redraw_all(
+                    &config_clone.model,
+                    &config_clone.base_url,
+                    &config_clone.workspace_dir.display().to_string(),
+                    &git_display,
+                    &hist,
+                    &branch_tag_for_redraw,
+                    current_buffer,
+                );
+                *output_row_for_redraw.lock().unwrap() = new_row;
+            }, || collect_chat_title(&mut pending_title, &mut current_session, &config.workspace_dir, &history))?;
+
+            match input_res {
+                PromptResult::Exit => {
+                    println!("Goodbye!");
+                    break;
+                }
+                PromptResult::Interrupted => {
+                    println!("^C");
+                    continue;
+                }
+                PromptResult::Line(l) => l,
+            }
+        };
+
+        if line.is_empty() {
+            continue;
+        }
+
+        if line.starts_with('/') {
+            let outcome = handle_tui_command(&line, &mut config, &mut user_prefs, &agent,
+                &mut current_session, &history, &output_row, &branch_tag, &mut None).await?;
+            if pending_title.as_ref().is_some_and(|(id, _)| *id != current_session.id) {
+                if let Some((_, task)) = pending_title.take() { task.abort(); }
+            }
+            match outcome {
+                CommandResult::Exit => break,
+                CommandResult::InsertSkill(skill) => line_editor.draft.insert_text(&skill.prompt_reference()),
+                CommandResult::Handled => {}
+            }
             continue;
         }
 
@@ -799,7 +1053,7 @@ async fn main() -> anyhow::Result<()> {
             history.lock().unwrap().push(cli_ui::HistoryItem::UserPrompt(line.clone()));
             {
                 let mut row = output_row.lock().unwrap();
-                cli_ui::print_user_prompt_at(&line, &mut *row, &branch_tag);
+                *row = redraw_full_screen(&config, &history.lock().unwrap());
                 cli_ui::print_tool_start_at("run_command", &cmd, &mut *row, "", &branch_tag);
             }
             history.lock().unwrap().push(cli_ui::HistoryItem::ToolStart {
@@ -826,9 +1080,10 @@ async fn main() -> anyhow::Result<()> {
                 let mut hidden_count = 0usize;
                 while let Some(evt) = sub_rx.recv().await {
                     if let ToolOutputEvent::Log(l) = evt {
+                        if l.starts_with("$ ") { continue; }
                         log_count += 1;
                         history_clone.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(l.clone()));
-                        if cli_ui::is_output_expanded() || log_count <= 5 {
+                        if cli_ui::is_output_expanded() || log_count <= 3 {
                             let mut row = output_row_clone.lock().unwrap();
                             cli_ui::print_tool_log_at(&l, &mut *row, "", &branch_tag_clone);
                         } else {
@@ -859,36 +1114,33 @@ async fn main() -> anyhow::Result<()> {
                 Err(err) => (true, err),
             };
 
-            {
-                let mut row = output_row.lock().unwrap();
-                cli_ui::print_tool_end_at("run_command", &cmd, &out_text, is_err, &mut *row, "", &branch_tag);
-            }
             history.lock().unwrap().push(cli_ui::HistoryItem::ToolEnd {
                 name: "run_command".to_string(),
                 args: cmd,
                 result: out_text,
                 is_error: is_err,
             });
+            *output_row.lock().unwrap() = redraw_full_screen(&config, &history.lock().unwrap());
             continue;
         }
 
-        // If this session does not have an AI-generated title yet, spawn background task to generate one
-        let title_task = if current_session.title.is_none() {
-            let config_clone = config.clone();
-            let prompt_for_title = line.clone();
-            Some(tokio::spawn(async move {
-                let client = crate::llm::LlmClient::new(config_clone);
-                client.generate_title(&prompt_for_title).await
-            }))
-        } else {
-            None
-        };
+        // Model prompts create checkpoints for this chat; commands do not.
+        let workspace = config.workspace_dir.clone();
+        let mut conversation = current_session.clone();
+        conversation.messages = agent.lock().await.get_messages().to_vec();
+        conversation.history = history.lock().unwrap().clone();
+        let label = line.clone();
+        let capture = tokio::task::spawn_blocking(move || checkpoints::capture_session(&workspace, &conversation, &label)).await;
+        let error = match capture { Ok(Ok(_)) => None, Ok(Err(error)) => Some(format!("{error:#}")), Err(error) => Some(error.to_string()) };
+        if let Some(error) = error {
+            history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(format!("Checkpoint unavailable: {error}")));
+        }
 
+        cli_ui::scroll_history(i32::MIN);
         // Autonomous AI Agent Execution
         history.lock().unwrap().push(cli_ui::HistoryItem::UserPrompt(line.clone()));
         {
-            let mut row = output_row.lock().unwrap();
-            cli_ui::print_user_prompt_at(&line, &mut *row, &branch_tag);
+            *output_row.lock().unwrap() = redraw_full_screen(&config, &history.lock().unwrap());
         }
 
         if config.mode == theme::AppMode::MoA {
@@ -910,11 +1162,14 @@ async fn main() -> anyhow::Result<()> {
         crossterm::terminal::enable_raw_mode().ok();
 
         let cancel_token = CancellationToken::new();
-        let mut sig_handle = spawn_sig_listener(cancel_token.clone(), branch_tag.clone());
+        let (terminal_tx, mut terminal_rx) = mpsc::unbounded_channel();
+        let mut sig_handle = spawn_sig_listener(terminal_tx.clone());
 
-        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(100);
+        cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+        let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(100);
+        let mut thinking_message = cli_ui::random_thinking_message();
         let mut spinner = Some(cli_ui::Spinner::start_with_box(
-            "Thinking...",
+            thinking_message,
             "",
             &branch_tag,
             output_row.clone(),
@@ -923,6 +1178,15 @@ async fn main() -> anyhow::Result<()> {
         let agent_clone = agent.clone();
         let cancel_token_clone = cancel_token.clone();
         let line_clone = line.clone();
+        if current_session.title.is_none() && pending_title.is_none()
+            && title_attempted_sessions.insert(current_session.id.clone()) {
+            let title_client = crate::llm::LlmClient::new(config.clone());
+            let title_prompt = line.clone();
+            pending_title = Some((current_session.id.clone(), tokio::spawn(async move {
+                tokio::time::timeout(std::time::Duration::from_secs(90), title_client.generate_title(&title_prompt))
+                    .await.context("Title generation timed out after 90 seconds")?
+            })));
+        }
         let agent_task = tokio::spawn(async move {
             let mut locked = agent_clone.lock().await;
             locked
@@ -930,42 +1194,227 @@ async fn main() -> anyhow::Result<()> {
                 .await;
         });
 
-        let mut stream_writer: Option<cli_ui::StreamWriter> = None;
-        let mut accumulated_thought = String::new();
-        let mut thought_printed = false;
+        let turn_session_id = current_session.id.clone();
+        let mut active = Some(ActiveAgent { cancel: cancel_token.clone(), task: Some(agent_task), events: event_rx });
+        let mut interrupted_by_command = false;
+        let mut exit_requested = false;
+        let mut stream_writer: Option<String> = None;
+        let mut thought_index: Option<usize> = None;
         let mut tool_log_count = 0usize;
-        let mut tool_hidden_count = 0usize;
 
+        let mut title_tick = tokio::time::interval(std::time::Duration::from_millis(100));
         // Event processing loop
-        while let Some(event) = event_rx.recv().await {
+        loop {
+            let event = tokio::select! {
+                _ = title_tick.tick(), if pending_title.is_some() => {
+                    if collect_chat_title(&mut pending_title, &mut current_session, &config.workspace_dir, &history) {
+                        let snapshot = history.lock().unwrap().clone();
+                        redraw_active_editor(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                    }
+                    continue;
+                }
+                Some(terminal_event) = terminal_rx.recv() => {
+                    match terminal_event {
+                        TerminalEvent::Mouse(mouse) => {
+                            let (cols, rows) = cli_ui::terminal_size();
+                            if line_editor.draft.mouse_cursor(mouse, cols.saturating_sub(6) as usize, rows) {
+                                cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+                                let snapshot = history.lock().unwrap().clone();
+                                redraw_active_editor(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                                continue;
+                            }
+                            match cli_ui::mouse_action(mouse) {
+                                Some(cli_ui::MouseAction::Copy(text)) => {
+                                    if let Ok(Err(error)) = tokio::task::spawn_blocking(move || clipboard::copy(&text)).await {
+                                        logger::log_warn("Clipboard", &error);
+                                    }
+                                    let snapshot = history.lock().unwrap().clone();
+                                    redraw_active_view(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                                }
+                                Some(cli_ui::MouseAction::Paste) => {
+                                    match tokio::task::spawn_blocking(clipboard::paste).await {
+                                        Ok(Ok(text)) => line_editor.draft.insert_text(&text),
+                                        Ok(Err(error)) => logger::log_warn("Clipboard", &error),
+                                        Err(error) => logger::log_warn("Clipboard", &error.to_string()),
+                                    }
+                                    cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+                                    let snapshot = history.lock().unwrap().clone();
+                                    redraw_active_editor(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                                }
+                                Some(cli_ui::MouseAction::Clear) => {
+                                    let snapshot = history.lock().unwrap().clone();
+                                    redraw_active_view(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                                }
+                                None => {}
+                            }
+                        }
+                        TerminalEvent::Paste(text) => {
+                            cli_ui::clear_mouse_selection();
+                            line_editor.draft.insert_text(&text);
+                            cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+                            let snapshot = history.lock().unwrap().clone();
+                            redraw_active_editor(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                        }
+                        TerminalEvent::Scroll { delta, row } => {
+                            cli_ui::clear_mouse_selection();
+                            let (cols, rows) = cli_ui::terminal_size();
+                            if line_editor.draft.mouse_over_input(row, cols.saturating_sub(6) as usize, rows) {
+                                line_editor.draft.scroll_input(delta, cols.saturating_sub(6) as usize, rows);
+                                cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+                                let snapshot = history.lock().unwrap().clone();
+                                redraw_active_editor(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                                continue;
+                            }
+                            cli_ui::scroll_history(delta);
+                            let snapshot = history.lock().unwrap().clone();
+                            redraw_active_view(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                        }
+                        TerminalEvent::Key(key) => {
+                            if line_editor.draft.clipboard_key(key) {
+                                cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+                                let snapshot = history.lock().unwrap().clone();
+                                redraw_active_editor(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                                continue;
+                            }
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                                && key.code == crossterm::event::KeyCode::Char('c') {
+                                cancel_token.cancel();
+                                continue;
+                            }
+                            if cli_ui::clear_mouse_selection() {
+                                let snapshot = history.lock().unwrap().clone();
+                                redraw_active_view(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                            }
+                            if let Some(delta) = cli_ui::history_scroll_key(key) {
+                                cli_ui::scroll_history(delta);
+                                let snapshot = history.lock().unwrap().clone();
+                                redraw_active_view(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                                continue;
+                            }
+                            if line_editor.draft.should_stop_response(key) {
+                                line_editor.active_key(key);
+                                cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+                                cancel_token.cancel();
+                                continue;
+                            }
+                            let (cols, rows) = cli_ui::terminal_size();
+                            let width = cols.saturating_sub(6) as usize;
+                            let previous_box_rows = line_editor.draft.menu_rows(rows) + line_editor.draft.input_rows(width, rows);
+                            let submitted = line_editor.active_key(key);
+                            cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+                            if let Some(submitted) = submitted {
+                                cli_ui::scroll_history(i32::MIN);
+                                if submitted.starts_with('/') {
+                                    sig_handle.stop().await;
+                                    let status = spinner.as_ref().map(|s| s.message());
+                                    if let Some(s) = spinner.take() { s.stop().await; }
+                                    cli_ui::set_active_draft(None);
+                                    crossterm::terminal::disable_raw_mode().ok();
+                                    let outcome = handle_tui_command(&submitted, &mut config, &mut user_prefs,
+                                        &agent, &mut current_session, &history, &output_row, &branch_tag, &mut active).await?;
+                                    crossterm::terminal::enable_raw_mode().ok();
+                                    exit_requested = outcome == CommandResult::Exit;
+                                    if let CommandResult::InsertSkill(skill) = outcome {
+                                        line_editor.draft.insert_text(&skill.prompt_reference());
+                                    }
+                                    interrupted_by_command = active.as_ref().is_some_and(|a| a.task.is_none());
+                                    if exit_requested || interrupted_by_command {
+                                        if exit_requested { active.as_mut().unwrap().stop(&history).await; }
+                                        // Partial output belongs to the previous session, never replay it into a new one.
+                                        stream_writer = None;
+                                        if current_session.id != turn_session_id || exit_requested || matches!(submitted.split_whitespace().next(), Some("/rewind" | "/restore")) {
+                                            prompt_queue.clear(&mut history.lock().unwrap());
+                                        }
+                                        cli_ui::set_pending_prompt_count(prompt_queue.pending.len());
+                                        break;
+                                    }
+                                    // Plain command output remains readable until the user returns to the chat.
+                                    let name = submitted.split_whitespace().next().unwrap_or("");
+                                    if matches!(name, "/help" | "/history") || !prompt::SLASH_COMMANDS.iter().any(|c| c.name == name) {
+                                        println!("Press any key to return to the response.");
+                                        loop {
+                                            if matches!(crossterm::event::read()?, crossterm::event::Event::Key(_)) { break; }
+                                        }
+                                    }
+                                    cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+                                    if let Some(message) = status {
+                                        spinner = Some(cli_ui::Spinner::start_with_box(message, "", &branch_tag, output_row.clone()));
+                                    }
+                                    let snapshot = history.lock().unwrap().clone();
+                                    redraw_active_view(&config, &snapshot, &branch_tag, &output_row,
+                                        &mut spinner, &mut stream_writer).await;
+                                    sig_handle = spawn_sig_listener(terminal_tx.clone());
+                                } else {
+                                    prompt_queue.push(submitted, &mut history.lock().unwrap());
+                                    cli_ui::set_pending_prompt_count(prompt_queue.pending.len());
+                                    let snapshot = history.lock().unwrap().clone();
+                                    redraw_active_view(&config, &snapshot, &branch_tag, &output_row,
+                                        &mut spinner, &mut stream_writer).await;
+                                }
+                            } else if previous_box_rows != line_editor.draft.menu_rows(rows) + line_editor.draft.input_rows(width, rows) {
+                                // Content and editor must move together when a completion menu changes size.
+                                let snapshot = history.lock().unwrap().clone();
+                                redraw_active_editor(&config, &snapshot, &branch_tag, &output_row,
+                                    &mut spinner, &mut stream_writer).await;
+                                continue;
+                            }
+                            let (x, y) = cli_ui::render_bottom_box("", &branch_tag);
+                            cli_ui::position_input_cursor(x, y);
+                        }
+                        TerminalEvent::ToggleOutput | TerminalEvent::Resize => {
+                            cli_ui::clear_mouse_selection();
+                            if matches!(terminal_event, TerminalEvent::ToggleOutput) { cli_ui::toggle_expanded_output(); }
+                            let snapshot = history.lock().unwrap().clone();
+                            redraw_active_view(&config, &snapshot, &branch_tag, &output_row,
+                                &mut spinner, &mut stream_writer).await;
+                            let (x, y) = cli_ui::render_bottom_box("", &branch_tag);
+                            cli_ui::position_input_cursor(x, y);
+                        }
+                    }
+                    continue;
+                }
+                event = active.as_mut().unwrap().events.recv() => match event {
+                    Some(event) => event,
+                    None => break,
+                },
+            };
             match event {
                 AgentEvent::StatusUpdate(status) => {
-                    let _ = status;
+                    if status == "Thinking..." {
+                        thought_index = None;
+                        thinking_message = cli_ui::random_thinking_message();
+                        if let Some(s) = spinner.take() { s.stop().await; }
+                        spinner = Some(cli_ui::Spinner::start_with_box(
+                            thinking_message, "", &branch_tag, output_row.clone(),
+                        ));
+                    }
                 }
                 AgentEvent::PermissionRequest { command, responder, .. } => {
+                    if cancel_token.is_cancelled() {
+                        if let Some(tx) = responder.lock().unwrap().take() { let _ = tx.send(agent::PermissionResponse::Deny); }
+                        continue;
+                    }
                     if let Some(s) = spinner.take() {
                         s.stop().await;
                     }
-                    if let Some(sw) = stream_writer.take() {
-                        sw.finish();
-                    }
+                    stream_writer.take();
 
-                    sig_handle.abort();
+                    sig_handle.stop().await;
+                    cli_ui::invalidate_content_frame();
+                    cli_ui::set_active_draft(None);
 
                     let choice = {
                         let mut row = output_row.lock().unwrap();
-                        cli_ui::ask_command_permission(&command, &mut *row, &branch_tag)
+                        let snapshot = history.lock().unwrap().clone();
+                        cli_ui::ask_command_permission_with_redraw(&command, &mut *row, &branch_tag,
+                            |row| *row = redraw_full_screen(&config, &snapshot))
                     };
 
-                    let (status_log, _) = match choice {
-                        cli_ui::PermissionChoice::AllowOnce => ("     ✔ Command approved", crossterm::style::Color::Green),
-                        cli_ui::PermissionChoice::AllowAlways => (
-                            "     ✔ Command approved (Always allowed for this session)",
-                            crossterm::style::Color::Green,
-                        ),
-                        cli_ui::PermissionChoice::Deny => ("     ✖ Command denied by user", crossterm::style::Color::Red),
+                    let status_log = match choice {
+                        cli_ui::PermissionChoice::AllowOnce => "approval allowed",
+                        cli_ui::PermissionChoice::AllowAlways => "approval allowed for session",
+                        cli_ui::PermissionChoice::Deny => "approval denied",
                     };
-                    history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(format!("  ⚠️  Permission: $ {}", command)));
                     history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(status_log.to_string()));
 
                     let response = match choice {
@@ -985,54 +1434,104 @@ async fn main() -> anyhow::Result<()> {
                         let _ = tx.send(response);
                     }
 
-                    sig_handle = spawn_sig_listener(cancel_token.clone(), branch_tag.clone());
+                    cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+                    let snapshot = history.lock().unwrap().clone();
+                    *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
+                    sig_handle = spawn_sig_listener(terminal_tx.clone());
 
                     spinner = Some(cli_ui::Spinner::start_with_box(
-                        "Thinking...",
+                        thinking_message,
+                        "",
+                        &branch_tag,
+                        output_row.clone(),
+                    ));
+                }
+                AgentEvent::QuestionRequest { questions, responder, .. } => {
+                    if cancel_token.is_cancelled() {
+                        if let Some(tx) = responder.lock().unwrap().take() {
+                            let _ = tx.send(agent::QuestionResponse { answers: Vec::new(), skipped: true });
+                        }
+                        continue;
+                    }
+                    if let Some(s) = spinner.take() {
+                        s.stop().await;
+                    }
+                    stream_writer.take();
+
+                    sig_handle.stop().await;
+                    cli_ui::invalidate_content_frame();
+                    cli_ui::set_active_draft(None);
+
+                    let response = {
+                        let mut row = output_row.lock().unwrap();
+                        let snapshot = history.lock().unwrap().clone();
+                        cli_ui::ask_interactive_question_with_redraw(&questions, &mut *row, &branch_tag,
+                            |row| *row = redraw_full_screen(&config, &snapshot))
+                    };
+
+                    for ans in &response.answers {
+                        let mut parts = Vec::new();
+                        if !ans.selected_options.is_empty() {
+                            parts.push(ans.selected_options.join(", "));
+                        }
+                        if let Some(ref c) = ans.custom_text {
+                            if !c.trim().is_empty() {
+                                parts.push(format!("\"{}\"", c.trim()));
+                            }
+                        }
+                        let answer_str = if parts.is_empty() {
+                            "[Skipped]".to_string()
+                        } else {
+                            parts.join(" | ")
+                        };
+                        history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(format!("  📋 Question: {}", ans.question)));
+                        history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(format!("     Answer: {}", answer_str)));
+                    }
+
+                    if let Some(tx) = responder.lock().unwrap().take() {
+                        let _ = tx.send(response);
+                    }
+
+                    cli_ui::set_active_draft(Some(line_editor.draft.clone()));
+                    let snapshot = history.lock().unwrap().clone();
+                    *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
+                    sig_handle = spawn_sig_listener(terminal_tx.clone());
+
+                    spinner = Some(cli_ui::Spinner::start_with_box(
+                        thinking_message,
                         "",
                         &branch_tag,
                         output_row.clone(),
                     ));
                 }
                 AgentEvent::ThoughtToken(token) => {
-                    accumulated_thought.push_str(&token);
+                    cli_ui::update_streamed_thought(&mut history.lock().unwrap(), &mut thought_index, &token, false);
+                    let snapshot = history.lock().unwrap().clone();
+                    redraw_active_view(&config, &snapshot, &branch_tag, &output_row,
+                        &mut spinner, &mut stream_writer).await;
+                    if spinner.is_none() {
+                        spinner = Some(cli_ui::Spinner::start_with_box(
+                            thinking_message, "", &branch_tag, output_row.clone(),
+                        ));
+                    }
                 }
                 AgentEvent::AssistantToken(token) => {
                     if let Some(s) = spinner.take() {
                         s.stop().await;
                     }
-                    if !thought_printed && !accumulated_thought.trim().is_empty() {
-                        let mut row = output_row.lock().unwrap();
-                        cli_ui::print_thought_at(&accumulated_thought, &mut *row, "", &branch_tag);
-                        history.lock().unwrap().push(cli_ui::HistoryItem::Thought(accumulated_thought.clone()));
-                        thought_printed = true;
-                    }
-                    accumulated_thought.clear();
-                    if stream_writer.is_none() {
-                        stream_writer = Some(cli_ui::StreamWriter::new(
-                            output_row.clone(),
-                            "🤖 ",
-                            Color::Green,
-                            "   ",
-                            "",
-                            &branch_tag,
-                        ));
-                    }
-                    if let Some(sw) = stream_writer.as_mut() {
-                        sw.write_token(&token);
-                    }
+                    stream_writer.get_or_insert_with(String::new).push_str(&token);
+                    let snapshot = history.lock().unwrap().clone();
+                    redraw_active_view(&config, &snapshot, &branch_tag, &output_row,
+                        &mut spinner, &mut stream_writer).await;
                 }
                 AgentEvent::AssistantThought(thought) => {
                     if let Some(s) = spinner.take() {
                         s.stop().await;
                     }
-                    if !thought_printed {
-                        let mut row = output_row.lock().unwrap();
-                        cli_ui::print_thought_at(&thought, &mut *row, "", &branch_tag);
-                        history.lock().unwrap().push(cli_ui::HistoryItem::Thought(thought));
-                        thought_printed = true;
-                    }
-                    accumulated_thought.clear();
+                    cli_ui::update_streamed_thought(&mut history.lock().unwrap(), &mut thought_index, &thought, true);
+                    let snapshot = history.lock().unwrap().clone();
+                    redraw_active_view(&config, &snapshot, &branch_tag, &output_row,
+                        &mut spinner, &mut stream_writer).await;
                     spinner = Some(cli_ui::Spinner::start_with_box(
                         "Executing tools...",
                         "",
@@ -1042,59 +1541,44 @@ async fn main() -> anyhow::Result<()> {
                 }
                 AgentEvent::ToolStart { name, args, .. } => {
                     tool_log_count = 0;
-                    tool_hidden_count = 0;
-                    if let Some(sw) = stream_writer.take() {
-                        sw.finish();
-                    }
-                    if let Some(s) = spinner.take() {
-                        s.stop().await;
-                    }
-                    if !thought_printed && !accumulated_thought.trim().is_empty() {
-                        let mut row = output_row.lock().unwrap();
-                        cli_ui::print_thought_at(&accumulated_thought, &mut *row, "", &branch_tag);
-                        history.lock().unwrap().push(cli_ui::HistoryItem::Thought(accumulated_thought.clone()));
-                        thought_printed = true;
-                    }
-                    accumulated_thought.clear();
-                    {
-                        let mut row = output_row.lock().unwrap();
-                        cli_ui::print_tool_start_at(&name, &args, &mut *row, "", &branch_tag);
-                    }
-                    history.lock().unwrap().push(cli_ui::HistoryItem::ToolStart {
-                        name,
-                        args,
-                    });
+                    stream_writer.take();
+                    if let Some(s) = spinner.take() { s.stop().await; }
+                    history.lock().unwrap().push(cli_ui::HistoryItem::ToolStart { name, args });
+                    let snapshot = history.lock().unwrap().clone();
+                    *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
+                    spinner = Some(cli_ui::Spinner::start_with_box(
+                        "Executing tools...", "", &branch_tag, output_row.clone(),
+                    ));
                 }
                 AgentEvent::ToolLog(log_item) => {
+                    if log_item.starts_with("$ ") { continue; }
                     tool_log_count += 1;
-                    history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(log_item.clone()));
-                    if cli_ui::is_output_expanded() || tool_log_count <= 5 {
-                        let mut row = output_row.lock().unwrap();
-                        cli_ui::print_tool_log_at(&log_item, &mut *row, "", &branch_tag);
-                    } else {
-                        tool_hidden_count += 1;
+                    history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(log_item));
+                    if cli_ui::is_output_expanded() || tool_log_count <= 4 {
+                        if let Some(s) = spinner.take() { s.stop().await; }
+                        let snapshot = history.lock().unwrap().clone();
+                        *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
+                        spinner = Some(cli_ui::Spinner::start_with_box(
+                            "Executing tools...", "", &branch_tag, output_row.clone(),
+                        ));
                     }
                 }
                 AgentEvent::ToolEnd { name, args, result, is_error, .. } => {
-                    thought_printed = false;
+                    thought_index = None;
                     if is_error {
                         crate::logger::log_warn("Tool", &format!("{name} failed (args: {args}): {result}"));
                     }
-                    {
-                        let mut row = output_row.lock().unwrap();
-                        if tool_hidden_count > 0 {
-                            cli_ui::print_tool_collapsed_indicator_at(tool_hidden_count, &mut *row, "", &branch_tag);
-                        }
-                        cli_ui::print_tool_end_at(&name, &args, &result, is_error, &mut *row, "", &branch_tag);
-                    }
+                    if let Some(s) = spinner.take() { s.stop().await; }
                     history.lock().unwrap().push(cli_ui::HistoryItem::ToolEnd {
                         name,
                         args,
                         result,
                         is_error,
                     });
+                    let snapshot = history.lock().unwrap().clone();
+                    *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
                     spinner = Some(cli_ui::Spinner::start_with_box(
-                        "Thinking...",
+                        thinking_message,
                         "",
                         &branch_tag,
                         output_row.clone(),
@@ -1104,32 +1588,36 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(s) = spinner.take() {
                         s.stop().await;
                     }
-                    if let Some(sw) = stream_writer.take() {
-                        sw.finish_and_replace(&msg);
-                    } else {
-                        let mut row = output_row.lock().unwrap();
-                        cli_ui::print_assistant_message_at(&msg, &mut *row, "", &branch_tag);
-                    }
+                    stream_writer.take();
                     history.lock().unwrap().push(cli_ui::HistoryItem::AssistantMessage(msg));
+                    let snapshot = history.lock().unwrap().clone();
+                    *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
+                }
+                AgentEvent::Interrupted => {
+                    if let Some(s) = spinner.take() { s.stop().await; }
+                    if let Some(sw) = stream_writer.take() {
+                        let partial = sw;
+                        if !partial.trim().is_empty() {
+                            history.lock().unwrap().push(cli_ui::HistoryItem::AssistantMessage(partial));
+                        }
+                    }
+                    let message = "⏸ Stopped by user";
+                    history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(message.to_string()));
+                    let snapshot = history.lock().unwrap().clone();
+                    *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
                 }
                 AgentEvent::Error(err) => {
                     crate::logger::log_error("Agent", &err);
                     if let Some(s) = spinner.take() {
                         s.stop().await;
                     }
-                    if let Some(sw) = stream_writer.take() {
-                        sw.finish();
-                    }
-                    {
-                        let mut row = output_row.lock().unwrap();
-                        cli_ui::print_error_at(&err, &mut *row, "", &branch_tag);
-                    }
+                    stream_writer.take();
                     history.lock().unwrap().push(cli_ui::HistoryItem::Error(err));
+                    let snapshot = history.lock().unwrap().clone();
+                    *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
                 }
                 AgentEvent::Finished => {
-                    if let Some(sw) = stream_writer.take() {
-                        sw.finish();
-                    }
+                    stream_writer.take();
                     if let Some(s) = spinner.take() {
                         s.stop().await;
                     }
@@ -1137,35 +1625,56 @@ async fn main() -> anyhow::Result<()> {
                 }
                 AgentEvent::UserMessage(_) => {}
             }
+            if cli_ui::history_scrolled() {
+                let snapshot = history.lock().unwrap().clone();
+                redraw_active_view(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+            }
         }
 
-        if let Some(sw) = stream_writer.take() {
-            sw.finish();
-        }
+        stream_writer.take();
         if let Some(s) = spinner.take() {
             s.stop().await;
         }
 
-        sig_handle.abort();
-        let _ = agent_task.await;
-
-        // Drain any stray key events so they don't leak into the next prompt
-        while crossterm::event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
-            let _ = crossterm::event::read();
-        }
-        crossterm::terminal::disable_raw_mode().ok();
-
-        // If AI title was generated in background, save it into the session
-        if let Some(handle) = title_task {
-            if let Ok(Some(generated_title)) = handle.await {
-                if !generated_title.trim().is_empty() {
-                    let t = generated_title.trim().to_string();
-                    cli_ui::set_active_chat_title(&t);
-                    current_session.title = Some(t);
+        sig_handle.stop().await;
+        if let Some(task) = active.as_mut().unwrap().task.take() { let _ = task.await; }
+        // Preserve input already forwarded by the reader at the response boundary.
+        while let Ok(event) = terminal_rx.try_recv() {
+            if let TerminalEvent::Paste(text) = &event {
+                line_editor.draft.insert_text(text);
+                continue;
+            }
+            if let TerminalEvent::Mouse(mouse) = &event {
+                match cli_ui::mouse_action(*mouse) {
+                    Some(cli_ui::MouseAction::Copy(text)) => { let _ = clipboard::copy(&text); }
+                    Some(cli_ui::MouseAction::Paste) => {
+                        if let Ok(text) = clipboard::paste() { line_editor.draft.insert_text(&text); }
+                    }
+                    Some(cli_ui::MouseAction::Clear) | None => {}
+                }
+                continue;
+            }
+            if let TerminalEvent::Key(key) = event {
+                if let Some(text) = line_editor.active_key(key) {
+                    if text.starts_with('/') {
+                        ready_commands.push_back(text);
+                    } else if current_session.id == turn_session_id && !exit_requested {
+                        prompt_queue.push(text, &mut history.lock().unwrap());
+                    }
                 }
             }
         }
+        cli_ui::set_active_draft(None);
+        crossterm::terminal::disable_raw_mode().ok();
+        if pending_title.as_ref().is_some_and(|(id, _)| *id != current_session.id) {
+            if let Some((_, task)) = pending_title.take() { task.abort(); }
+        }
+        if interrupted_by_command || exit_requested {
+            if exit_requested { println!("Goodbye!"); break 'chat; }
+            continue;
+        }
 
+        collect_chat_title(&mut pending_title, &mut current_session, &config.workspace_dir, &history);
         // Auto-save session transcript
         let locked = agent.lock().await;
         current_session.messages = locked.get_messages().to_vec();
@@ -1173,5 +1682,48 @@ async fn main() -> anyhow::Result<()> {
         let _ = current_session.save(&config.workspace_dir);
     }
 
+    if let Some((_, task)) = pending_title.take() { task.abort(); }
     Ok(())
+}
+
+#[cfg(test)]
+mod active_input_tests {
+    use super::*;
+
+    #[test]
+    fn queued_prompts_keep_order_and_remove_only_their_pending_markers() {
+        let mut queue = PromptQueue::default();
+        let mut history = vec![cli_ui::HistoryItem::ToolLog("existing log".into())];
+        queue.push("first".into(), &mut history);
+        queue.push("second".into(), &mut history);
+        assert_eq!(queue.pop(&mut history).as_deref(), Some("first"));
+        assert!(history.iter().any(|item| matches!(item, cli_ui::HistoryItem::ToolLog(s) if s == "⏳ Queued #2: second")));
+        assert!(!history.iter().any(|item| matches!(item, cli_ui::HistoryItem::ToolLog(s) if s == "⏳ Queued #1: first")));
+        assert_eq!(queue.pop(&mut history).as_deref(), Some("second"));
+        assert!(queue.pop(&mut history).is_none());
+        assert_eq!(history.len(), 1);
+        queue.push("third".into(), &mut history);
+        queue.clear(&mut history);
+        assert_eq!(history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stopping_active_agent_drains_full_channel_and_releases_modal_waiter() {
+        let (tx, events) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            for _ in 0..10 { tx.send(AgentEvent::AssistantToken("chunk".into())).await.unwrap(); }
+            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+            tx.send(AgentEvent::QuestionRequest {
+                id: "question".into(), questions: Vec::new(),
+                responder: Arc::new(StdMutex::new(Some(response_tx))),
+            }).await.unwrap();
+            assert!(response_rx.await.is_err());
+            tx.send(AgentEvent::Finished).await.unwrap();
+        });
+        let cancel = CancellationToken::new();
+        let mut active = ActiveAgent { task: Some(task), events, cancel: cancel.clone() };
+        tokio::time::timeout(std::time::Duration::from_secs(2), active.stop(&Arc::new(StdMutex::new(Vec::new())))).await.unwrap();
+        assert!(cancel.is_cancelled());
+        assert!(active.task.is_none());
+    }
 }

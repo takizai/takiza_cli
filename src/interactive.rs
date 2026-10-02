@@ -1996,6 +1996,126 @@ pub fn show_interactive_status(
     }
 }
 
+/// Shared bottom panel matching the saved-chat selector.
+#[derive(Default)]
+struct BottomSelectionPanel {
+    geometry: Option<(u16, u16)>,
+    top: u16,
+}
+impl BottomSelectionPanel {
+    fn visible_items(rows: u16) -> usize {
+        if rows >= 34 { 5 } else if rows >= 24 { 3 } else { 2 }
+    }
+    fn draw(&mut self, ctx: &ScreenContext, title: &str, lines: &[(String, Color)], hint: &str) -> std::io::Result<()> {
+        let (cols, rows) = crate::cli_ui::terminal_size();
+        let box_w = crate::cli_ui::get_box_width();
+        let inner_w = box_w.saturating_sub(4);
+        let th = theme::current();
+        let top = rows.saturating_sub(lines.len() as u16 + 2);
+        let mut frame = Vec::new();
+        queue!(frame, crossterm::terminal::BeginSynchronizedUpdate, cursor::Hide)?;
+        if self.geometry != Some((cols, rows)) {
+            queue!(frame, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+        }
+        let _ = crate::cli_ui::print_banner_to(&mut frame, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
+        let clear_top = if self.geometry == Some((cols, rows)) { self.top.min(top) } else { top };
+        for row in clear_top..rows { queue!(frame, cursor::MoveTo(0, row), Clear(ClearType::UntilNewLine))?; }
+        let title = if ctx.branch_tag.is_empty() { title.to_string() } else { format!("{title} [{}]", ctx.branch_tag) };
+        draw_bottom_box_top(&mut frame, top, &title, box_w, th.primary_crossterm(), th.border_crossterm())?;
+        for (index, (line, color)) in lines.iter().enumerate() {
+            let clean = line.chars().map(|ch| if ch.is_control() { ' ' } else { ch }).collect::<String>();
+            let clean = truncate_visible(&clean, inner_w);
+            let mut styled = Vec::new();
+            queue!(styled, SetForegroundColor(*color), Print(&clean), ResetColor)?;
+            draw_bottom_box_line(&mut frame, top + index as u16 + 1, &String::from_utf8_lossy(&styled), str_width(&clean), box_w, th.border_crossterm())?;
+        }
+        let hint = truncate_visible(hint, box_w.saturating_sub(5));
+        draw_bottom_box_bottom(&mut frame, rows.saturating_sub(1), &hint, box_w, th.border_crossterm())?;
+        queue!(frame, crossterm::terminal::EndSynchronizedUpdate)?;
+        let mut out = stdout().lock(); out.write_all(&frame)?; out.flush()?;
+        self.geometry = Some((cols, rows)); self.top = top;
+        Ok(())
+    }
+}
+
+/// Browse discovered skills without changing the active agent/session.
+pub fn show_interactive_skills(ctx: &ScreenContext, workspace: &Path) -> std::io::Result<Option<crate::skills::Skill>> {
+    enable_raw_mode()?;
+    let result = (|| {
+        let mut skills = crate::skills::discover_skills(workspace);
+        let mut query = String::new();
+        let mut selected = 0usize;
+        let mut pending_event = None;
+        let mut panel = BottomSelectionPanel::default();
+        loop {
+            let _geometry = crate::cli_ui::begin_terminal_frame();
+            let (_, rows) = crate::cli_ui::terminal_size();
+            let theme = theme::current();
+            let matching = skills.iter().filter(|skill| {
+                let needle = query.to_lowercase();
+                skill.name.to_lowercase().contains(&needle)
+                    || skill.description.to_lowercase().contains(&needle)
+                    || skill.path.to_lowercase().contains(&needle)
+            }).collect::<Vec<_>>();
+            selected = selected.min(matching.len().saturating_sub(1));
+            if crate::cli_ui::terminal_is_small() {
+                crate::cli_ui::render_small_terminal();
+            } else {
+                let local = skills.iter().filter(|skill| skill.is_workspace).count();
+                let slots = BottomSelectionPanel::visible_items(rows);
+                let start = selected.saturating_sub(slots - 1);
+                let mut lines = vec![(format!("Search: {}", query), theme.primary_crossterm())];
+                for slot in 0..slots {
+                    let index = start + slot;
+                    if let Some(skill) = matching.get(index) {
+                        lines.push((format!("{} {:<6} {}", if index == selected { ">" } else { " " },
+                            if skill.is_workspace { "local" } else { "global" }, skill.name),
+                            if index == selected { theme.primary_crossterm() } else { theme.secondary_crossterm() }));
+                    } else {
+                        lines.push((if slot == 0 { "No skills found.".into() } else { String::new() }, Color::DarkGrey));
+                    }
+                }
+                let current = matching.get(selected);
+                lines.push((current.map(|skill| skill.description.clone()).unwrap_or_else(||
+                    "Place SKILL.md inside a skill folder under .takiza/skills or .agents/skills.".into()), Color::DarkGrey));
+                lines.push((current.map(|skill| skill.path.clone()).unwrap_or_default(), theme.secondary_crossterm()));
+                let title = format!("Skills · {} local · {} global", local, skills.len() - local);
+                let hint = format!("{}/{} · ↑↓ · Enter Insert · F5 Rescan · Esc Back", if matching.is_empty() { 0 } else { selected + 1 }, matching.len());
+                panel.draw(ctx, &title, &lines, &hint)?;
+            }
+            match pending_event.take().map(Ok).unwrap_or_else(event::read)? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Esc => return Ok(None),
+                    KeyCode::Enter => {
+                        if let Some(skill) = matching.get(selected) { return Ok(Some((*skill).clone())); }
+                    }
+                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => return Ok(None),
+                    KeyCode::Up => selected = selected.saturating_sub(1),
+                    KeyCode::Down => selected = selected.saturating_add(1),
+                    KeyCode::PageUp => selected = selected.saturating_sub(BottomSelectionPanel::visible_items(rows)),
+                    KeyCode::PageDown => selected = selected.saturating_add(BottomSelectionPanel::visible_items(rows)),
+                    KeyCode::F(5) => skills = crate::skills::discover_skills(workspace),
+                    KeyCode::Backspace => { query.pop(); selected = 0; }
+                    KeyCode::Char(ch) if !key.modifiers.intersects(event::KeyModifiers::CONTROL | event::KeyModifiers::ALT) => {
+                        query.push(ch); selected = 0;
+                    }
+                    _ => {}
+                },
+                Event::Mouse(mouse) => {
+                    if let Some(delta) = crate::cli_ui::history_scroll_mouse(mouse) {
+                        let delta = crate::cli_ui::coalesce_scroll(delta, &mut pending_event);
+                        selected = if delta > 0 { selected.saturating_sub(delta as usize) }
+                            else { selected.saturating_add(delta.unsigned_abs() as usize) };
+                    }
+                }
+                _ => {}
+            }
+        }
+    })();
+    let _ = disable_raw_mode();
+    result
+}
+
 /// Interactive Tools Explorer view rendered in bottom box replacing the input field.
 pub fn show_interactive_tools(ctx: &ScreenContext) -> std::io::Result<()> {
     enable_raw_mode()?;
@@ -2194,4 +2314,63 @@ mod tests {
         assert!(is_curated_model_match("kmc/k3", "k3"));
         assert!(!is_curated_model_match("kmc/k3", "kmc/kimi-for-coding"));
     }
+}
+
+/// Checkpoint selection and confirmation use the same keyboard controls as command menus.
+pub fn rewind_menu(ctx: &ScreenContext, title: &str, details: &[String], choices: &[String]) -> std::io::Result<Option<usize>> {
+    enable_raw_mode()?;
+    let result = (|| {
+        let mut selected = 0usize;
+        let mut scroll = 0usize;
+        let mut panel = BottomSelectionPanel::default();
+        loop {
+            let _geometry = crate::cli_ui::begin_terminal_frame();
+            let (_, rows) = crate::cli_ui::terminal_size();
+            let th = theme::current();
+            let slots = BottomSelectionPanel::visible_items(rows);
+            let start = if details.is_empty() { selected.saturating_sub(slots - 1) } else { scroll };
+            let mut lines = Vec::new();
+            if choices.is_empty() {
+                lines.push(("No checkpoints in this chat.".into(), th.secondary_crossterm()));
+                lines.push(("Checkpoints are saved before prompts.".into(), Color::DarkGrey));
+            } else if details.is_empty() {
+                for (index, choice) in choices.iter().enumerate().skip(start).take(slots) {
+                    lines.push((format!("{} {choice}", if index == selected { ">" } else { " " }),
+                        if index == selected { th.primary_crossterm() } else { th.secondary_crossterm() }));
+                }
+            } else {
+                lines.push((format!("{} changes · files {}–{}", details.len(), start + 1, (start + slots).min(details.len())), Color::DarkGrey));
+                for detail in details.iter().skip(start).take(slots) { lines.push((detail.clone(), th.secondary_crossterm())); }
+                lines.push((String::new(), Color::DarkGrey));
+                for (index, choice) in choices.iter().enumerate() {
+                    lines.push((format!("{} {choice}", if index == selected { ">" } else { " " }),
+                        if index == selected { th.primary_crossterm() } else { th.secondary_crossterm() }));
+                }
+            }
+            if crate::cli_ui::terminal_is_small() { crate::cli_ui::render_small_terminal(); }
+            else {
+                let hint = if choices.is_empty() { "Esc Back".to_string() }
+                    else if details.is_empty() { format!("{}/{} · ↑↓ · Enter Review · Esc Back", selected + 1, choices.len()) }
+                    else { "↑↓ · Enter Confirm · PgUp/PgDn Files · Esc Back".to_string() };
+                panel.draw(ctx, title, &lines, &hint)?;
+            }
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Esc => return Ok(None),
+                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => return Ok(None),
+                    KeyCode::Enter if !choices.is_empty() => return Ok(Some(selected)),
+                    KeyCode::Up => selected = selected.saturating_sub(1),
+                    KeyCode::Down => selected = (selected + 1).min(choices.len().saturating_sub(1)),
+                    KeyCode::PageUp if details.is_empty() => selected = selected.saturating_sub(slots),
+                    KeyCode::PageDown if details.is_empty() => selected = (selected + slots).min(choices.len().saturating_sub(1)),
+                    KeyCode::PageUp => scroll = scroll.saturating_sub(slots),
+                    KeyCode::PageDown => scroll = (scroll + slots).min(details.len().saturating_sub(slots)),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    })();
+    let _ = disable_raw_mode();
+    result
 }

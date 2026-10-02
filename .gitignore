@@ -26,3 +26,11 @@ scripts/
 *.safetensors
 *.pt
 *.pth
+
+# Python test/training caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.ipynb_checkpoints/

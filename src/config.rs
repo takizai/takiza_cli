@@ -84,6 +84,7 @@ pub struct Config {
     pub proxy: Option<String>,
     pub mode: crate::theme::AppMode,
     pub effort: Option<String>,
+    pub max_steps: usize,
 }
 
 impl Config {
@@ -110,11 +111,9 @@ impl Config {
             .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
             .unwrap_or_default();
         
-        let base_url = prefs.base_url
+        let base_url = normalize_base_url(&prefs.base_url
             .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
-            .unwrap_or_else(|| "https://anymodel.org/v1".to_string())
-            .trim_end_matches('/')
-            .to_string();
+            .unwrap_or_else(|| "https://anymodel.org/v1".to_string()));
 
         let model = prefs.model
             .or_else(|| std::env::var("OPENAI_MODEL").ok())
@@ -165,6 +164,7 @@ impl Config {
             proxy,
             mode,
             effort,
+            max_steps: parse_max_steps(std::env::var("TAKIZA_MAX_STEPS").ok().as_deref()),
         }
     }
 
@@ -175,9 +175,43 @@ impl Config {
     }
 }
 
+pub fn normalize_base_url(value: &str) -> String {
+    let value = value.trim().trim_end_matches('/');
+    if let Ok(mut url) = reqwest::Url::parse(value) {
+        // AnyModel redirects HTTP to HTTPS. Avoid that redirect so POST and
+        // Authorization reach the API together. Custom/local HTTP stays valid.
+        if url.scheme() == "http" && url.host_str() == Some("anymodel.org") {
+            url.set_scheme("https").expect("HTTP URL supports HTTPS");
+            return url.to_string().trim_end_matches('/').to_string();
+        }
+    }
+    value.to_string()
+}
+
+fn parse_max_steps(value: Option<&str>) -> usize {
+    value.and_then(|value| value.trim().parse().ok()).unwrap_or(100)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anymodel_http_uses_https_without_changing_custom_endpoints() {
+        assert_eq!(normalize_base_url(" http://anymodel.org/v1/ "), "https://anymodel.org/v1");
+        assert_eq!(normalize_base_url("https://anymodel.org/v1/"), "https://anymodel.org/v1");
+        assert_eq!(normalize_base_url("http://localhost:11434/v1/"), "http://localhost:11434/v1");
+        assert_eq!(normalize_base_url("http://anymodel.org.example/v1"), "http://anymodel.org.example/v1");
+    }
+
+    #[test]
+    fn step_limit_defaults_and_overrides() {
+        assert_eq!(parse_max_steps(None), 100);
+        assert_eq!(parse_max_steps(Some(" 250 ")), 250);
+        assert_eq!(parse_max_steps(Some("0")), 0);
+        assert_eq!(parse_max_steps(Some("invalid")), 100);
+        assert_eq!(parse_max_steps(Some("-1")), 100);
+    }
 
     #[test]
     fn test_cli_args_parsing() {

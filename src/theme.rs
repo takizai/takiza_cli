@@ -4,10 +4,15 @@ use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Theme {
+    #[serde(alias = "amber")]
     Amber,      // Classic Takiza Yellow/Gold
+    #[serde(alias = "cyberpunk")]
     Cyberpunk,  // Magenta/Neon Cyan
+    #[serde(alias = "emerald")]
     Emerald,    // Hacker Matrix Green
+    #[serde(alias = "nord")]
     Nord,       // Frost Arctic Blue/Cyan
+    #[serde(alias = "monochrome")]
     Monochrome, // Clean Silver/White
 }
 
@@ -66,6 +71,16 @@ impl Theme {
             Theme::Emerald => "\x1b[38;2;40;180;100m",
             Theme::Nord => "\x1b[38;2;94;129;172m",
             Theme::Monochrome => "\x1b[38;2;160;160;165m",
+        }
+    }
+
+    pub fn code_background_ansi(&self) -> &'static str {
+        match self {
+            Theme::Amber => "\x1b[48;2;38;38;44m",
+            Theme::Cyberpunk => "\x1b[48;2;35;20;36m",
+            Theme::Emerald => "\x1b[48;2;16;32;24m",
+            Theme::Nord => "\x1b[48;2;46;52;64m",
+            Theme::Monochrome => "\x1b[48;2;32;32;34m",
         }
     }
 
@@ -188,6 +203,8 @@ pub struct UserPreferences {
     pub mode: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for UserPreferences {
@@ -203,6 +220,7 @@ impl Default for UserPreferences {
             api_key: None,
             mode: None,
             effort: None,
+            extra: Default::default(),
         }
     }
 }
@@ -300,6 +318,30 @@ mod tests {
         assert!(deserialized.agreed_to_terms);
         assert_eq!(deserialized.theme, Theme::Cyberpunk);
         assert_eq!(deserialized.terms_version, "1.0.0");
+    }
+
+    #[test]
+    fn gui_theme_names_do_not_reset_tui_preferences_and_extra_settings_survive() {
+        for (name, theme) in [("amber", Theme::Amber), ("cyberpunk", Theme::Cyberpunk),
+            ("emerald", Theme::Emerald), ("nord", Theme::Nord), ("monochrome", Theme::Monochrome)] {
+            let mut value = serde_json::json!({
+                "agreed_to_terms": true, "terms_version": "1.0.0", "theme": name,
+                "model": "saved-model", "provider": "custom", "base_url": "http://localhost/v1",
+                "api_key": "test-only", "auto_approve": true, "proxy": "http://localhost:8080",
+                "last_workspace_dir": "/workspace", "mode": "moa", "effort": "high"
+            });
+            let prefs: UserPreferences = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(prefs.theme, theme);
+            assert_eq!(prefs.model.as_deref(), Some("saved-model"));
+            let saved = serde_json::to_value(&prefs).unwrap();
+            assert_eq!(saved["auto_approve"], true);
+            assert_eq!(saved["proxy"], value["proxy"]);
+            assert_eq!(saved["last_workspace_dir"], value["last_workspace_dir"]);
+            // Existing TUI spelling remains readable and is still written for
+            // compatibility with older installed binaries.
+            value["theme"] = saved["theme"].clone();
+            assert_eq!(serde_json::from_value::<UserPreferences>(value).unwrap().theme, theme);
+        }
     }
 
     #[test]

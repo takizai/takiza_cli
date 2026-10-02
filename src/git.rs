@@ -15,12 +15,29 @@ pub fn create_git_command() -> Command {
     cmd
 }
 
+#[derive(Clone)]
 pub struct GitInfo {
     pub branch: Option<String>,
     pub is_dirty: bool,
 }
 
 impl GitInfo {
+    pub fn get_cached(workspace: &Path) -> Self {
+        use std::sync::{Mutex, OnceLock};
+        use std::time::{Duration, Instant};
+        type Cache = Option<(std::path::PathBuf, Instant, GitInfo)>;
+        static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+        let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();
+        if let Some((path, timestamp, info)) = cache.as_ref() {
+            if path == workspace && timestamp.elapsed() < Duration::from_millis(500) {
+                return info.clone();
+            }
+        }
+        let info = Self::get(workspace);
+        *cache = Some((workspace.to_path_buf(), Instant::now(), info.clone()));
+        info
+    }
+
     pub fn get(workspace: &Path) -> Self {
         let branch = create_git_command()
             .arg("rev-parse")

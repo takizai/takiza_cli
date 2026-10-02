@@ -170,6 +170,71 @@ pub fn get_tool_definitions() -> Value {
                     "required": ["command"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_skill",
+                "description": "Reads the full instructions, guidelines, and rules from a named skill (such as 'claude-design', 'frontend-excellence', 'garden-skills'). Use this whenever the user task touches upon domain guidelines, UI aesthetics, or frontend standards.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the skill to read (e.g. 'claude-design', 'frontend-excellence')."
+                        }
+                    },
+                    "required": ["name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ask_question",
+                "description": "Presents an interactive questionnaire or clarifying question to the user in terminal/UI. Use this when you need design feedback, user preferences (visual tone, tech stack, architectures, language), or need to resolve multiple valid approaches before proceeding. Supports single choice, multiple choice, custom user input, or open-ended questions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "description": "List of questions to present to the user.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "question": {
+                                        "type": "string",
+                                        "description": "The question prompt to present to the user."
+                                    },
+                                    "header": {
+                                        "type": "string",
+                                        "description": "Optional category tag or short header (e.g. 'Архитектура', 'Стиль UI', 'Язык/Стек')."
+                                    },
+                                    "options": {
+                                        "type": "array",
+                                        "items": { "type": "string" },
+                                        "description": "List of answer choices for the user. If omitted or empty, this is an open-ended question for free-form user text."
+                                    },
+                                    "is_multi_select": {
+                                        "type": "boolean",
+                                        "description": "If true, user can select multiple options with checkboxes. If false (default), single choice radio button."
+                                    },
+                                    "allow_custom": {
+                                        "type": "boolean",
+                                        "description": "Whether to permit user to enter their own custom answer or additional notes. Default is true."
+                                    },
+                                    "placeholder": {
+                                        "type": "string",
+                                        "description": "Optional placeholder text for the custom/free-form text input."
+                                    }
+                                },
+                                "required": ["question"]
+                            }
+                        }
+                    },
+                    "required": ["questions"]
+                }
+            }
         }
     ])
 }
@@ -218,9 +283,13 @@ impl ToolExecutor {
             "list_dir" => self.exec_list_dir(&args),
             "find_files" => self.exec_find_files_with_events(&args, event_tx.as_ref()).await,
             "grep_search" => self.exec_grep_search_with_events(&args, event_tx.as_ref()).await,
+            "read_skill" => self.exec_read_skill(&args),
             "run_command" => {
                 self.exec_run_command(&args, event_tx.as_ref(), cancel_token)
                     .await
+            }
+            "ask_question" => {
+                Ok("Interactive questionnaire presented to user.".to_string())
             }
             other => Err(format!("Unknown tool: {other}")),
         };
@@ -240,6 +309,12 @@ impl ToolExecutor {
         }
 
         result
+    }
+
+    fn exec_read_skill(&self, args: &Value) -> Result<String, String> {
+        let name = args["name"].as_str().ok_or("Missing 'name' argument")?;
+        crate::skills::get_skill_content(&self.workspace_root, name)
+            .ok_or_else(|| format!("Skill '{}' not found in workspace (.agents/skills) or system skills directories", name))
     }
 
     fn exec_read_file(&self, args: &Value) -> Result<String, String> {

@@ -20,7 +20,7 @@ pub struct Session {
 impl Session {
     pub fn new(model: String) -> Self {
         let now = Local::now();
-        let id = now.format("%Y%m%d_%H%M%S").to_string();
+        let id = now.format("%Y%m%d_%H%M%S_%9f").to_string();
         let created_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
         Self {
@@ -33,6 +33,13 @@ impl Session {
         }
     }
 
+    pub fn title_from_prompt(prompt: &str) -> String {
+        let first_line = prompt.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim();
+        let mut title = first_line.chars().take(40).collect::<String>();
+        if first_line.chars().count() > 40 { title.push_str("..."); }
+        title
+    }
+
     pub fn title(&self) -> String {
         if let Some(ref t) = self.title {
             let trimmed = t.trim();
@@ -43,14 +50,8 @@ impl Session {
         for msg in &self.messages {
             if msg.role == "user" {
                 if let Some(content) = &msg.content {
-                    let first_line = content.lines().next().unwrap_or("").trim();
-                    if !first_line.is_empty() {
-                        let mut t = first_line.chars().take(40).collect::<String>();
-                        if first_line.chars().count() > 40 {
-                            t.push_str("...");
-                        }
-                        return t;
-                    }
+                    let title = Self::title_from_prompt(content);
+                    if !title.is_empty() { return title; }
                 }
             }
         }
@@ -168,7 +169,11 @@ impl Session {
 
     pub fn build_history_from_messages(&self) -> Vec<HistoryItem> {
         if !self.history.is_empty() {
-            return self.history.clone();
+            return self.history.iter().filter(|item| !matches!(item,
+                HistoryItem::ToolLog(text) if text.starts_with("Restore unavailable: No checkpoints in this chat")
+                    || text.starts_with("Restore unavailable: No checkpoints yet.")
+                    || text.starts_with("Workspace restored to ")))
+                .cloned().collect();
         }
         let mut items = Vec::new();
         for msg in &self.messages {
@@ -280,6 +285,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_chats_have_distinct_ids_even_within_one_second() {
+        let first = Session::new("test".into());
+        let second = Session::new("test".into());
+        assert_ne!(first.id, second.id);
+        assert!(second.title.is_none());
+        assert!(second.messages.is_empty());
+    }
+
+    #[test]
     fn test_session_save_load_and_latest() {
         let test_dir = std::env::temp_dir().join(format!("takiza_test_{}", std::process::id()));
         let _ = fs::remove_dir_all(&test_dir);
@@ -288,6 +302,7 @@ mod tests {
 
         let mut s1 = Session::new("llama3".to_string());
         s1.messages.push(ChatMessage {
+            image_urls: Vec::new(),
             role: "user".to_string(),
             content: Some("Hello Takiza!".to_string()),
             tool_calls: None,
@@ -295,6 +310,7 @@ mod tests {
             name: None,
         });
         s1.messages.push(ChatMessage {
+            image_urls: Vec::new(),
             role: "assistant".to_string(),
             content: Some("Hello! How can I help you?".to_string()),
             tool_calls: None,
@@ -339,9 +355,24 @@ mod tests {
     }
 
     #[test]
+    fn restored_history_omits_obsolete_empty_checkpoint_notice() {
+        let mut session = Session::new("test".into());
+        session.history = vec![
+            HistoryItem::ToolLog("Restore unavailable: No checkpoints in this chat yet. Send a prompt to create the first checkpoint.".into()),
+            HistoryItem::ToolLog("Workspace restored to 2026-10-02 · safety checkpoint 123".into()),
+            HistoryItem::ToolLog("Restore unavailable: missing snapshot file".into()),
+            HistoryItem::UserPrompt("hello".into()),
+        ];
+        let restored = session.build_history_from_messages();
+        assert_eq!(restored.len(), 2);
+        assert!(matches!(&restored[0], HistoryItem::ToolLog(text) if text.contains("missing snapshot")));
+    }
+
+    #[test]
     fn test_build_history_from_messages_fallback() {
         let mut s = Session::new("test-model".to_string());
         s.messages.push(ChatMessage {
+            image_urls: Vec::new(),
             role: "user".to_string(),
             content: Some("First prompt".to_string()),
             tool_calls: None,
@@ -349,6 +380,7 @@ mod tests {
             name: None,
         });
         s.messages.push(ChatMessage {
+            image_urls: Vec::new(),
             role: "assistant".to_string(),
             content: Some("Answer".to_string()),
             tool_calls: None,
@@ -369,4 +401,3 @@ mod tests {
         }
     }
 }
-

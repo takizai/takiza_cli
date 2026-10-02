@@ -240,7 +240,7 @@ fn render_banner(
         let divider = "─".repeat(div_w);
 
         let mut info_lines: Vec<String> = vec![
-            format!("{}TAKIZA \x1b[1;38;2;245;245;250mCODE\x1b[0m  \x1b[38;2;120;120;125mv{}\x1b[0m", p_ansi, env!("CARGO_PKG_VERSION")),
+            format!("{}TAKIZA \x1b[1;38;2;245;245;250mCODE\x1b[0m  \x1b[38;2;120;120;125mv{}\x1b[0m", p_ansi, env!("TAKIZA_VERSION")),
             format!("\x1b[38;2;160;160;165m{}\x1b[0m", truncate_visible("Autonomous AI Software Engineering Agent", info_w)),
             format!("\x1b[38;2;60;60;65m{}\x1b[0m", divider),
             format!("{}Step {} of 2\x1b[0m   \x1b[38;2;70;70;75m│\x1b[0m \x1b[1;38;2;230;230;235m{}\x1b[0m", p_ansi, step_num, step_title),
@@ -280,7 +280,7 @@ fn render_banner(
         let bot_div = "─".repeat(box_w.saturating_sub(2));
 
         let lines = [
-            format!("  {}╭─ TAKIZA \x1b[38;2;245;245;250mCODE\x1b[0m \x1b[38;2;120;120;125mv{}{} {}╮\x1b[0m", p_ansi, env!("CARGO_PKG_VERSION"), p_ansi, top_div),
+            format!("  {}╭─ TAKIZA \x1b[38;2;245;245;250mCODE\x1b[0m \x1b[38;2;120;120;125mv{}{} {}╮\x1b[0m", p_ansi, env!("TAKIZA_VERSION"), p_ansi, top_div),
             format!("  {}│\x1b[0m {}Step {}/2:   \x1b[0m\x1b[38;2;230;230;235m{}\x1b[0m", p_ansi, p_ansi, step_num, truncate_visible(step_title, val_w)),
             format!("  {}│\x1b[0m {}Action:    \x1b[0m\x1b[38;2;170;170;175m{}\x1b[0m", p_ansi, p_ansi, truncate_visible(if step_num == 1 { "Select Theme" } else { "Review Terms" }, val_w)),
             format!("  {}╰{}╯\x1b[0m", p_ansi, bot_div),

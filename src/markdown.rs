@@ -71,7 +71,7 @@ pub fn render_inline(text: &str) -> String {
     let mut out = String::new();
     let mut i = 0;
 
-    let _th = theme::current();
+    let th = theme::current();
 
     while i < n {
         // 1. Inline code: `code`
@@ -79,7 +79,9 @@ pub fn render_inline(text: &str) -> String {
             if let Some(end) = chars[i + 1..].iter().position(|&c| c == '`') {
                 let code_end = i + 1 + end;
                 let code_content: String = chars[i + 1..code_end].iter().collect();
-                out.push_str("\x1b[48;2;38;38;44m\x1b[38;2;245;200;100m ");
+                out.push_str(th.code_background_ansi());
+                out.push_str(th.primary_ansi());
+                out.push(' ');
                 out.push_str(&code_content);
                 out.push_str(" \x1b[0m");
                 i = code_end + 1;
@@ -97,9 +99,12 @@ pub fn render_inline(text: &str) -> String {
                         let link_text: String = chars[i + 1..bracket_end].iter().collect();
                         let link_url: String = chars[bracket_end + 2..paren_end].iter().collect();
 
-                        out.push_str("\x1b[4;38;2;100;180;255m");
+                        out.push_str(th.secondary_ansi());
+                        out.push_str("\x1b[4m");
                         out.push_str(&render_inline(&link_text));
-                        out.push_str("\x1b[0m \x1b[38;2;130;130;135m(");
+                        out.push_str("\x1b[0m ");
+                        out.push_str(th.secondary_ansi());
+                        out.push('(');
                         out.push_str(&link_url);
                         out.push_str(")\x1b[0m");
 
@@ -118,9 +123,10 @@ pub fn render_inline(text: &str) -> String {
             let rest = &chars[i + 3..];
             if let Some(end) = find_triple_delim(rest, delim) {
                 let content: String = rest[..end].iter().collect();
+                out.push_str(th.primary_ansi());
                 out.push_str("\x1b[1;3m");
                 out.push_str(&render_inline(&content));
-                out.push_str("\x1b[22;23m");
+                out.push_str("\x1b[22;23m\x1b[39m");
                 i += 3 + end + 3;
                 continue;
             }
@@ -134,9 +140,10 @@ pub fn render_inline(text: &str) -> String {
             let rest = &chars[i + 2..];
             if let Some(end) = find_double_delim(rest, delim) {
                 let content: String = rest[..end].iter().collect();
+                out.push_str(th.primary_ansi());
                 out.push_str("\x1b[1m");
                 out.push_str(&render_inline(&content));
-                out.push_str("\x1b[22m");
+                out.push_str("\x1b[22m\x1b[39m");
                 i += 2 + end + 2;
                 continue;
             }
@@ -246,44 +253,158 @@ pub fn wrap_rendered_line(line: &str, max_width: usize) -> Vec<String> {
         return vec![String::new()];
     }
 
+    let max_width = max_width.max(1);
     let tokens = tokenize_ansi(line);
     let mut lines = Vec::new();
     let mut current_line = String::new();
     let mut current_vis_w = 0;
+    // Each viewport row is painted independently with a color reset. Replay
+    // the inline style on continuation rows, including partial reset codes.
+    let mut style = String::new();
 
     for token in tokens {
         match token {
             Token::Escape(esc) => {
+                if esc == "\x1b[0m" || esc == "\x1b[m" { style.clear(); }
+                else if esc.ends_with('m') { style.push_str(&esc); }
                 current_line.push_str(&esc);
             }
             Token::Space(sp) => {
-                let sp_w = sp.len();
+                let sp_w = str_width(&sp);
                 if current_vis_w + sp_w <= max_width {
                     current_line.push_str(&sp);
                     current_vis_w += sp_w;
-                } else if !current_line.is_empty() {
-                    lines.push(current_line);
-                    current_line = String::new();
+                } else if current_vis_w > 0 {
+                    lines.push(format!("{current_line}\x1b[0m"));
+                    current_line = style.clone();
                     current_vis_w = 0;
                 }
             }
             Token::Word(word, w) => {
-                if current_vis_w + w <= max_width || current_vis_w == 0 {
-                    current_line.push_str(&word);
-                    current_vis_w += w;
-                } else {
-                    lines.push(current_line);
-                    current_line = word;
-                    current_vis_w = w;
+                if current_vis_w > 0 && current_vis_w + w > max_width {
+                    lines.push(format!("{current_line}\x1b[0m"));
+                    current_line = style.clone();
+                    current_vis_w = 0;
+                }
+                for ch in word.chars() {
+                    let width = char_width(ch);
+                    if current_vis_w > 0 && current_vis_w + width > max_width {
+                        lines.push(format!("{current_line}\x1b[0m"));
+                        current_line = style.clone();
+                        current_vis_w = 0;
+                    }
+                    current_line.push(ch);
+                    current_vis_w += width;
                 }
             }
         }
     }
 
-    if !current_line.is_empty() || lines.is_empty() {
-        lines.push(current_line);
+    if current_vis_w > 0 || lines.is_empty() {
+        lines.push(format!("{current_line}\x1b[0m"));
     }
 
+    lines
+}
+
+#[derive(Clone, Copy)]
+enum Alignment { Left, Center, Right }
+
+fn table_cells(line: &str) -> Option<Vec<String>> {
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut code = false;
+    let mut chars = line.trim().chars().peekable();
+    let mut pipes = 0;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'|') => { cell.push(chars.next().unwrap()); }
+            '`' => { code = !code; cell.push(c); }
+            '|' if !code => { cells.push(cell.trim().to_string()); cell.clear(); pipes += 1; }
+            _ => cell.push(c),
+        }
+    }
+    if pipes == 0 { return None; }
+    cells.push(cell.trim().to_string());
+    if cells.first().is_some_and(String::is_empty) { cells.remove(0); }
+    if cells.last().is_some_and(String::is_empty) { cells.pop(); }
+    (!cells.is_empty()).then_some(cells)
+}
+
+fn table_alignment(line: &str, columns: usize) -> Option<Vec<Alignment>> {
+    let cells = table_cells(line)?;
+    if cells.len() != columns { return None; }
+    cells.into_iter().map(|cell| {
+        let dashes = cell.trim_matches(':');
+        if dashes.len() < 3 || !dashes.chars().all(|c| c == '-') { return None; }
+        Some(match (cell.starts_with(':'), cell.ends_with(':')) {
+            (true, true) => Alignment::Center,
+            (_, true) => Alignment::Right,
+            _ => Alignment::Left,
+        })
+    }).collect()
+}
+
+fn render_table(rows: &[Vec<String>], alignment: &[Alignment], max_width: usize) -> Vec<String> {
+    let columns = alignment.len();
+    let th = theme::current();
+    let border = th.secondary_ansi();
+    let primary = th.primary_ansi();
+    let minimums: Vec<usize> = (0..columns).map(|col| rows.iter()
+        .flat_map(|row| row[col].chars()).map(char_width).max().unwrap_or(1).max(1)).collect();
+    // A grid needs one character per cell plus borders and padding. On very
+    // narrow screens use labeled records instead of losing or clipping data.
+    if max_width < minimums.iter().sum::<usize>() + columns * 3 + 1 {
+        let mut lines = Vec::new();
+        for row in rows.iter().skip(1) {
+            for (header, cell) in rows[0].iter().zip(row) {
+                lines.extend(wrap_rendered_line(&format!("{primary}{}:\x1b[0m {}",
+                    render_inline(header), render_inline(cell)), max_width));
+            }
+            lines.push(String::new());
+        }
+        if rows.len() == 1 {
+            lines.extend(wrap_rendered_line(&render_inline(&rows[0].join(" · ")), max_width));
+        }
+        return lines;
+    }
+    let budget = max_width - columns * 3 - 1;
+    let mut widths: Vec<usize> = (0..columns).map(|col| rows.iter()
+        .map(|row| visible_width(&render_inline(&row[col])))
+        .max().unwrap_or(1).max(1).min(budget)).collect();
+    while widths.iter().sum::<usize>() > budget {
+        let widest = widths.iter().enumerate().filter(|(col, width)| **width > minimums[*col])
+            .max_by_key(|(_, width)| **width).unwrap().0;
+        widths[widest] -= 1;
+    }
+    let rule = |left: char, middle: char, right: char| {
+        let segments: Vec<_> = widths.iter().map(|width| "─".repeat(width + 2)).collect();
+        format!("{border}{left}{}{right}\x1b[0m", segments.join(&middle.to_string()))
+    };
+    let mut lines = vec![rule('╭', '┬', '╮')];
+    for (row_index, row) in rows.iter().enumerate() {
+        let cells: Vec<_> = row.iter().zip(&widths)
+            .map(|(cell, width)| wrap_rendered_line(&render_inline(cell), *width)).collect();
+        let height = cells.iter().map(Vec::len).max().unwrap_or(1);
+        for line_index in 0..height {
+            let mut line = format!("{border}│\x1b[0m");
+            for (col, cell_lines) in cells.iter().enumerate() {
+                let cell = cell_lines.get(line_index).map(String::as_str).unwrap_or("");
+                let padding = widths[col].saturating_sub(visible_width(cell));
+                let left = match alignment[col] { Alignment::Left => 0, Alignment::Center => padding / 2, Alignment::Right => padding };
+                line.push(' ');
+                line.push_str(&" ".repeat(left));
+                if row_index == 0 { line.push_str(primary); line.push_str("\x1b[1m"); }
+                line.push_str(cell);
+                line.push_str("\x1b[0m");
+                line.push_str(&" ".repeat(padding - left));
+                line.push_str(&format!(" {border}│\x1b[0m"));
+            }
+            lines.push(line);
+        }
+        if row_index == 0 { lines.push(rule('├', '┼', '┤')); }
+    }
+    lines.push(rule('╰', '┴', '╯'));
     lines
 }
 
@@ -296,13 +417,16 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
 
     let th = theme::current();
     let p_ansi = th.primary_ansi();
+    let s_ansi = th.secondary_ansi();
+    let code_background = th.code_background_ansi();
 
     let mut in_code_block = false;
 
     let code_box_w = max_width.min(84);
     let code_inner_w = code_box_w.saturating_sub(4);
 
-    for raw in raw_lines {
+    let mut raw_lines = raw_lines.into_iter().peekable();
+    while let Some(raw) = raw_lines.next() {
         let trimmed = raw.trim();
 
         // 1. Fenced code block toggle
@@ -317,7 +441,7 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
                 let tag_w = str_width(&tag);
                 let dashes = code_box_w.saturating_sub(tag_w + 3);
                 let top_line = format!(
-                    "  \x1b[38;2;120;120;130m╭─\x1b[0m{}\x1b[1m{}\x1b[0m\x1b[38;2;120;120;130m{}╮\x1b[0m",
+                    "  {s_ansi}╭─\x1b[0m{}\x1b[1m{}\x1b[0m{s_ansi}{}╮\x1b[0m",
                     p_ansi, tag, "─".repeat(dashes)
                 );
                 result_lines.push(top_line);
@@ -325,7 +449,7 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
                 in_code_block = false;
                 // Draw code box bottom: ╰────────────────────────────────────────╯
                 let dashes = code_box_w.saturating_sub(2);
-                let bottom_line = format!("  \x1b[38;2;120;120;130m╰{}╯\x1b[0m", "─".repeat(dashes));
+                let bottom_line = format!("  {s_ansi}╰{}╯\x1b[0m", "─".repeat(dashes));
                 result_lines.push(bottom_line);
             }
             continue;
@@ -341,11 +465,25 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
             let vis_w = str_width(&trunc);
             let pad = code_inner_w.saturating_sub(vis_w);
             let code_line = format!(
-                "  \x1b[38;2;120;120;130m│\x1b[0m \x1b[38;2;225;230;240m{}\x1b[0m{} \x1b[38;2;120;120;130m│\x1b[0m",
+                "  {s_ansi}│\x1b[0m {code_background}{p_ansi}{}\x1b[0m{} {s_ansi}│\x1b[0m",
                 trunc, " ".repeat(pad)
             );
             result_lines.push(code_line);
             continue;
+        }
+
+        if let Some(header) = table_cells(raw) {
+            if let Some(alignment) = raw_lines.peek().and_then(|line| table_alignment(line, header.len())) {
+                raw_lines.next();
+                let mut rows = vec![header];
+                while let Some(cells) = raw_lines.peek().and_then(|line| table_cells(line)) {
+                    if cells.len() != alignment.len() { break; }
+                    raw_lines.next();
+                    rows.push(cells);
+                }
+                result_lines.extend(render_table(&rows, &alignment, max_width));
+                continue;
+            }
         }
 
         // Empty line
@@ -360,24 +498,24 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
             && trimmed.len() >= 3
         {
             let hr_w = max_width.min(48);
-            result_lines.push(format!("\x1b[38;2;80;80;85m{}\x1b[0m", "─".repeat(hr_w)));
+            result_lines.push(format!("{s_ansi}{}\x1b[0m", "─".repeat(hr_w)));
             continue;
         }
 
         // 3. Headers: #, ##, ###
         if let Some(h1) = trimmed.strip_prefix("# ") {
             let rendered = render_inline(h1);
-            result_lines.push(format!("{}\x1b[1;4m{}\x1b[0m", p_ansi, rendered));
+            result_lines.extend(wrap_rendered_line(&format!("{}\x1b[1;4m{}\x1b[0m", p_ansi, rendered), max_width));
             continue;
         }
         if let Some(h2) = trimmed.strip_prefix("## ") {
             let rendered = render_inline(h2);
-            result_lines.push(format!("{}\x1b[1m## {}\x1b[0m", p_ansi, rendered));
+            result_lines.extend(wrap_rendered_line(&format!("{}\x1b[1m## {}\x1b[0m", p_ansi, rendered), max_width));
             continue;
         }
         if let Some(h3) = trimmed.strip_prefix("### ") {
             let rendered = render_inline(h3);
-            result_lines.push(format!("\x1b[1;38;2;225;225;230m### {}\x1b[0m", rendered));
+            result_lines.extend(wrap_rendered_line(&format!("{p_ansi}\x1b[1m### {}\x1b[0m", rendered), max_width));
             continue;
         }
 
@@ -386,7 +524,7 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
             let rendered = render_inline(quote);
             let wrapped = wrap_rendered_line(&rendered, max_width.saturating_sub(4));
             for w_line in wrapped {
-                result_lines.push(format!("  \x1b[38;2;100;100;105m│\x1b[0m \x1b[3;38;2;190;190;195m{}\x1b[0m", w_line));
+                result_lines.push(format!("  {s_ansi}│\x1b[0m {s_ansi}\x1b[3m{}\x1b[0m", w_line));
             }
             continue;
         }
@@ -458,6 +596,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tables_align_columns_and_style_headers() {
+        let lines = render_markdown("| Пакет | Обычная цена | Через MoA |\n|---|---:|---:|\n|10M|490 ₽|270 ₽|\n|1B|24 900 ₽|13 695 ₽|", 80);
+        assert!(lines.first().unwrap().contains('╭'));
+        assert!(lines.last().unwrap().contains('╯'));
+        assert!(lines[1].contains("\x1b[1m"));
+        assert!(lines[3].contains("       490 ₽"));
+        let widths: Vec<_> = lines.iter().map(|line| visible_width(line)).collect();
+        assert!(widths.iter().all(|width| *width == widths[0]));
+        assert!(!lines.iter().any(|line| line.contains("---")));
+    }
+
+    #[test]
+    fn tables_wrap_cells_without_losing_unicode_or_breaking_borders() {
+        let text = "Имя | Описание\n:---: | ---\n界界 | **Длинное** описание с эмодзи 🤖 и словами\nТест | `code`";
+        for width in [11, 15, 24, 40, 80] {
+            let lines = render_markdown(text, width);
+            assert!(lines.iter().all(|line| visible_width(line) <= width), "{width}: {lines:?}");
+            let joined = lines.join("\n");
+            assert!(joined.contains('界') && joined.contains('🤖'));
+            assert!(!joined.contains("**") && !joined.contains('`'));
+            assert!(lines.first().unwrap().contains('╭'));
+            assert!(lines.last().unwrap().contains('╯'));
+        }
+    }
+
+    #[test]
+    fn narrow_tables_fall_back_to_labeled_records() {
+        let lines = render_markdown("| A | B | C |\n|---|---|---|\n|one|two|three|", 8);
+        assert!(lines.iter().all(|line| visible_width(line) <= 8));
+        let joined = lines.join("\n");
+        assert!(joined.contains("one") && joined.contains("two") && joined.contains("three"));
+        assert!(joined.contains("A:") && joined.contains("B:") && joined.contains("C:"));
+    }
+
+    #[test]
+    fn table_detection_respects_code_escaped_pipes_and_partial_streams() {
+        assert_eq!(table_cells(r"| a\|b | `c|d` |"), Some(vec!["a|b".into(), "`c|d`".into()]));
+        for text in ["ordinary | text", "A | B\n--- | invalid", "A | B\n--- | --"] {
+            assert!(!render_markdown(text, 60).join("\n").contains('┬'));
+        }
+        let lines = render_markdown("```\n| A | B |\n|---|---|\n```", 60);
+        assert!(!lines.join("\n").contains('┬'));
+        let lines = render_markdown("| A | B |\n|---|---|\n|unfinished", 60);
+        assert!(lines.join("\n").contains("unfinished"));
+    }
+
+    #[test]
     fn test_inline_bold() {
         let res = render_inline("This is **bold** text");
         assert!(res.contains("\x1b[1mbold\x1b[22m"));
@@ -482,7 +667,7 @@ mod tests {
     fn test_inline_code() {
         let res = render_inline("Run `cargo test` now");
         assert!(res.contains("cargo test"));
-        assert!(res.contains("\x1b[48;2;38;38;44m"));
+        assert!(res.contains("\x1b[48;2;"));
         assert!(!res.contains("`cargo test`"));
     }
 
@@ -508,6 +693,22 @@ mod tests {
         assert!(wrapped.len() >= 2);
         for l in &wrapped {
             assert!(visible_width(l) <= 20);
+        }
+    }
+
+    #[test]
+    fn wrapping_keeps_styles_on_independently_painted_rows() {
+        let lines = wrap_rendered_line("\x1b[31m\x1b[1mfirst second third\x1b[0m", 7);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|line| line.starts_with("\x1b[31m\x1b[1m")));
+        assert!(lines.iter().all(|line| line.ends_with("\x1b[0m")));
+    }
+
+    #[test]
+    fn long_words_links_and_headings_cannot_wrap_the_terminal() {
+        for text in ["abcdefghijklmnopqrstuvwxyz", "## abcdefghijklmnopqrstuvwxyz", "[link](https://example.com/abcdefghijklmnopqrstuvwxyz)"] {
+            let lines = render_markdown(text, 10);
+            assert!(lines.iter().all(|line| visible_width(line) <= 10), "{lines:?}");
         }
     }
 

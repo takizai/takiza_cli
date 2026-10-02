@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -26,3 +28,13 @@ jobs:
 
       - name: Run unit tests
         run: cargo test --verbose
+
+      - name: Check TUI activity and rendering
+        run: |
+          cargo build
+          python3 tests/tui_activity_pty.py target/debug/takiza
+          python3 tests/tui_reasoning_pty.py target/debug/takiza
+          python3 tests/tui_clipboard_pty.py target/debug/takiza
+          python3 tests/tui_input_pty.py target/debug/takiza
+          python3 tests/tui_images_pty.py target/debug/takiza
+          python3 tests/tui_questions_pty.py target/debug/takiza

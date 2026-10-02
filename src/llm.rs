@@ -14,12 +14,46 @@ pub struct ChatMessage {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_urls: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<LlmToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+fn messages_for_api(messages: &[ChatMessage]) -> Vec<Value> {
+    messages.iter().map(|message| {
+        let mut value = serde_json::to_value(message).expect("ChatMessage serialization");
+        value.as_object_mut().unwrap().remove("image_urls");
+        if !message.image_urls.is_empty() {
+            let mut content = vec![json!({"type": "text", "text": message.content.as_deref().unwrap_or("")})];
+            content.extend(message.image_urls.iter().map(|url| json!({"type": "image_url", "image_url": {"url": url}})));
+            value["content"] = Value::Array(content);
+        }
+        value
+    }).collect()
+}
+
+#[cfg(test)]
+mod image_message_tests {
+    use super::*;
+
+    #[test]
+    fn images_use_multimodal_content_and_text_only_sessions_stay_compatible() {
+        let old = json!({"role": "user", "content": "describe"});
+        let mut message: ChatMessage = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(messages_for_api(&[message.clone()]), [old]);
+        message.image_urls.push("data:image/png;base64,aGVsbG8=".into());
+        let stored = serde_json::to_string(&message).unwrap();
+        let restored: ChatMessage = serde_json::from_str(&stored).unwrap();
+        let wire = messages_for_api(&[restored]);
+        assert!(wire[0].get("image_urls").is_none());
+        assert_eq!(wire[0]["content"][0], json!({"type": "text", "text": "describe"}));
+        assert_eq!(wire[0]["content"][1], json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}));
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -39,6 +73,7 @@ pub struct LlmFunctionCall {
 #[derive(Clone, Debug)]
 pub enum LlmResponse {
     Message(String),
+    Empty { finish_reason: Option<String> },
     ToolCalls(Vec<ToolCall>, Option<String>),
 }
 
@@ -207,7 +242,8 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
-    pub fn new(config: Config) -> Self {
+    pub fn new(mut config: Config) -> Self {
+        config.base_url = crate::config::normalize_base_url(&config.base_url);
         let mut builder = Client::builder()
             .timeout(std::time::Duration::from_secs(120));
 
@@ -223,11 +259,26 @@ impl LlmClient {
         }
     }
 
-    pub async fn generate_title(&self, prompt: &str) -> Option<String> {
+    pub async fn generate_title(&self, prompt: &str) -> Result<String> {
+        let mut last_error = anyhow::anyhow!("No title returned");
+        for attempt in 1..=2 {
+            match self.generate_title_once(prompt).await {
+                Ok(title) => return Ok(title),
+                Err(error) => {
+                    crate::logger::log_warn("Chat title", &format!("Attempt {attempt}: {error:#}"));
+                    last_error = error;
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    async fn generate_title_once(&self, prompt: &str) -> Result<String> {
         let url = format!("{}/chat/completions", self.config.base_url);
         let prompt_clean = prompt.replace('\n', " ").chars().take(300).collect::<String>();
         let messages = vec![
             ChatMessage {
+                image_urls: Vec::new(),
                 role: "system".to_string(),
                 content: Some("You generate concise conversation titles. Return ONLY a 3-6 word title summarizing the user request. No quotes, no markdown, no punctuation, same language as user.".to_string()),
                 tool_calls: None,
@@ -235,6 +286,7 @@ impl LlmClient {
                 name: None,
             },
             ChatMessage {
+                image_urls: Vec::new(),
                 role: "user".to_string(),
                 content: Some(prompt_clean),
                 tool_calls: None,
@@ -245,8 +297,9 @@ impl LlmClient {
 
         let body = json!({
             "model": self.config.model,
-            "messages": messages,
-            "max_tokens": 200,
+            "messages": messages_for_api(&messages),
+            "max_tokens": 4096,
+            "stream": false,
             "temperature": 0.4,
         });
 
@@ -257,20 +310,15 @@ impl LlmClient {
             req = req.header("Authorization", format!("Bearer {}", self.config.api_key));
         }
 
-        let resp = req.json(&body).send().await.ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
+        let resp = req.timeout(std::time::Duration::from_secs(60)).json(&body).send().await
+            .context("Title request failed")?;
+        let status = resp.status();
+        if !status.is_success() { anyhow::bail!("Title provider returned HTTP {status}"); }
+        let json_val: Value = resp.json().await.context("Invalid title response JSON")?;
+        let choice_msg = json_val["choices"].get(0).and_then(|choice| choice.get("message"))
+            .context("Title response has no message")?;
 
-        let json_val: Value = resp.json().await.ok()?;
-        let choice_msg = json_val["choices"].get(0)?.get("message")?;
-
-        let content_str = choice_msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-        let raw = if !content_str.trim().is_empty() {
-            content_str
-        } else {
-            choice_msg.get("reasoning").and_then(|r| r.as_str()).unwrap_or("")
-        };
+        let raw = choice_msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
 
         let mut clean = raw.trim().to_string();
         if let Some(pos) = clean.rfind("</think>") {
@@ -294,10 +342,9 @@ impl LlmClient {
             .to_string();
 
         if first_line.is_empty() {
-            None
-        } else {
-            Some(first_line)
+            anyhow::bail!("Model returned an empty title (finish_reason: {})", json_val["choices"][0]["finish_reason"].as_str().unwrap_or("unknown"));
         }
+        Ok(first_line)
     }
 
     #[allow(dead_code)]
@@ -307,7 +354,7 @@ impl LlmClient {
 
         let mut body = json!({
             "model": self.config.model,
-            "messages": messages,
+            "messages": messages_for_api(&messages),
             "tools": tools,
             "tool_choice": "auto",
             "max_tokens": 8192,
@@ -384,9 +431,7 @@ impl LlmClient {
             }
         }
 
-        Ok(LlmResponse::Message(
-            content.unwrap_or_else(|| "(Empty response)".to_string()),
-        ))
+        Ok(final_message(content.unwrap_or_default(), choice["finish_reason"].as_str().map(str::to_owned)))
     }
 
     pub async fn chat_step_stream(
@@ -400,7 +445,7 @@ impl LlmClient {
 
         let mut body = json!({
             "model": self.config.model,
-            "messages": messages,
+            "messages": messages_for_api(&messages),
             "tools": tools,
             "tool_choice": "auto",
             "stream": true,
@@ -418,7 +463,7 @@ impl LlmClient {
         let mut attempts = 0;
         let resp = loop {
             if cancel_token.is_cancelled() {
-                anyhow::bail!("Interrupted (Ctrl+C)");
+                anyhow::bail!("Request cancelled");
             }
             attempts += 1;
             let mut req = self
@@ -480,30 +525,35 @@ impl LlmClient {
         let mut accumulated_thought = String::new();
 
         let mut byte_stream = resp.bytes_stream();
-        let mut sse_buffer = String::new();
+        let mut sse_buffer = Vec::<u8>::new();
+        let mut finish_reason = None;
         let mut done_stream = false;
 
         while !done_stream {
             let chunk_opt = tokio::select! {
                 _ = cancel_token.cancelled() => {
-                    anyhow::bail!("Interrupted (Ctrl+C)");
+                    anyhow::bail!("Request cancelled");
                 }
                 c = byte_stream.next() => c,
             };
 
             let chunk_bytes = match chunk_opt {
-                Some(Ok(bytes)) => bytes,
+                Some(Ok(bytes)) => Some(bytes),
                 Some(Err(e)) => {
                     return Err(e).context("Error reading stream chunk from LLM");
                 }
-                None => break, // EOF
+                None => {
+                    if sse_buffer.is_empty() { break; }
+                    // Process the last SSE line even if EOF arrives without a newline.
+                    sse_buffer.push(b'\n');
+                    None
+                }
             };
+            if let Some(bytes) = chunk_bytes.as_ref() { sse_buffer.extend_from_slice(bytes); }
 
-            let text = String::from_utf8_lossy(&chunk_bytes);
-            sse_buffer.push_str(&text);
-
-            while let Some(newline_pos) = sse_buffer.find('\n') {
-                let line = sse_buffer[..newline_pos].trim_end_matches('\r').to_string();
+            while let Some(newline_pos) = sse_buffer.iter().position(|byte| *byte == b'\n') {
+                // Decode complete lines, so a UTF-8 character split across network chunks is preserved.
+                let line = String::from_utf8_lossy(&sse_buffer[..newline_pos]).trim_end_matches('\r').to_string();
                 sse_buffer.drain(..=newline_pos);
 
                 let trimmed = line.trim();
@@ -528,6 +578,9 @@ impl LlmClient {
                         None => continue,
                     };
 
+                    if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                        finish_reason = Some(reason.to_string());
+                    }
                     let delta = match choice.get("delta") {
                         Some(d) => d,
                         None => continue,
@@ -594,6 +647,7 @@ impl LlmClient {
                     }
                 }
             }
+            if chunk_bytes.is_none() { break; }
         }
 
         let (rem_th, rem_as) = think_parser.finish();
@@ -633,21 +687,27 @@ impl LlmClient {
             return Ok(LlmResponse::ToolCalls(valid_tools, thought));
         }
 
-        if accumulated_content.trim().is_empty() && !accumulated_thought.trim().is_empty() {
-            accumulated_content = accumulated_thought;
-        }
-
-        if accumulated_content.trim().is_empty() {
-            accumulated_content = "(Empty response)".to_string();
-        }
-
-        Ok(LlmResponse::Message(accumulated_content))
+        // Reasoning is not a final answer; a reasoning-only completion is retried.
+        Ok(final_message(accumulated_content, finish_reason))
     }
+}
+
+fn final_message(content: String, finish_reason: Option<String>) -> LlmResponse {
+    if content.trim().is_empty() { LlmResponse::Empty { finish_reason } }
+    else { LlmResponse::Message(content) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_and_whitespace_completions_are_not_assistant_messages() {
+        for content in ["", " \n\t"] {
+            assert!(matches!(final_message(content.into(), Some("stop".into())), LlmResponse::Empty { .. }));
+        }
+        assert!(matches!(final_message("answer".into(), None), LlmResponse::Message(_)));
+    }
 
     #[test]
     fn test_stream_think_parser_normal() {
