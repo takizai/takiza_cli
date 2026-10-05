@@ -65,12 +65,13 @@ def run(binary):
             paste(text)
             assert len(field()) == 5 and '7-9/9' in field()[0], field()
             assert 'L06' in field()[1] and 'L08' in field()[3], field()
-            model = screen()[:-5]
+            # The busy indicator above the editor animates independently.
+            model = screen()[:-6]
             scroll(True)
             assert 'L03' in field()[1] and 'L05' in field()[3], field()
             scroll(True)
             assert 'L00' in field()[1] and 'L02' in field()[3], field()
-            assert screen()[:-5] == model, 'scrolling input moved conversation'
+            assert screen()[:-6] == model, 'scrolling input moved conversation'
             scroll(False)
             assert 'L03' in field()[1], field()
             terminal.send('\x1b[F')
