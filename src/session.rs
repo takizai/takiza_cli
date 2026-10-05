@@ -237,6 +237,9 @@ impl Session {
                     HistoryItem::ToolStart { name, args } => {
                         md.push_str(&format!("⚙️ **Tool Call**: `{}`\n```json\n{}\n```\n\n", name, args));
                     }
+                    HistoryItem::FileDiff(diff) => {
+                        md.push_str(&format!("```diff\n{}\n```\n\n", diff));
+                    }
                     HistoryItem::ToolLog(l) => {
                         md.push_str(&format!("- `{}`\n", l));
                     }
@@ -246,6 +249,9 @@ impl Session {
                     }
                     HistoryItem::AssistantMessage(m) => {
                         md.push_str(&format!("### 🤖 Takiza\n\n{}\n\n", m));
+                    }
+                    HistoryItem::ResponseStats { elapsed_ms, tokens, usage_complete } => {
+                        md.push_str(&format!("*{}*\n\n", crate::cli_ui::response_stats_text(*elapsed_ms, *tokens, *usage_complete)));
                     }
                     HistoryItem::Error(e) => {
                         md.push_str(&format!("> ⚠️ **Error**: {}\n\n", e));

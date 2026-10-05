@@ -1,0 +1,1694 @@
+{
+  "Language": [
+    "Язык",
+    "语言"
+  ],
+  "Settings": [
+    "Настройки",
+    "设置"
+  ],
+  "Select Language": [
+    "Выберите язык",
+    "选择语言"
+  ],
+  "Select Visual Theme": [
+    "Выберите тему",
+    "选择主题"
+  ],
+  "Select Reasoning Effort": [
+    "Выберите глубину рассуждений",
+    "选择推理强度"
+  ],
+  "Reasoning Effort": [
+    "Глубина рассуждений",
+    "推理强度"
+  ],
+  "Provider": [
+    "Провайдер",
+    "服务商"
+  ],
+  "Model": [
+    "Модель",
+    "模型"
+  ],
+  "Mode": [
+    "Режим",
+    "模式"
+  ],
+  "Endpoint": [
+    "Адрес API",
+    "API 地址"
+  ],
+  "Workspace": [
+    "Каталог",
+    "工作目录"
+  ],
+  "Visual Theme": [
+    "Тема",
+    "主题"
+  ],
+  "Approval": [
+    "Разрешения",
+    "权限"
+  ],
+  "API Key": [
+    "Ключ API",
+    "API 密钥"
+  ],
+  "Git Branch": [
+    "Ветка Git",
+    "Git 分支"
+  ],
+  "Session ID": [
+    "ID сессии",
+    "会话 ID"
+  ],
+  "Messages": [
+    "Сообщения",
+    "消息"
+  ],
+  "Selected": [
+    "Выбрано",
+    "已选择"
+  ],
+  "Controls": [
+    "Управление",
+    "操作"
+  ],
+  "Step": [
+    "Шаг",
+    "步骤"
+  ],
+  "Version": [
+    "Версия",
+    "版本"
+  ],
+  "User Agreement": [
+    "Пользовательское соглашение",
+    "用户协议"
+  ],
+  "Autonomous AI Software Engineering Agent": [
+    "Автономный ИИ-агент для разработки",
+    "自主 AI 软件开发助手"
+  ],
+  "Type your prompt, /help for commands, !cmd for shell": [
+    "Введите запрос, /help — команды, !cmd — терминал",
+    "输入请求，/help 查看命令，!cmd 执行终端命令"
+  ],
+  "Goodbye!": [
+    "До встречи!",
+    "再见！"
+  ],
+  "User agreement was not accepted": [
+    "Пользовательское соглашение не принято",
+    "未接受用户协议"
+  ],
+  "I accept the terms": [
+    "Принимаю условия",
+    "接受条款"
+  ],
+  "Decline and exit": [
+    "Отказаться и выйти",
+    "拒绝并退出"
+  ],
+  "↑/↓ PgUp/PgDn: scroll · Tab: choose · Enter: confirm · Esc: exit": [
+    "↑/↓ PgUp/PgDn: прокрутка · Tab: выбор · Enter: подтвердить · Esc: выход",
+    "↑/↓ PgUp/PgDn: 滚动 · Tab: 选择 · Enter: 确认 · Esc: 退出"
+  ],
+  "Check your answers. Select a question to change it.": [
+    "Проверьте ответы. Выберите вопрос, чтобы изменить ответ.",
+    "请检查回答。选择问题以修改回答。"
+  ],
+  "[y/Ctrl+Enter] Send  [↑↓/Enter] Edit  [PgUp/PgDn] Scroll  [Esc] Cancel": [
+    "[y/Ctrl+Enter] Отправить  [↑↓/Enter] Изменить  [PgUp/PgDn] Прокрутка  [Esc] Отмена",
+    "[y/Ctrl+Enter] 发送  [↑↓/Enter] 编辑  [PgUp/PgDn] 滚动  [Esc] 取消"
+  ],
+  "[Enter] Submit  [Esc] Cancel": [
+    "[Enter] Отправить  [Esc] Отмена",
+    "[Enter] 提交  [Esc] 取消"
+  ],
+  "[Enter] Done editing  [Esc] Back to options": [
+    "[Enter] Готово  [Esc] Назад к вариантам",
+    "[Enter] 完成编辑  [Esc] 返回选项"
+  ],
+  "[Space/1-9] Toggle  [Enter] Confirm  [Arrows] Move  [0/c] Custom  [s] Skip  [Esc] Cancel": [
+    "[Space/1-9] Отметить  [Enter] Подтвердить  [Стрелки] Выбор  [0/c] Свой ответ  [s] Пропустить  [Esc] Отмена",
+    "[Space/1-9] 勾选  [Enter] 确认  [方向键] 移动  [0/c] 自定义  [s] 跳过  [Esc] 取消"
+  ],
+  "[Enter] Confirm  [1-9/Arrows] Select  [0/c] Custom  [s] Skip  [Esc] Cancel": [
+    "[Enter] Подтвердить  [1-9/Стрелки] Выбор  [0/c] Свой ответ  [s] Пропустить  [Esc] Отмена",
+    "[Enter] 确认  [1-9/方向键] 选择  [0/c] 自定义  [s] 跳过  [Esc] 取消"
+  ],
+  "[Skipped / No answer]": [
+    "[Пропущено / Нет ответа]",
+    "[已跳过 / 未回答]"
+  ],
+  "Question": [
+    "Вопрос",
+    "问题"
+  ],
+  "Answer": [
+    "Ответ",
+    "回答"
+  ],
+  "question": [
+    "вопрос",
+    "问题"
+  ],
+  "answer": [
+    "ответ",
+    "回答"
+  ],
+  "(write custom response...)": [
+    "(введите свой ответ...)",
+    "（输入自定义回答…）"
+  ],
+  "tokens unavailable": [
+    "токены недоступны",
+    "令牌用量不可用"
+  ],
+  "to expand": [
+    "для раскрытия",
+    "展开"
+  ],
+  "Responding...": [
+    "Отвечаю...",
+    "正在回复…"
+  ],
+  "Thinking...": [
+    "Думаю...",
+    "正在思考…"
+  ],
+  "Retrying tool call...": [
+    "Повторяю вызов инструмента...",
+    "正在重试工具调用…"
+  ],
+  "Reconnecting...": [
+    "Переподключаюсь...",
+    "正在重新连接…"
+  ],
+  "Brewing a thought...": [
+    "Формулирую мысль...",
+    "正在酝酿思路…"
+  ],
+  "Neurons in a meeting...": [
+    "Нейроны совещаются...",
+    "神经元正在开会…"
+  ],
+  "Deny": [
+    "Запретить",
+    "拒绝"
+  ],
+  "Auto-approve": [
+    "Авторазрешение",
+    "自动批准"
+  ],
+  "Ask confirmation": [
+    "Запрашивать подтверждение",
+    "请求确认"
+  ],
+  "No skills found.": [
+    "Навыки не найдены.",
+    "未找到技能。"
+  ],
+  "local": [
+    "локальных",
+    "本地"
+  ],
+  "global": [
+    "глобальных",
+    "全局"
+  ],
+  "Place SKILL.md inside a skill folder under .takiza/skills or .agents/skills.": [
+    "Поместите SKILL.md в папку навыка внутри .takiza/skills или .agents/skills.",
+    "将 SKILL.md 放入 .takiza/skills 或 .agents/skills 下的技能目录。"
+  ],
+  "Esc Back": [
+    "Esc: назад",
+    "Esc: 返回"
+  ],
+  "Git Workspace Diff": [
+    "Изменения рабочей директории Git",
+    "Git 工作目录差异"
+  ],
+  "Cancel": [
+    "Отмена",
+    "取消"
+  ],
+  "Restore files and chat": [
+    "Восстановить файлы и чат",
+    "恢复文件与会话"
+  ],
+  "Restore workspace checkpoint": [
+    "Восстановить контрольную точку",
+    "恢复工作区检查点"
+  ],
+  "Restore chat to this checkpoint; later prompts, answers and tool results will be removed": [
+    "Восстановить чат до этой точки; последующие запросы, ответы и результаты инструментов будут удалены",
+    "将会话恢复到此检查点；之后的请求、回答和工具结果将被移除"
+  ],
+  "Review restore · a safety checkpoint will be saved": [
+    "Проверка восстановления · будет создана резервная точка",
+    "确认恢复 · 将保存安全检查点"
+  ],
+  "Show help summary and all slash commands": [
+    "Справка и список команд",
+    "显示帮助和所有命令"
+  ],
+  "Start a new chat and clear conversation history": [
+    "Новый чат с очисткой истории",
+    "开始新会话并清空历史"
+  ],
+  "Switch visual theme (amber, cyberpunk, nord...)": [
+    "Выбрать тему (amber, cyberpunk, nord...)",
+    "切换主题（amber、cyberpunk、nord…）"
+  ],
+  "Switch execution mode (Takiza Manual or Takiza MoA)": [
+    "Выбрать режим (Takiza Manual или Takiza MoA)",
+    "切换运行模式（Takiza Manual 或 Takiza MoA）"
+  ],
+  "Switch active LLM model": [
+    "Выбрать модель",
+    "切换当前模型"
+  ],
+  "Set reasoning effort (low, medium, high) for reasoning models": [
+    "Глубина рассуждений (low, medium, high)",
+    "设置推理强度（low、medium、high）"
+  ],
+  "Switch preset provider (openai, groq, ollama...)": [
+    "Выбрать провайдера (openai, groq, ollama...)",
+    "切换服务商（openai、groq、ollama…）"
+  ],
+  "Toggle auto-approving shell commands vs asking confirmation": [
+    "Авторазрешение команд или запрос подтверждения",
+    "切换自动批准或请求确认"
+  ],
+  "Restore files and chat to a checkpoint before a prompt": [
+    "Восстановить файлы и чат перед запросом",
+    "将文件与会话恢复到请求前的检查点"
+  ],
+  "Restore files and chat (alias of /rewind)": [
+    "Восстановить файлы и чат (псевдоним /rewind)",
+    "恢复文件与会话（/rewind 的别名）"
+  ],
+  "Show git diff of workspace modifications": [
+    "Показать изменения в Git",
+    "显示工作区的 Git 差异"
+  ],
+  "Show session status, token usage, and git branch": [
+    "Сессия, расход токенов и ветка Git",
+    "显示会话状态、令牌用量和 Git 分支"
+  ],
+  "Show daily quotas and token usage breakdown (Takiza Manual / MoA)": [
+    "Лимиты и расход токенов (Takiza Manual / MoA)",
+    "显示每日额度和令牌用量（Takiza Manual / MoA）"
+  ],
+  "List active agent tools and descriptions": [
+    "Инструменты агента и их описания",
+    "列出工具及其说明"
+  ],
+  "Choose a local or global skill to insert into the prompt": [
+    "Вставить локальный или глобальный навык в запрос",
+    "选择本地或全局技能并插入请求"
+  ],
+  "Exit Takiza Harness": [
+    "Выйти из Takiza Harness",
+    "退出 Takiza Harness"
+  ],
+  "Exit Takiza Harness (alias for /exit)": [
+    "Выйти (псевдоним /exit)",
+    "退出（/exit 的别名）"
+  ],
+  "Configure language, theme, provider, model and permissions": [
+    "Настроить язык, тему, провайдера, модель и разрешения",
+    "配置语言、主题、服务商、模型和权限"
+  ],
+  "Warm golden yellow accents with deep charcoal contrast": [
+    "Золотые акценты на тёмном угольном фоне",
+    "深炭灰背景与温暖金色点缀"
+  ],
+  "Vibrant neon magenta and electric cyan aesthetic": [
+    "Неоновый пурпурный и яркий бирюзовый",
+    "霓虹洋红与电光青色"
+  ],
+  "Classic high-contrast terminal phosphor green": [
+    "Классический контрастный зелёный терминал",
+    "经典高对比荧光绿终端"
+  ],
+  "1 of 3": [
+    "1 из 3",
+    "1 / 3"
+  ],
+  "2 of 3": [
+    "2 из 3",
+    "2 / 3"
+  ],
+  "3 of 3": [
+    "3 из 3",
+    "3 / 3"
+  ],
+  "TAKIZA HARNESS - END USER LICENSE & SAFETY AGREEMENT": [
+    "TAKIZA HARNESS — ЛИЦЕНЗИОННОЕ СОГЛАШЕНИЕ И ПРАВИЛА БЕЗОПАСНОСТИ",
+    "TAKIZA HARNESS — 最终用户许可与安全协议"
+  ],
+  "Version 1.0.0 • Effective Date: September 2026": [
+    "Версия 1.0.0 • Дата вступления в силу: сентябрь 2026",
+    "版本 1.0.0 • 生效日期：2026 年 9 月"
+  ],
+  "1. AUTONOMOUS AI AGENT CAPABILITIES": [
+    "1. ВОЗМОЖНОСТИ АВТОНОМНОГО ИИ-АГЕНТА",
+    "1. 自主 AI 助手的能力"
+  ],
+  "Takiza Harness equips advanced AI models with direct tool access to your local operating system, file system, network, and shell. The agent possesses autonomous planning, code reading, editing, file creation, and command execution capabilities in your workspace.": [
+    "Takiza Harness предоставляет ИИ-моделям доступ через инструменты к локальной операционной системе, файлам, сети и командной оболочке. Агент может самостоятельно планировать работу, читать и редактировать код, создавать файлы и выполнять команды в вашей рабочей директории.",
+    "Takiza Harness 通过工具为 AI 模型提供本地操作系统、文件系统、网络和终端的访问能力。助手可在工作区内自主规划、阅读和编辑代码、创建文件并执行命令。"
+  ],
+  "2. USER RESPONSIBILITY & OVERSIGHT": [
+    "2. ОТВЕТСТВЕННОСТЬ И КОНТРОЛЬ ПОЛЬЗОВАТЕЛЯ",
+    "2. 用户责任与监督"
+  ],
+  "You acknowledge and agree that:": [
+    "Вы признаёте и соглашаетесь, что:",
+    "你确认并同意："
+  ],
+  "  • You retain full supervisory authority over all tool actions.": [
+    "  • Вы сохраняете полный контроль над всеми действиями инструментов.",
+    "  • 你保留对所有工具操作的完整监督权。"
+  ],
+  "  • You are responsible for inspecting commands before execution.": [
+    "  • Вы отвечаете за проверку команд перед их выполнением.",
+    "  • 你负责在执行前检查命令。"
+  ],
+  "  • You will keep critical files version-controlled with Git.": [
+    "  • Важные файлы должны находиться под контролем версий Git.",
+    "  • 你应使用 Git 对重要文件进行版本管理。"
+  ],
+  "  • You can press Ctrl+C at any time to abort running operations.": [
+    "  • Вы можете нажать Ctrl+C в любой момент для остановки операций.",
+    "  • 你可以随时按 Ctrl+C 中止正在运行的操作。"
+  ],
+  "3. SAFE COMPUTING & WORKSPACE ISOLATION": [
+    "3. БЕЗОПАСНОСТЬ И ИЗОЛЯЦИЯ РАБОЧЕЙ ДИРЕКТОРИИ",
+    "3. 安全操作与工作区隔离"
+  ],
+  "  • Do not run Takiza Harness in root or privileged system directories.": [
+    "  • Не запускайте Takiza Harness в корневых или привилегированных системных директориях.",
+    "  • 不要在根目录或需要特权的系统目录中运行 Takiza Harness。"
+  ],
+  "  • File modifications and shell tasks are scoped to your workspace.": [
+    "  • Изменения файлов и команды ограничиваются вашей рабочей директорией.",
+    "  • 文件修改和终端任务的范围为你的工作区。"
+  ],
+  "  • Do not provide credentials, private keys, or confidential data you are not authorized to share with third-party LLMs.": [
+    "  • Не передавайте учётные данные, закрытые ключи или конфиденциальные сведения, которыми вы не вправе делиться со сторонними провайдерами ИИ.",
+    "  • 不要提供你无权与第三方 AI 服务商共享的凭据、私钥或机密数据。"
+  ],
+  "4. THIRD-PARTY PROVIDERS & NETWORK USAGE": [
+    "4. СТОРОННИЕ ПРОВАЙДЕРЫ И ИСПОЛЬЗОВАНИЕ СЕТИ",
+    "4. 第三方服务商与网络使用"
+  ],
+  "Takiza Harness interfaces with user-specified LLM API endpoints (such as Groq, OpenAI, OpenRouter, DeepSeek, or local Ollama). Your prompt context and tool output snippets are transmitted to the selected endpoint pursuant to that provider's privacy policy.": [
+    "Takiza Harness подключается к указанным вами API провайдеров ИИ (например, Groq, OpenAI, OpenRouter, DeepSeek или локальному Ollama). Контекст запросов и фрагменты вывода инструментов передаются выбранному провайдеру согласно его политике конфиденциальности.",
+    "Takiza Harness 连接你指定的 AI API 服务（如 Groq、OpenAI、OpenRouter、DeepSeek 或本地 Ollama）。请求上下文和工具输出片段将依照该服务商的隐私政策发送至所选服务。"
+  ],
+  "5. NO WARRANTY & LIMITATION OF LIABILITY": [
+    "5. ОТСУТСТВИЕ ГАРАНТИЙ И ОГРАНИЧЕНИЕ ОТВЕТСТВЕННОСТИ",
+    "5. 无担保与责任限制"
+  ],
+  "THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY DAMAGES, DATA LOSS, OR SYSTEM DAMAGE ARISING FROM THE USE OF AI AGENT AUTOMATION TOOLS.": [
+    "ПРОГРАММА ПРЕДОСТАВЛЯЕТСЯ «КАК ЕСТЬ», БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ. АВТОРЫ И ПРАВООБЛАДАТЕЛИ НЕ НЕСУТ ОТВЕТСТВЕННОСТИ ЗА УЩЕРБ, ПОТЕРЮ ДАННЫХ ИЛИ ПОВРЕЖДЕНИЕ СИСТЕМЫ, ВОЗНИКШИЕ ПРИ ИСПОЛЬЗОВАНИИ ИНСТРУМЕНТОВ АВТОМАТИЗАЦИИ ИИ-АГЕНТА.",
+    "本软件按“原样”提供，不附带任何形式的担保。作者或版权持有人不对使用 AI 助手自动化工具造成的任何损害、数据丢失或系统损坏承担责任。"
+  ],
+  "By choosing 'I ACCEPT', you consent to all terms above.": [
+    "Выбирая «Принимаю», вы соглашаетесь со всеми условиями выше.",
+    "选择“接受”即表示你同意上述所有条款。"
+  ],
+  "Select AI Provider": [
+    "Выберите провайдера ИИ",
+    "选择 AI 服务商"
+  ],
+  "Select AI Model": [
+    "Выберите модель ИИ",
+    "选择 AI 模型"
+  ],
+  "Select Execution Mode": [
+    "Выберите режим работы",
+    "选择运行模式"
+  ],
+  "Custom AI Provider Endpoint": [
+    "Настройка своего провайдера",
+    "自定义 AI 服务"
+  ],
+  "Custom Provider Endpoint...": [
+    "Свой провайдер...",
+    "自定义服务商…"
+  ],
+  "Custom Provider": [
+    "Свой провайдер",
+    "自定义服务商"
+  ],
+  "Custom AI Model": [
+    "Своя модель ИИ",
+    "自定义 AI 模型"
+  ],
+  "Custom Model (type manually)...": [
+    "Своя модель (ввести вручную)...",
+    "自定义模型（手动输入）…"
+  ],
+  "Enter Model Name/ID:": [
+    "Введите название или ID модели:",
+    "输入模型名称或 ID："
+  ],
+  "Tab/Enter: Next  •  Enter on Key: Save  •  Esc: Cancel": [
+    "Tab/Enter: далее  •  Enter на ключе: сохранить  •  Esc: отмена",
+    "Tab/Enter: 下一项  •  密钥处 Enter: 保存  •  Esc: 取消"
+  ],
+  "default": [
+    "по умолчанию",
+    "默认"
+  ],
+  "Resume Saved Chat": [
+    "Продолжить сохранённый чат",
+    "继续已保存的会话"
+  ],
+  "commit": [
+    "коммит",
+    "提交"
+  ],
+  "Git Commit": [
+    "Коммит Git",
+    "Git 提交"
+  ],
+  "Commit message:": [
+    "Сообщение коммита:",
+    "提交说明："
+  ],
+  "Revert Workspace Changes": [
+    "Отмена изменений файлов",
+    "还原工作区更改"
+  ],
+  "Revert all unstaged files? (yes/no):": [
+    "Отменить все неиндексированные изменения? (yes/no):",
+    "还原所有未暂存的文件？（yes/no）："
+  ],
+  "(not set)": [
+    "(не задано)",
+    "（未设置）"
+  ],
+  "(no git)": [
+    "(нет Git)",
+    "（无 Git）"
+  ],
+  "clean": [
+    "без изменений",
+    "无更改"
+  ],
+  "Auto-approve (skip permissions)": [
+    "Авторазрешение (без запросов)",
+    "自动批准（跳过权限确认）"
+  ],
+  "Ask on command (default)": [
+    "Запрашивать перед командой (по умолчанию)",
+    "每次执行前询问（默认）"
+  ],
+  "AI Model": [
+    "Модель ИИ",
+    "AI 模型"
+  ],
+  "Takiza Code Session & System Status": [
+    "Takiza Code — состояние сессии и системы",
+    "Takiza Code — 会话与系统状态"
+  ],
+  "Press shortcut key or Esc to exit": [
+    "Нажмите указанную клавишу или Esc для выхода",
+    "按快捷键操作，或按 Esc 退出"
+  ],
+  "Reads workspace file with 1-indexed lines": [
+    "Читает файл; номера строк начинаются с 1",
+    "读取工作区文件，行号从 1 开始"
+  ],
+  "Creates or overwrites files in workspace": [
+    "Создаёт или перезаписывает файлы",
+    "创建或覆盖工作区文件"
+  ],
+  "Replaces exact substring chunk in file": [
+    "Заменяет точный фрагмент текста в файле",
+    "替换文件中完全匹配的文本片段"
+  ],
+  "Lists directory entries with file sizes": [
+    "Список файлов и их размеров",
+    "列出目录内容和文件大小"
+  ],
+  "Recursively searches files by glob/pattern": [
+    "Ищет файлы по шаблону во вложенных папках",
+    "按模式递归搜索文件"
+  ],
+  "Recursively searches text contents inside files": [
+    "Ищет текст внутри файлов",
+    "递归搜索文件中的文本"
+  ],
+  "Executes bash shell commands in workspace sandbox": [
+    "Выполняет команды Bash в рабочей директории",
+    "在工作区沙箱中执行 Bash 命令"
+  ],
+  "Autonomous Agent Tools & Capabilities": [
+    "Инструменты и возможности агента",
+    "助手工具与能力"
+  ],
+  "Takiza Harness provides 7 autonomous tools to inspect and modify code:": [
+    "Takiza Harness предоставляет 7 инструментов для чтения и изменения кода:",
+    "Takiza Harness 提供 7 个用于检查和修改代码的工具："
+  ],
+  "Press [Enter] or [Esc] to return to chat": [
+    "Нажмите Enter или Esc, чтобы вернуться в чат",
+    "按 Enter 或 Esc 返回会话"
+  ],
+  "Token & Quota Usage [Mock]": [
+    "Токены и лимиты [демо]",
+    "令牌与额度用量［演示］"
+  ],
+  "Daily API quotas and token limits breakdown for active modes:": [
+    "Суточные лимиты API и токенов для режимов:",
+    "各运行模式的每日 API 额度和令牌限制："
+  ],
+  "Low": [
+    "Низкая",
+    "低"
+  ],
+  "Medium": [
+    "Средняя",
+    "中"
+  ],
+  "High": [
+    "Высокая",
+    "高"
+  ],
+  "Fast response, minimal reasoning tokens": [
+    "Быстрый ответ, минимум токенов на рассуждения",
+    "快速回复，最少推理令牌"
+  ],
+  "Balanced reasoning depth (default)": [
+    "Сбалансированная глубина (по умолчанию)",
+    "均衡的推理深度（默认）"
+  ],
+  "Deep analysis, exhaustive reasoning": [
+    "Глубокий анализ и подробные рассуждения",
+    "深入分析与全面推理"
+  ],
+  "Calm Scandinavian winter palette with cool arctic cyan": [
+    "Спокойная зимняя палитра с арктическим голубым",
+    "宁静的北欧冬季冰青色调"
+  ],
+  "Clean, distraction-free greyscale minimalism": [
+    "Лаконичная палитра в оттенках серого",
+    "简洁的灰阶极简风格"
+  ],
+  "Violet accents with soft mint borders": [
+    "Фиолетовые акценты и мятные рамки",
+    "紫色点缀与柔和薄荷色边框"
+  ],
+  "Warm coral accents with muted rose borders": [
+    "Коралловые акценты и розовые рамки",
+    "温暖珊瑚色点缀与柔和玫瑰色边框"
+  ],
+  "Bright ocean blue with turquoise borders": [
+    "Яркий океанский синий и бирюзовые рамки",
+    "明亮海蓝与绿松石色边框"
+  ],
+  "Soft blossom pink with lavender borders": [
+    "Нежный розовый и лавандовые рамки",
+    "柔和樱粉与薰衣草色边框"
+  ],
+  "Golden accents with balanced teal borders": [
+    "Золотые акценты и тёмно-бирюзовые рамки",
+    "金色点缀与均衡青绿色边框"
+  ],
+  "Amber (Takiza Gold)": [
+    "Amber (золото Takiza)",
+    "Amber（Takiza 金色）"
+  ],
+  "Cyberpunk (Neon Pink & Cyan)": [
+    "Cyberpunk (неоновый розовый и бирюзовый)",
+    "Cyberpunk（霓虹粉与青色）"
+  ],
+  "Emerald (Matrix Green)": [
+    "Emerald (зелёная матрица)",
+    "Emerald（矩阵绿）"
+  ],
+  "Nord (Frost Arctic Blue)": [
+    "Nord (арктический голубой)",
+    "Nord（冰霜蓝）"
+  ],
+  "Monochrome (Minimalist White)": [
+    "Monochrome (лаконичный белый)",
+    "Monochrome（极简白）"
+  ],
+  "Dracula (Violet & Mint)": [
+    "Dracula (фиолетовый и мятный)",
+    "Dracula（紫与薄荷）"
+  ],
+  "Rose (Warm Coral)": [
+    "Rose (тёплый коралловый)",
+    "Rose（暖珊瑚）"
+  ],
+  "Ocean (Deep Sea Blue)": [
+    "Ocean (глубокий морской синий)",
+    "Ocean（深海蓝）"
+  ],
+  "Sakura (Soft Blossom)": [
+    "Sakura (нежное цветение)",
+    "Sakura（柔和樱花）"
+  ],
+  "Solarized (Golden Teal)": [
+    "Solarized (золото и бирюзовый)",
+    "Solarized（金与青绿）"
+  ],
+  "Manual model selection from frontier LLM catalog": [
+    "Ручной выбор модели из каталога",
+    "从模型目录中手动选择模型"
+  ],
+  "Mixture of Agents: smart auto-routing (~45% lower token costs)": [
+    "Mixture of Agents: автоматический выбор модели (~45% экономии токенов)",
+    "Mixture of Agents：智能自动路由（令牌成本约降低 45%）"
+  ],
+  "Herding neurons...": [
+    "Собираю нейроны...",
+    "正在召集神经元…"
+  ],
+  "Negotiating with bits...": [
+    "Договариваюсь с битами...",
+    "正在与比特协商…"
+  ],
+  "Scratching the CPU's head...": [
+    "Процессор задумался...",
+    "处理器正在挠头…"
+  ],
+  "Chasing a stray idea...": [
+    "Ловлю мысль...",
+    "正在追寻灵感…"
+  ],
+  "Feeding the brain hamster...": [
+    "Кормлю мозгового хомяка...",
+    "正在喂脑内仓鼠…"
+  ],
+  "Puzzling without the box...": [
+    "Собираю картину...",
+    "正在拼接思路…"
+  ],
+  "Untangling ideas...": [
+    "Распутываю мысли...",
+    "正在理清思路…"
+  ],
+  "Checking logic's pockets...": [
+    "Проверяю логику...",
+    "正在检查逻辑…"
+  ],
+  "Warming up hypotheses...": [
+    "Разогреваю гипотезы...",
+    "正在预热假设…"
+  ],
+  "Consulting the rubber duck...": [
+    "Советуюсь с уточкой...",
+    "正在咨询小黄鸭…"
+  ],
+  "Resize terminal": [
+    "Увеличьте окно терминала",
+    "请调整终端大小"
+  ],
+  "Attachments": [
+    "Вложения",
+    "附件"
+  ],
+  "Clipboard": [
+    "Буфер обмена",
+    "剪贴板"
+  ],
+  "View recent conversation and saved session history": [
+    "История переписки и сохранённые сессии",
+    "查看最近会话和已保存的历史"
+  ],
+  "List saved conversation sessions": [
+    "Список сохранённых сессий",
+    "列出已保存的会话"
+  ],
+  "List saved chats or resume a session by ID (/resume [id])": [
+    "Список чатов или продолжение по ID (/resume [id])",
+    "列出会话或按 ID 继续（/resume [id]）"
+  ],
+  "Start a new conversation session (alias for /reset)": [
+    "Новая сессия (псевдоним /reset)",
+    "开始新会话（/reset 的别名）"
+  ],
+  "Reset conversation history and start fresh": [
+    "Очистить историю и начать заново",
+    "清空会话历史并重新开始"
+  ],
+  "Type while the agent responds; submitted prompts wait in FIFO order.": [
+    "Можно вводить текст во время ответа; отправленные запросы выполняются по очереди.",
+    "可在助手回复时输入；提交的请求将按顺序排队执行。"
+  ],
+  "Available Slash Commands:": [
+    "Доступные команды:",
+    "可用命令："
+  ],
+  "You must accept the user agreement to use Takiza Harness. Goodbye!": [
+    "Для работы с Takiza Harness нужно принять соглашение. До встречи!",
+    "使用 Takiza Harness 需要接受用户协议。再见！"
+  ],
+  "Allow once": [
+    "Разрешить один раз",
+    "允许一次"
+  ],
+  "Allow for session": [
+    "Разрешить на сессию",
+    "在此会话中允许"
+  ],
+  "Unknown error": [
+    "Неизвестная ошибка",
+    "未知错误"
+  ],
+  "approval requested": [
+    "запрошено разрешение",
+    "已请求权限"
+  ],
+  "approval allowed": [
+    "разрешено",
+    "已允许"
+  ],
+  "approval allowed for session": [
+    "разрешено на сессию",
+    "已在此会话中允许"
+  ],
+  "approval denied": [
+    "запрещено",
+    "已拒绝"
+  ],
+  "[y] Send  [↵] Edit": [
+    "[y] Отправить  [↵] Изменить",
+    "[y] 发送  [↵] 编辑"
+  ],
+  "[Skipped / No response]": [
+    "[Пропущено / Нет ответа]",
+    "[已跳过 / 未回答]"
+  ],
+  "Executing tools...": [
+    "Выполняю инструменты...",
+    "正在执行工具…"
+  ],
+  "commands": [
+    "команд",
+    "命令"
+  ],
+  "skills": [
+    "навыков",
+    "技能"
+  ],
+  "Lines {}–{} of {}": [
+    "Строки {}–{} из {}",
+    "第 {}–{} 行，共 {} 行"
+  ],
+  "Ultra-fast LPU inference (Llama 3.3, DeepSeek R1, Mixtral)": [
+    "Быстрые вычисления LPU (Llama 3.3, DeepSeek R1, Mixtral)",
+    "极速 LPU 推理（Llama 3.3、DeepSeek R1、Mixtral）"
+  ],
+  "Unified router accessing Claude 3.5, GPT-4o, DeepSeek, Gemini": [
+    "Доступ к Claude 3.5, GPT-4o, DeepSeek, Gemini",
+    "统一访问 Claude 3.5、GPT-4o、DeepSeek、Gemini"
+  ],
+  "Official OpenAI endpoints (GPT-4o, o1, o3-mini)": [
+    "Официальный API OpenAI (GPT-4o, o1, o3-mini)",
+    "OpenAI 官方 API（GPT-4o、o1、o3-mini）"
+  ],
+  "DeepSeek V3 Chat & R1 Reasoner official API": [
+    "Официальный API DeepSeek V3 Chat и R1 Reasoner",
+    "DeepSeek V3 Chat 与 R1 Reasoner 官方 API"
+  ],
+  "Offline privacy-first local LLM runner (no API key needed)": [
+    "Локальные модели без сети и ключа API",
+    "离线本地模型服务，无需 API 密钥"
+  ],
+  "Ollama (Local)": [
+    "Ollama (локально)",
+    "Ollama（本地）"
+  ],
+  "OpenAI flagship for demanding end-to-end work, advanced analysis & coding": [
+    "Флагман OpenAI для сложной разработки и анализа",
+    "OpenAI 旗舰，适用于复杂开发与深入分析"
+  ],
+  "High-level reasoning & complex STEM architecture with long context": [
+    "Глубокие рассуждения и сложные STEM-задачи с длинным контекстом",
+    "高级推理与复杂 STEM 架构，支持长上下文"
+  ],
+  "Anthropic flagship for long-horizon agentic workflows and full-stack coding": [
+    "Флагман Anthropic для длительных задач и полной разработки",
+    "Anthropic 旗舰，适用于长期自主任务与全栈开发"
+  ],
+  "Frontier performance across autonomous engineering, coding and reasoning": [
+    "Передовая модель для автономной разработки и рассуждений",
+    "适用于自主工程、编码与推理的前沿模型"
+  ],
+  "Google high-velocity multimodal model with advanced reasoning & tool orchestration": [
+    "Быстрая мультимодальная модель Google с рассуждениями и инструментами",
+    "Google 高速多模态模型，具备高级推理与工具编排能力"
+  ],
+  "Balanced reasoning & complex codebase analysis at cost-effective inference": [
+    "Сбалансированные рассуждения и анализ кода по доступной цене",
+    "经济高效的均衡推理与复杂代码分析"
+  ],
+  "Frontier multimodal reasoning with 256k context and full tool execution": [
+    "Мультимодальные рассуждения, контекст 256k и выполнение инструментов",
+    "前沿多模态推理，支持 256k 上下文与完整工具执行"
+  ],
+  "Specialized code generation & bug localization champion with vision capabilities": [
+    "Модель для генерации кода и поиска ошибок с поддержкой изображений",
+    "专用于代码生成和问题定位，支持视觉输入"
+  ],
+  "current": [
+    "текущая",
+    "当前"
+  ],
+  "Unknown command: {line}. Use /help to see available commands.": [
+    "Неизвестная команда: {line}. Список команд — /help.",
+    "未知命令：{line}。使用 /help 查看可用命令。"
+  ],
+  "Press any key to return to the response.": [
+    "Нажмите любую клавишу для возврата к ответу.",
+    "按任意键返回回复。"
+  ],
+  "USAGE:": [
+    "ИСПОЛЬЗОВАНИЕ:",
+    "用法："
+  ],
+  "OPTIONS:": [
+    "ПАРАМЕТРЫ:",
+    "选项："
+  ],
+  "ARGS:": [
+    "АРГУМЕНТЫ:",
+    "参数："
+  ],
+  " You ": [
+    " Вы ",
+    " 你 "
+  ],
+  " Ctrl+O: Collapse • Esc/Ctrl+C: Stop ": [
+    " Ctrl+O: свернуть • Esc/Ctrl+C: остановить ",
+    " Ctrl+O: 折叠 • Esc/Ctrl+C: 停止 "
+  ],
+  " Ctrl+O: Expand • Esc/Ctrl+C: Stop ": [
+    " Ctrl+O: развернуть • Esc/Ctrl+C: остановить ",
+    " Ctrl+O: 展开 • Esc/Ctrl+C: 停止 "
+  ],
+  " Esc/Ctrl+C: Stop ": [
+    " Esc/Ctrl+C: остановить ",
+    " Esc/Ctrl+C: 停止 "
+  ],
+  " Esc: Stop ": [
+    " Esc: Остановить ",
+    " Esc: 停止 "
+  ],
+  "    question  ": [
+    "    вопрос  ",
+    "    问题  "
+  ],
+  "    answer    ": [
+    "    ответ    ",
+    "    回答    "
+  ],
+  " ↑↓ Select · Enter · Esc Deny ": [
+    " ↑↓ Выбрать · Enter · Esc Запретить ",
+    " ↑↓ 选择 · Enter · Esc 拒绝 "
+  ],
+  "Your answer: ": [
+    "Ваш ответ: ",
+    "你的回答： "
+  ],
+  " Review answers ": [
+    " Проверка ответов ",
+    " 检查回答 "
+  ],
+  "↑/↓ · Enter: Confirm · Esc: Cancel": [
+    "↑/↓ · Enter: подтвердить · Esc: отмена",
+    "↑/↓ · Enter: 确认 · Esc: 取消"
+  ],
+  "↑/↓ · Enter: Select · Esc: Back": [
+    "↑/↓ · Enter: выбрать · Esc: назад",
+    "↑/↓ · Enter: 选择 · Esc: 返回"
+  ],
+  "Enter: confirm  •  Esc: cancel": [
+    "Enter: подтвердить  •  Esc: отмена",
+    "Enter: 确认  •  Esc: 取消"
+  ],
+  "Base URL: ": [
+    "Адрес API: ",
+    "API 地址: "
+  ],
+  "Model ID: ": [
+    "ID модели: ",
+    "模型 ID： "
+  ],
+  "API Key:  ": [
+    "Ключ API:  ",
+    "API 密钥:  "
+  ],
+  "      \u001b[38;2;130;130;135mEnter custom Base URL and Model manually\u001b[0m": [
+    "      \u001b[38;2;130;130;135mВведите адрес API и модель вручную\u001b[0m",
+    "      \u001b[38;2;130;130;135m手动输入 API 地址和模型\u001b[0m"
+  ],
+  "↑/↓: Navigate  Enter: Select  Esc: Cancel": [
+    "↑/↓: Выбор  Enter: выбрать  Esc: отмена",
+    "↑/↓: 移动  Enter: 选择  Esc: 取消"
+  ],
+  " \u001b[1;38;2;40;220;120m[⚡ ~45% Cheaper]\u001b[0m": [
+    " \u001b[1;38;2;40;220;120m[⚡ ~45% дешевле]\u001b[0m",
+    " \u001b[1;38;2;40;220;120m[⚡ ~45% 更便宜]\u001b[0m"
+  ],
+  " [⚡ ~45% Cheaper]": [
+    " [⚡ ~45% дешевле]",
+    " [⚡ ~45% 更便宜]"
+  ],
+  "Enter: Select  •  Esc: Cancel": [
+    "Enter: выбрать  •  Esc: отмена",
+    "Enter: 选择  •  Esc: 取消"
+  ],
+  "Takiza Manual - Select Model": [
+    "Takiza Manual - Выберите модель",
+    "Takiza Manual - 选择模型"
+  ],
+  " \u001b[1;38;2;255;95;80m[⚠ $$$ / High Cost]\u001b[0m": [
+    " \u001b[1;38;2;255;95;80m[⚠ $$$ / Высокая стоимость]\u001b[0m",
+    " \u001b[1;38;2;255;95;80m[⚠ $$$ / 高费用]\u001b[0m"
+  ],
+  " [⚠ $$$ / High Cost]": [
+    " [⚠ $$$ / Высокая стоимость]",
+    " [⚠ $$$ / 高费用]"
+  ],
+  "Enter: Select Model  •  Esc: Cancel": [
+    "Enter: выбрать Модель  •  Esc: отмена",
+    "Enter: 选择 模型  •  Esc: 取消"
+  ],
+  "Enter: resume  •  d: delete  •  Esc: cancel": [
+    "Enter: продолжить  •  d: удалить  •  Esc: отмена",
+    "Enter: 继续  •  d: 删除  •  Esc: 取消"
+  ],
+  "↑/↓ PgUp/PgDn: scroll • c: commit • r: revert • Esc: back": [
+    "↑/↓ PgUp/PgDn: прокрутка • c: коммит • r: отменить изменения • Esc: назад",
+    "↑/↓ PgUp/PgDn: 滚动 • c: 提交 • r: 还原 • Esc: 返回"
+  ],
+  "Actions: [p] Provider  •  [m] Model  •  [o] Mode  •  [u] Usage  •  [t] Theme  •  [r] Reset  •  [Esc] Back": [
+    "Действия: [p] Провайдер  •  [m] Модель  •  [o] Режим  •  [u] Расход  •  [t] Тема  •  [r] Сбросить  •  [Esc] Назад",
+    "操作: [p] 服务商  •  [m] 模型  •  [o] 模式  •  [u] 用量  •  [t] 主题  •  [r] 重置  •  [Esc] 返回"
+  ],
+  " \u001b[1;38;2;40;220;120m[active]\u001b[0m": [
+    " \u001b[1;38;2;40;220;120m[активен]\u001b[0m",
+    " \u001b[1;38;2;40;220;120m[当前]\u001b[0m"
+  ],
+  "• Takiza Manual Quota [active]": [
+    "• Takiza Manual Лимит [активен]",
+    "• Takiza Manual 额度 [当前]"
+  ],
+  "• Takiza Manual Quota": [
+    "• Takiza Manual Лимит",
+    "• Takiza Manual 额度"
+  ],
+  "    [██████████░░░░░░░░░░]  520,000 / 1,000,000 tokens (52% used)": [
+    "    [██████████░░░░░░░░░░]  520,000 / 1,000,000 токенов (52% использовано)",
+    "    [██████████░░░░░░░░░░]  520,000 / 1,000,000 令牌 (52% 已使用)"
+  ],
+  "    Limit: 1.0M tokens/day  •  Remaining: 480k (48%)  •  Resets in: 4h 18m": [
+    "    Лимит: 1 млн токенов/день  •  Осталось: 480 тыс. (48%)  •  Сброс через: 4ч 18м",
+    "    限制：每日 100 万令牌  •  剩余：48 万（48%）  •  重置倒计时：4 小时 18 分"
+  ],
+  "• Takiza MoA Quota [⚡ ~45% Cheaper] [active]": [
+    "• Takiza MoA Лимит [⚡ ~45% дешевле] [активен]",
+    "• Takiza MoA 额度 [⚡ ~45% 更便宜] [当前]"
+  ],
+  "• Takiza MoA Quota [⚡ ~45% Cheaper]": [
+    "• Takiza MoA Лимит [⚡ ~45% дешевле]",
+    "• Takiza MoA 额度 [⚡ ~45% 更便宜]"
+  ],
+  "    [████░░░░░░░░░░░░░░░░]  210,000 / 1,000,000 tokens (21% used)": [
+    "    [████░░░░░░░░░░░░░░░░]  210,000 / 1,000,000 токенов (21% использовано)",
+    "    [████░░░░░░░░░░░░░░░░]  210,000 / 1,000,000 令牌 (21% 已使用)"
+  ],
+  "    Limit: 1.0M tokens/day  •  Remaining: 790k (79%)  •  Saved via MoA: ~172k tokens": [
+    "    Лимит: 1 млн токенов/день  •  Осталось: 790 тыс. (79%)  •  Экономия MoA: ~172 тыс. токенов",
+    "    限制：每日 100 万令牌  •  剩余：79 万（79%）  •  MoA 节省：约 17.2 万令牌"
+  ],
+  "↑↓ · Enter Confirm · PgUp/PgDn Files · Esc Back": [
+    "↑↓ · Enter Подтвердить · PgUp/PgDn Файлы · Esc: назад",
+    "↑↓ · Enter 确认 · PgUp/PgDn 文件 · Esc: 返回"
+  ],
+  "Language / Язык / 语言 · 1/3": [
+    "Язык / Язык / 语言 · 1/3",
+    "语言 / Язык / 语言 · 1/3"
+  ],
+  "Select Visual Theme · 2/3": [
+    "Выберите тему · 2/3",
+    "选择主题 · 2/3"
+  ],
+  "User Agreement · 3/3": [
+    "Пользовательское соглашение · 3/3",
+    "用户协议 · 3/3"
+  ],
+  " Ctrl+O: Collapse • Ctrl+C: Cancel ": [
+    " Ctrl+O: свернуть • Ctrl+C: отмена ",
+    " Ctrl+O: 折叠 • Ctrl+C: 取消 "
+  ],
+  " Ctrl+O: Expand • Ctrl+C: Cancel ": [
+    " Ctrl+O: развернуть • Ctrl+C: отмена ",
+    " Ctrl+O: 展开 • Ctrl+C: 取消 "
+  ],
+  "⏸ Stopped by user": [
+    "⏸ Остановлено пользователем",
+    "⏸ 用户已停止"
+  ],
+  "  ℹ Questionnaire cancelled by user.": [
+    "  ℹ Опрос отменён пользователем.",
+    "  ℹ 用户已取消问卷。"
+  ],
+  " (current)": [
+    " (текущая)",
+    " (当前)"
+  ],
+  "command": [
+    "команда",
+    "命令"
+  ],
+  "write": [
+    "запись",
+    "写入"
+  ],
+  "edit": [
+    "правка",
+    "编辑"
+  ],
+  "read": [
+    "чтение",
+    "读取"
+  ],
+  "find": [
+    "поиск",
+    "查找"
+  ],
+  "search": [
+    "поиск",
+    "搜索"
+  ],
+  "list": [
+    "список",
+    "列表"
+  ],
+  "skill": [
+    "навык",
+    "技能"
+  ],
+  "tool": [
+    "инструмент",
+    "工具"
+  ],
+  "failed": [
+    "ошибка",
+    "失败"
+  ],
+  "running": [
+    "выполняется",
+    "执行中"
+  ],
+  "↑/↓ Navigate · Enter Select · Tab Complete · Esc Cancel": [
+    "↑/↓ Выбор · Enter Подтвердить · Tab Дополнить · Esc Отмена",
+    "↑/↓ 移动 · Enter 选择 · Tab 补全 · Esc 取消"
+  ],
+  "↑/↓ · Enter Select · Tab Complete · Esc Cancel": [
+    "↑/↓ · Enter Выбрать · Tab Дополнить · Esc Отмена",
+    "↑/↓ · Enter 选择 · Tab 补全 · Esc 取消"
+  ],
+  "Model: {}": [
+    "Модель: {}",
+    "模型: {}"
+  ],
+  "  {}│\u001b[0m {}Model:     \u001b[0m\u001b[38;2;230;230;235m{}\u001b[0m": [
+    "  {}│\u001b[0m {}Модель:     \u001b[0m\u001b[38;2;230;230;235m{}\u001b[0m",
+    "  {}│\u001b[0m {}模型:     \u001b[0m\u001b[38;2;230;230;235m{}\u001b[0m"
+  ],
+  "  {}│\u001b[0m {}Endpoint:  \u001b[0m\u001b[38;2;170;170;175m{}\u001b[0m": [
+    "  {}│\u001b[0m {}Адрес API:  \u001b[0m\u001b[38;2;170;170;175m{}\u001b[0m",
+    "  {}│\u001b[0m {}API 地址:  \u001b[0m\u001b[38;2;170;170;175m{}\u001b[0m"
+  ],
+  "  {}│\u001b[0m {}Workspace: \u001b[0m\u001b[38;2;170;170;175m{}\u001b[0m": [
+    "  {}│\u001b[0m {}Каталог: \u001b[0m\u001b[38;2;170;170;175m{}\u001b[0m",
+    "  {}│\u001b[0m {}工作目录: \u001b[0m\u001b[38;2;170;170;175m{}\u001b[0m"
+  ],
+  "Slash commands run immediately. Changing session/model interrupts the active response.\n": [
+    "Команды / выполняются сразу. Смена сессии или модели прерывает текущий ответ.\n",
+    "斜杠命令立即执行。切换会话或模型会中断当前回复。\n"
+  ],
+  "  /help               - Show this help summary": [
+    "  /help               - Показать справку",
+    "  /help               - 显示帮助"
+  ],
+  "  /clear              - Start a new chat and clear conversation history": [
+    "  /clear              - Новый чат с очисткой истории",
+    "  /clear              - 开始新会话并清空历史"
+  ],
+  "  /theme [name]       - View or switch visual theme (amber, cyberpunk, emerald, nord, monochrome)": [
+    "  /theme [name]       - Посмотреть или выбрать тему",
+    "  /theme [name]       - 查看或切换主题"
+  ],
+  "  /mode [manual|moa]  - Switch execution mode (Takiza Manual: pick model, Takiza MoA: auto)": [
+    "  /mode [manual|moa]  - Выбрать режим (Manual: вручную, MoA: автоматически)",
+    "  /mode [manual|moa]  - 切换模式（Manual：手动，MoA：自动）"
+  ],
+  "  /model <name>       - Switch model (e.g. /model gpt-4o, /model claude-3-5-sonnet)": [
+    "  /model <name>       - Сменить модель (например, /model gpt-4o)",
+    "  /model <name>       - 切换模型（如 /model gpt-4o）"
+  ],
+  "  /provider <name>    - Switch preset provider (openai, openrouter, deepseek, ollama, groq)": [
+    "  /provider <name>    - Сменить провайдера (openai, openrouter, deepseek, ollama, groq)",
+    "  /provider <name>    - 切换服务商（openai、openrouter、deepseek、ollama、groq）"
+  ],
+  "  /rewind, /restore   - Restore files and chat from a pre-prompt checkpoint": [
+    "  /rewind, /restore   - Восстановить файлы и чат до запроса",
+    "  /rewind, /restore   - 从请求前的检查点恢复文件与会话"
+  ],
+  "  /diff               - View git diff of changes made in the workspace": [
+    "  /diff               - Показать изменения в Git",
+    "  /diff               - 查看工作区的 Git 差异"
+  ],
+  "  /status             - View current session info, git status, and token usage": [
+    "  /status             - Состояние сессии, Git и расход токенов",
+    "  /status             - 查看会话信息、Git 状态和令牌用量"
+  ],
+  "  /usage              - View daily quotas and token usage breakdown (Manual / MoA)": [
+    "  /usage              - Показать суточные лимиты и расход токенов (Manual / MoA)",
+    "  /usage              - 查看每日额度和令牌用量（Manual / MoA）"
+  ],
+  "  /sessions           - List saved conversation sessions": [
+    "  /sessions           - Список сохранённых сессий",
+    "  /sessions           - 列出已保存的会话"
+  ],
+  "  /reset              - Reset conversation history to start fresh": [
+    "  /reset              - Очистить историю и начать заново",
+    "  /reset              - 清空历史并重新开始"
+  ],
+  "  /approval           - Toggle auto-approving commands vs asking permissions": [
+    "  /approval           - Авторазрешение команд или запрос подтверждения",
+    "  /approval           - 切换自动批准或请求权限"
+  ],
+  "  /tools              - List available agent tools": [
+    "  /tools              - Список инструментов агента",
+    "  /tools              - 列出可用工具"
+  ],
+  "  /skills             - Choose a skill (type to search, Enter to insert, F5 to rescan)": [
+    "  /skills             - Выбрать навык (ввод: поиск, Enter: вставить, F5: обновить)",
+    "  /skills             - 选择技能（输入搜索，Enter 插入，F5 重新扫描）"
+  ],
+  "  /exit or /quit      - Exit Takiza Code": [
+    "  /exit or /quit      - Выйти из Takiza Code",
+    "  /exit or /quit      - 退出 Takiza Code"
+  ],
+  "  !<shell command>    - Execute bash command directly (e.g. !git status, !cargo test)": [
+    "  !<shell command>    - Выполнить команду Bash (например, !git status)",
+    "  !<shell command>    - 直接执行 Bash 命令（如 !git status）"
+  ],
+  "  Ctrl+O              - Toggle expansion of command/search output (max 5 lines in standard mode)": [
+    "  Ctrl+O              - Развернуть или свернуть вывод команды/поиска",
+    "  Ctrl+O              - 展开或折叠命令与搜索输出"
+  ],
+  "\nCLI Flags (on startup):": [
+    "\nПараметры запуска:",
+    "\n启动参数："
+  ],
+  "  -c, --continue      - Continue previous session": [
+    "  -c, --continue      - Продолжить предыдущую сессию",
+    "  -c, --continue      - 继续上次会话"
+  ],
+  "  -y, --yes, -a       - Skip command permissions (default: ask permission before running commands)": [
+    "  -y, --yes, -a       - Авторазрешение команд (по умолчанию: спрашивать)",
+    "  -y, --yes, -a       - 跳过命令确认（默认执行前询问）"
+  ],
+  " You [{queued} queued] ": [
+    " Вы [{queued} в очереди] ",
+    " 你 [{queued} 排队中] "
+  ],
+  " You [{}] ": [
+    " Вы [{}] ",
+    " 你 [{}] "
+  ],
+  "{}/{} · Ctrl+End: latest": [
+    "{}/{} · Ctrl+End: к последним",
+    "{}/{} · Ctrl+End: 最新"
+  ],
+  "{} items": [
+    "{} элементов",
+    "{} 项"
+  ],
+  "{} lines": [
+    "{} строк",
+    "{} 行"
+  ],
+  "    \u001b[90m+{} lines  · Ctrl+O to expand\u001b[0m": [
+    "    \u001b[90m+{} строк  · Ctrl+O для раскрытия\u001b[0m",
+    "    \u001b[90m+{} 行  · Ctrl+O 展开\u001b[0m"
+  ],
+  "    +{hidden_count} lines  · Ctrl+O to expand": [
+    "    +{hidden_count} строк  · Ctrl+O для раскрытия",
+    "    +{hidden_count} 行  · Ctrl+O 展开"
+  ],
+  " Permission [{}] ": [
+    " Разрешение [{}] ",
+    " 权限 [{}] "
+  ],
+  "{} [0] Custom: ": [
+    "{} [0] Свой ответ: ",
+    "{} [0] 自定义: "
+  ],
+  "   Answer: {}": [
+    "   Ответ: {}",
+    "   回答: {}"
+  ],
+  " Question [{}/{}] • {} ": [
+    " Вопрос [{}/{}] • {} ",
+    " 问题 [{}/{}] • {} "
+  ],
+  " Question [{}/{}] ": [
+    " Вопрос [{}/{}] ",
+    " 问题 [{}/{}] "
+  ],
+  "{}h {:02}m {:02}s": [
+    "{}ч {:02}м {:02}с",
+    "{}小时 {:02}分 {:02}秒"
+  ],
+  "{}m {:02}s": [
+    "{}м {:02}с",
+    "{}分 {:02}秒"
+  ],
+  "{:.1}s": [
+    "{:.1}с",
+    "{:.1}秒"
+  ],
+  "{tokens} tokens": [
+    "{tokens} токенов",
+    "{tokens} 令牌"
+  ],
+  "≥ {tokens} tokens": [
+    "≥ {tokens} токенов",
+    "≥ {tokens} 令牌"
+  ],
+  "Completed in {duration} · {usage}": [
+    "Ответ за {duration} · {usage}",
+    "完成耗时 {duration} · {usage}"
+  ],
+  "  {secondary}Reasoning\u001b[0m": [
+    "  {secondary}Рассуждения\u001b[0m",
+    "  {secondary}推理\u001b[0m"
+  ],
+  "+{} reasoning lines · Ctrl+O to expand": [
+    "+{} строк рассуждений · Ctrl+O для раскрытия",
+    "+{} 行推理 · Ctrl+O 展开"
+  ],
+  "+{hidden} diff lines · Ctrl+O to expand": [
+    "+{hidden} строк изменений · Ctrl+O для раскрытия",
+    "+{hidden} 行差异 · Ctrl+O 展开"
+  ],
+  "{} (dirty)": [
+    "{} (есть изменения)",
+    "{} (有更改)"
+  ],
+  "{} (clean)": [
+    "{} (без изменений)",
+    "{} (无更改)"
+  ],
+  "Custom AI Provider Endpoint [{}]": [
+    "Настройка своего провайдера [{}]",
+    "自定义 AI 服务 [{}]"
+  ],
+  "Select AI Provider [{}]": [
+    "Выберите провайдера ИИ [{}]",
+    "选择 AI 服务商 [{}]"
+  ],
+  "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;140;140;145mDefault: \u001b[38;2;210;210;215m{}\u001b[0m": [
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;140;140;145mПо умолчанию: \u001b[38;2;210;210;215m{}\u001b[0m",
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;140;140;145m默认: \u001b[38;2;210;210;215m{}\u001b[0m"
+  ],
+  "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;120;120;125mDefault: \u001b[38;2;170;170;175m{}\u001b[0m": [
+    "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;120;120;125mПо умолчанию: \u001b[38;2;170;170;175m{}\u001b[0m",
+    "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;120;120;125m默认: \u001b[38;2;170;170;175m{}\u001b[0m"
+  ],
+  "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1mCustom Provider Endpoint...\u001b[0m": [
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1mСвой провайдер...\u001b[0m",
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1m自定义服务商…\u001b[0m"
+  ],
+  "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225mCustom Provider Endpoint...\u001b[0m": [
+    "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225mСвой провайдер...\u001b[0m",
+    "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225m自定义服务商…\u001b[0m"
+  ],
+  "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1mCustom Provider Endpoint...\u001b[0m  \u001b[38;2;110;110;115m(Specify custom URL and Model)\u001b[0m": [
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1mСвой провайдер...\u001b[0m  \u001b[38;2;110;110;115m(Укажите адрес и модель)\u001b[0m",
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1m自定义服务商…\u001b[0m  \u001b[38;2;110;110;115m(指定地址和模型)\u001b[0m"
+  ],
+  "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225mCustom Provider Endpoint...\u001b[0m  \u001b[38;2;110;110;115m(Specify custom URL and Model)\u001b[0m": [
+    "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225mСвой провайдер...\u001b[0m  \u001b[38;2;110;110;115m(Укажите адрес и модель)\u001b[0m",
+    "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225m自定义服务商…\u001b[0m  \u001b[38;2;110;110;115m(指定地址和模型)\u001b[0m"
+  ],
+  "Enter API Key for {} (or press Enter to skip):": [
+    "Введите ключ API для {} (или нажмите Enter, чтобы пропустить):",
+    "输入 API 密钥： {} (或按 Enter 跳过):"
+  ],
+  "API Key for {}": [
+    "Ключ API для {}",
+    "API 密钥： {}"
+  ],
+  "Select AI Model ({})": [
+    "Выберите модель ИИ ({})",
+    "选择 AI 模型 ({})"
+  ],
+  "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1mCustom Model (type manually)...\u001b[0m": [
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1mСвоя модель (ввести вручную)...\u001b[0m",
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{} {}\u001b[1m自定义模型（手动输入）…\u001b[0m"
+  ],
+  "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225mCustom Model (type manually)...\u001b[0m": [
+    "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225mСвоя модель (ввести вручную)...\u001b[0m",
+    "\u001b[38;2;160;160;165m{}\u001b[0m{} \u001b[38;2;220;220;225m自定义模型（手动输入）…\u001b[0m"
+  ],
+  "Select Visual Theme [{}]": [
+    "Выберите тему [{}]",
+    "选择主题 [{}]"
+  ],
+  "↑/↓: {}/{}  •  Live Preview  •  Enter: Confirm  Esc: Cancel": [
+    "↑/↓: {}/{}  •  Предпросмотр  •  Enter: подтвердить  Esc: отмена",
+    "↑/↓: {}/{}  •  实时预览  •  Enter: 确认  Esc: 取消"
+  ],
+  "Select Execution Mode [{}]": [
+    "Выберите режим работы [{}]",
+    "选择运行模式 [{}]"
+  ],
+  "Select Reasoning Effort [{}]": [
+    "Выберите глубину рассуждений [{}]",
+    "选择推理强度 [{}]"
+  ],
+  "Takiza Manual - Select Model [{}]": [
+    "Takiza Manual - Выберите модель [{}]",
+    "Takiza Manual - 选择模型 [{}]"
+  ],
+  "⚠ High Cost ($10/1M in, $50/1M out)! {}": [
+    "⚠ Высокая стоимость ($10/1M in, $50/1M out)! {}",
+    "⚠ 高费用 ($10/1M in, $50/1M out)! {}"
+  ],
+  "Resume Saved Chat [{}]": [
+    "Продолжить сохранённый чат [{}]",
+    "继续已保存的会话 [{}]"
+  ],
+  "\u001b[1;38;2;255;255;255m{}\u001b[0m{}\u001b[1m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;210;210;215m{:2} msgs\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;160;160;165m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;120;120;125m{}\u001b[0m": [
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{}\u001b[1m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;210;210;215m{:2} сообщ.\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;160;160;165m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;120;120;125m{}\u001b[0m",
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{}\u001b[1m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;210;210;215m{:2} 条消息\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;160;160;165m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;120;120;125m{}\u001b[0m"
+  ],
+  "\u001b[38;2;160;160;165m{}\u001b[0m\u001b[38;2;220;220;225m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;140;140;145m{:2} msgs\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;100;100;105m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;90;90;95m{}\u001b[0m": [
+    "\u001b[38;2;160;160;165m{}\u001b[0m\u001b[38;2;220;220;225m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;140;140;145m{:2} сообщ.\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;100;100;105m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;90;90;95m{}\u001b[0m",
+    "\u001b[38;2;160;160;165m{}\u001b[0m\u001b[38;2;220;220;225m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;140;140;145m{:2} 条消息\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;100;100;105m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;90;90;95m{}\u001b[0m"
+  ],
+  "\u001b[1;38;2;255;255;255m{}\u001b[0m{}\u001b[1m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;210;210;215m{:2} msgs\u001b[0m  \u001b[38;2;130;130;135m(\"{}\")\u001b[0m": [
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{}\u001b[1m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;210;210;215m{:2} сообщ.\u001b[0m  \u001b[38;2;130;130;135m(\"{}\")\u001b[0m",
+    "\u001b[1;38;2;255;255;255m{}\u001b[0m{}\u001b[1m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;210;210;215m{:2} 条消息\u001b[0m  \u001b[38;2;130;130;135m(\"{}\")\u001b[0m"
+  ],
+  "\u001b[38;2;160;160;165m{}\u001b[0m\u001b[38;2;220;220;225m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;140;140;145m{:2} msgs\u001b[0m  \u001b[38;2;100;100;105m(\"{}\")\u001b[0m": [
+    "\u001b[38;2;160;160;165m{}\u001b[0m\u001b[38;2;220;220;225m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;140;140;145m{:2} сообщ.\u001b[0m  \u001b[38;2;100;100;105m(\"{}\")\u001b[0m",
+    "\u001b[38;2;160;160;165m{}\u001b[0m\u001b[38;2;220;220;225m{}\u001b[0m  \u001b[38;2;70;70;75m•\u001b[0m  \u001b[38;2;140;140;145m{:2} 条消息\u001b[0m  \u001b[38;2;100;100;105m(\"{}\")\u001b[0m"
+  ],
+  "↑/↓: navigate ({}/{})  •  Enter: resume  •  d: delete  •  Esc: cancel": [
+    "↑/↓: выбор ({}/{})  •  Enter: продолжить  •  d: удалить  •  Esc: отмена",
+    "↑/↓: 移动 ({}/{})  •  Enter: 继续  •  d: 删除  •  Esc: 取消"
+  ],
+  "\nGit commit result:\n{}": [
+    "\nРезультат коммита Git:\n{}",
+    "\nGit 提交结果：\n{}"
+  ],
+  "\nReverted all modifications back to git HEAD.\n": [
+    "\nВсе изменения отменены до состояния Git HEAD.\n",
+    "\n已将所有更改还原至 Git HEAD。\n"
+  ],
+  "Takiza Code Session & System Status [{}]": [
+    "Takiza Code — состояние сессии и системы [{}]",
+    "Takiza Code — 会话与系统状态 [{}]"
+  ],
+  "Search: {}": [
+    "Поиск: {}",
+    "搜索: {}"
+  ],
+  "Skills · {} local · {} global": [
+    "Навыки · {} локальных · {} глобальных",
+    "技能 · {} 本地 · {} 全局"
+  ],
+  "{}/{} · ↑↓ · Enter Insert · F5 Rescan · Esc Back": [
+    "{}/{} · ↑↓ · Enter: вставить · F5: обновить · Esc: назад",
+    "{}/{} · ↑↓ · Enter: 插入 · F5: 重新扫描 · Esc: 返回"
+  ],
+  "Autonomous Agent Tools & Capabilities [{}]": [
+    "Инструменты и возможности агента [{}]",
+    "助手工具与能力 [{}]"
+  ],
+  "Token & Quota Usage [Mock] [{}]": [
+    "Токены и лимиты [демо] [{}]",
+    "令牌与额度用量［演示］ [{}]"
+  ],
+  "\u001b[1;38;2;0;220;255m• Takiza Manual Quota\u001b[0m{}": [
+    "\u001b[1;38;2;0;220;255m• Takiza Manual Лимит\u001b[0m{}",
+    "\u001b[1;38;2;0;220;255m• Takiza Manual 额度\u001b[0m{}"
+  ],
+  "    \u001b[38;2;255;195;0m[██████████░░░░░░░░░░]\u001b[0m  \u001b[1;38;2;240;240;245m520,000\u001b[0m \u001b[38;2;140;140;145m/ 1,000,000 tokens (52% used)\u001b[0m": [
+    "    \u001b[38;2;255;195;0m[██████████░░░░░░░░░░]\u001b[0m  \u001b[1;38;2;240;240;245m520,000\u001b[0m \u001b[38;2;140;140;145m/ 1,000,000 токенов (52% использовано)\u001b[0m",
+    "    \u001b[38;2;255;195;0m[██████████░░░░░░░░░░]\u001b[0m  \u001b[1;38;2;240;240;245m520,000\u001b[0m \u001b[38;2;140;140;145m/ 1,000,000 令牌 (52% 已使用)\u001b[0m"
+  ],
+  "\u001b[1;38;2;40;220;120m• Takiza MoA Quota\u001b[0m \u001b[1;38;2;40;220;120m[⚡ ~45% Cheaper]\u001b[0m{}": [
+    "\u001b[1;38;2;40;220;120m• Takiza MoA Лимит\u001b[0m \u001b[1;38;2;40;220;120m[⚡ ~45% дешевле]\u001b[0m{}",
+    "\u001b[1;38;2;40;220;120m• Takiza MoA 额度\u001b[0m \u001b[1;38;2;40;220;120m[⚡ ~45% 更便宜]\u001b[0m{}"
+  ],
+  "    \u001b[38;2;40;220;120m[████░░░░░░░░░░░░░░░░]\u001b[0m  \u001b[1;38;2;240;240;245m210,000\u001b[0m \u001b[38;2;140;140;145m/ 1,000,000 tokens (21% used)\u001b[0m": [
+    "    \u001b[38;2;40;220;120m[████░░░░░░░░░░░░░░░░]\u001b[0m  \u001b[1;38;2;240;240;245m210,000\u001b[0m \u001b[38;2;140;140;145m/ 1,000,000 токенов (21% использовано)\u001b[0m",
+    "    \u001b[38;2;40;220;120m[████░░░░░░░░░░░░░░░░]\u001b[0m  \u001b[1;38;2;240;240;245m210,000\u001b[0m \u001b[38;2;140;140;145m/ 1,000,000 令牌 (21% 已使用)\u001b[0m"
+  ],
+  "  Active mode: {}  •  Daily quotas reset at 00:00 UTC (mock data)": [
+    "  Текущий режим: {}  •  Суточные лимиты сбрасываются в 00:00 UTC (демоданные)",
+    "  当前模式: {}  •  每日额度于 UTC 00:00 重置（演示数据）"
+  ],
+  "{}/{} · ↑↓ · Enter Review · Esc Back": [
+    "{}/{} · ↑↓ · Enter: проверить · Esc: назад",
+    "{}/{} · ↑↓ · Enter: 检查 · Esc: 返回"
+  ],
+  "{}Step {} of 3\u001b[0m   \u001b[38;2;70;70;75m│\u001b[0m \u001b[1;38;2;230;230;235m{}\u001b[0m": [
+    "{}Шаг {} из 3\u001b[0m   \u001b[38;2;70;70;75m│\u001b[0m \u001b[1;38;2;230;230;235m{}\u001b[0m",
+    "{}步骤 {} / 3\u001b[0m   \u001b[38;2;70;70;75m│\u001b[0m \u001b[1;38;2;230;230;235m{}\u001b[0m"
+  ],
+  "  {}│\u001b[0m {}Step {}/3:   \u001b[0m\u001b[38;2;230;230;235m{}\u001b[0m": [
+    "  {}│\u001b[0m {}Шаг {}/3:   \u001b[0m\u001b[38;2;230;230;235m{}\u001b[0m",
+    "  {}│\u001b[0m {}步骤 {}/3:   \u001b[0m\u001b[38;2;230;230;235m{}\u001b[0m"
+  ],
+  "  {}│\u001b[0m {}Action:    \u001b[0m\u001b[38;2;170;170;175m{}\u001b[0m": [
+    "  {}│\u001b[0m {}Действие:    \u001b[0m\u001b[38;2;170;170;175m{}\u001b[0m",
+    "  {}│\u001b[0m {}操作:    \u001b[0m\u001b[38;2;170;170;175m{}\u001b[0m"
+  ],
+  "{primary}\u001b[1m❯ Your message\u001b[0m  {secondary}│ Tool activity\u001b[0m": [
+    "{primary}\u001b[1m❯ Ваше сообщение\u001b[0m  {secondary}│ Работа инструментов\u001b[0m",
+    "{primary}\u001b[1m❯ 你的消息\u001b[0m  {secondary}│ 工具活动\u001b[0m"
+  ],
+  "↑/↓: {}/{} · Live Preview · Enter: confirm · Esc: keep current": [
+    "↑/↓: {}/{} · Предпросмотр · Enter: подтвердить · Esc: оставить текущую",
+    "↑/↓: {}/{} · 实时预览 · Enter: 确认 · Esc: 保留当前设置"
+  ],
+  "\u001b[90mLines {}–{} of {} · v1.0.0\u001b[0m": [
+    "\u001b[90mСтроки {}–{} из {} · v1.0.0\u001b[0m",
+    "\u001b[90m第 {}–{} 行，共 {} 行 · v1.0.0\u001b[0m"
+  ],
+  "↓ {} more  ({}/{} {kind})": [
+    "↓ {} ещё  ({}/{} {kind})",
+    "↓ {} 更多  ({}/{} {kind})"
+  ],
+  "↑ {} above  ({}/{} {kind})": [
+    "↑ {} выше  ({}/{} {kind})",
+    "↑ {} 以上  ({}/{} {kind})"
+  ],
+  "Chat title unavailable: {error:#}": [
+    "Не удалось получить название чата: {error:#}",
+    "会话标题不可用： {error:#}"
+  ],
+  "Restore unavailable: {error:#}": [
+    "Восстановление недоступно: {error:#}",
+    "无法恢复： {error:#}"
+  ],
+  "Command execution approval: AUTO-APPROVE (commands run without asking)\n": [
+    "Выполнение команд: АВТОРАЗРЕШЕНИЕ (без запроса подтверждения)\n",
+    "命令执行权限：自动批准（无需询问）\n"
+  ],
+  "Command execution approval: ASK (permission requested before each command)\n": [
+    "Выполнение команд: СПРАШИВАТЬ (подтверждение перед каждой командой)\n",
+    "命令执行权限：询问（每条命令前请求确认）\n"
+  ],
+  "Mode switched to: \u001b[1mTakiza Manual\u001b[0m\nActive model: \u001b[1;38;2;0;220;255m{}\u001b[0m": [
+    "Выбран режим: \u001b[1mTakiza Manual\u001b[0m\nТекущая модель: \u001b[1;38;2;0;220;255m{}\u001b[0m",
+    "已切换模式： \u001b[1mTakiza Manual\u001b[0m\n当前模型： \u001b[1;38;2;0;220;255m{}\u001b[0m"
+  ],
+  "  \u001b[1;38;2;255;95;80m⚠ WARNING:\u001b[0m High-tier model ($10/1M in, $50/1M out). Quota and token limits will be consumed significantly faster!": [
+    "  \u001b[1;38;2;255;95;80m⚠ ВНИМАНИЕ:\u001b[0m Дорогая модель ($10/1M входных, $50/1M выходных). Лимиты будут расходоваться значительно быстрее!",
+    "  \u001b[1;38;2;255;95;80m⚠ 注意：\u001b[0m 高费用模型（输入 $10/百万，输出 $50/百万）。额度与令牌限制将更快消耗！"
+  ],
+  "Mode switched to: \u001b[1mTakiza Manual\u001b[0m\nSelected Model: \u001b[1;38;2;0;220;255m{} ({})\u001b[0m • {}": [
+    "Выбран режим: \u001b[1mTakiza Manual\u001b[0m\nВыбрана модель: \u001b[1;38;2;0;220;255m{} ({})\u001b[0m • {}",
+    "已切换模式： \u001b[1mTakiza Manual\u001b[0m\n已选择模型： \u001b[1;38;2;0;220;255m{} ({})\u001b[0m • {}"
+  ],
+  "Mode switched to: \u001b[1mTakiza MoA\u001b[0m\n  \u001b[1;38;2;40;220;120m⚡ ~45% Cheaper:\u001b[0m Smart task orchestration — routine search and file inspection run on fast models, while complex code routes to flagships without token waste!\n": [
+    "Выбран режим: \u001b[1mTakiza MoA\u001b[0m\n  \u001b[1;38;2;40;220;120m⚡ ~45% дешевле:\u001b[0m Автоматический выбор модели: поиск и чтение выполняются быстрыми моделями, сложные задачи — флагманами.\n",
+    "已切换模式： \u001b[1mTakiza MoA\u001b[0m\n  \u001b[1;38;2;40;220;120m⚡ ~45% 更便宜:\u001b[0m 智能任务编排：常规搜索与文件检查由快速模型执行，复杂编码交给旗舰模型。\n"
+  ],
+  "Unknown mode: '{}'. Available modes: manual, moa\n": [
+    "Неизвестный режим: '{}'. Доступные режимы: manual, moa\n",
+    "未知模式： '{}'. 可用模式： manual, moa\n"
+  ],
+  "No changes (working tree clean).\n": [
+    "Нет изменений (рабочая директория чистая).\n",
+    "没有更改（工作目录干净）。\n"
+  ],
+  "No git repository found in workspace.\n": [
+    "В рабочей директории нет репозитория Git.\n",
+    "工作区内未找到 Git 仓库。\n"
+  ],
+  "Switched model to: {}\n": [
+    "Выбрана модель: {}\n",
+    "已切换模型： {}\n"
+  ],
+  "Unknown effort: {}. Available: low, medium, high\n": [
+    "Неизвестная глубина рассуждений: {}. Доступно: low, medium, high\n",
+    "未知推理强度： {}. 可用： low, medium, high\n"
+  ],
+  "Set reasoning effort to: {}\n": [
+    "Глубина рассуждений: {}\n",
+    "推理强度已设为： {}\n"
+  ],
+  "Set reasoning effort to: {} (Note: current model '{}' may not use reasoning effort; setting will apply when switching to o1, o3-mini, claude-3-7, deepseek-r1, etc.)\n": [
+    "Глубина рассуждений: {} (Примечание: текущая модель '{}' может не поддерживать глубину рассуждений; настройка применяется для совместимых моделей.)\n",
+    "推理强度已设为： {} (注意：当前模型 '{}' 可能不支持推理强度；切换至支持此设置的模型后生效。)\n"
+  ],
+  "Switched provider: {}\n  Endpoint: {}\n  Model:    {}\n": [
+    "Выбран провайдер: {}\n  Адрес API: {}\n  Модель:    {}\n",
+    "已切换服务商： {}\n  API 地址: {}\n  模型:    {}\n"
+  ],
+  "Unknown provider: {}. Available: groq, openrouter, openai, deepseek, ollama\n": [
+    "Неизвестный провайдер: {}. Доступно: groq, openrouter, openai, deepseek, ollama\n",
+    "未知服务商： {}. 可用： groq, openrouter, openai, deepseek, ollama\n"
+  ],
+  "Conversation reset. Started a new session.\n": [
+    "История очищена. Создана новая сессия.\n",
+    "会话已重置。已开始新会话。\n"
+  ],
+  "Current Session: {}": [
+    "Текущая сессия: {}",
+    "当前会话： {}"
+  ],
+  "Created:         {}": [
+    "Создано:         {}",
+    "创建时间：         {}"
+  ],
+  "Model:           {}": [
+    "Модель:           {}",
+    "模型:           {}"
+  ],
+  "Messages:        {}": [
+    "Сообщения:        {}",
+    "消息:        {}"
+  ],
+  "Markdown Log:    {}": [
+    "Журнал Markdown:    {}",
+    "Markdown 日志：    {}"
+  ],
+  "\nSaved Sessions ({}):": [
+    "\nСохранённые сессии ({}):",
+    "\n已保存的会话 ({}):"
+  ],
+  "  • {} | {:2} msgs | \"{}\"{}": [
+    "  • {} | {:2} сообщ. | \"{}\"{}",
+    "  • {} | {:2} 条消息 | \"{}\"{}"
+  ],
+  "  ... and {} more (use /sessions to browse)": [
+    "  ... и ещё {} (откройте /sessions)",
+    "  …还有 {} 个（使用 /sessions 浏览）"
+  ],
+  "\nTip: Use /sessions to interactively resume or delete past sessions.\n": [
+    "\nПодсказка: /sessions позволяет продолжить или удалить сохранённые сессии.\n",
+    "\n提示：使用 /sessions 继续或删除已保存的会话。\n"
+  ],
+  "No saved chat sessions found in .takiza/sessions/\n": [
+    "В .takiza/sessions/ нет сохранённых чатов\n",
+    "在 .takiza/sessions/ 中未找到已保存的会话\n"
+  ],
+  "Takiza Code v{} - Autonomous AI Software Engineering Agent\n": [
+    "Takiza Code v{} - Автономный ИИ-агент для разработки\n",
+    "Takiza Code v{} - 自主 AI 软件开发助手\n"
+  ],
+  "    -c, --continue, --resume": [
+    "    -c, --continue, --resume",
+    "    -c, --continue, --resume"
+  ],
+  "            Continue previous conversation session from where you left off\n": [
+    "            Продолжить предыдущую сессию с места остановки\n",
+    "            从上次停止的位置继续会话\n"
+  ],
+  "            Skip asking for permission before executing commands (auto-approve)": [
+    "            Выполнять команды без запроса подтверждения",
+    "            执行命令前不请求权限（自动批准）"
+  ],
+  "            (Default: ask user for permission before running each command)\n": [
+    "            (По умолчанию: запрашивать подтверждение перед каждой командой)\n",
+    "            （默认：执行每条命令前询问用户）\n"
+  ],
+  "            Print help information\n": [
+    "            Показать справку\n",
+    "            显示帮助信息\n"
+  ],
+  "            Print version information\n": [
+    "            Показать версию\n",
+    "            显示版本信息\n"
+  ],
+  "            Optional initial prompt to send to the agent\n": [
+    "            Необязательный первый запрос агенту\n",
+    "            可选的首条请求\n"
+  ],
+  "  ℹ  No previous session found in .takiza/sessions. Started a new session.\n": [
+    "  ℹ  В .takiza/sessions нет предыдущей сессии. Создана новая.\n",
+    "  ℹ  在 .takiza/sessions 中未找到上次会话。已新建会话。\n"
+  ],
+  "Checkpoint unavailable: {error}": [
+    "Контрольная точка недоступна: {error}",
+    "检查点不可用： {error}"
+  ],
+  "(optional)": [
+    "(необязательно)",
+    "（可选）"
+  ],
+  "low": [
+    "низкая",
+    "低"
+  ],
+  "medium": [
+    "средняя",
+    "中"
+  ],
+  "high": [
+    "высокая",
+    "高"
+  ],
+  "LLM error: {}": [
+    "Ошибка модели: {}",
+    "模型错误：{}"
+  ],
+  "Evening Irkutsk (Angara Lights)": [
+    "Вечерний Иркутск (огни Ангары)",
+    "伊尔库茨克之夜（安加拉灯火）"
+  ],
+  "Warm amber streetlights, muted lilac activity and icy blue Angara borders": [
+    "Янтарные фонари, приглушённый лиловый и ледяной голубой Ангары",
+    "温暖琥珀色路灯、柔和丁香紫活动提示与安加拉冰蓝边框"
+  ],
+  "Unknown theme: '{}'. Available themes: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n": [
+    "Неизвестная тема: '{}'. Доступные темы: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n",
+    "未知主题： '{}'. 可用主题： amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n"
+  ]
+}

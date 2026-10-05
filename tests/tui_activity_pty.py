@@ -46,6 +46,8 @@ class API(http.server.BaseHTTPRequestHandler):
                     time.sleep(.01)
                 finish.wait(10)
                 token({'content': 'ANSWER_COMPLETE'})
+            usage = 300 if any(m.get('role') == 'tool' for m in body['messages']) else 200
+            self.wfile.write(('data: ' + json.dumps({'choices': [], 'usage': {'total_tokens': usage}}) + '\n\n').encode())
             self.wfile.write(b'data: [DONE]\n\n')
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -86,6 +88,10 @@ def run(binary, cols, rows):
                 verify()
             terminal.wait(lambda: 'Строка 069' in '\n'.join(screen()), 'long response missing', timeout=8)
             verify()
+            assert 'Responding...' in screen()[-4], 'activity disappeared before generation finished'
+            terminal.send('x\x7f')
+            verify()
+            assert 'Responding...' in screen()[-4], 'editor redraw removed response activity'
             terminal.send('\x1b[1;5H')
             verify()
             assert any(line.strip() == 'COMMAND_STARTED' for line in screen()), 'command text lost during scroll'
@@ -94,11 +100,16 @@ def run(binary, cols, rows):
             assert b'\x1b[?1049l' not in terminal.output, 'command left the application screen'
             terminal.send('\x1b[1;5F')
             verify()
+            assert 'Responding...' in screen()[-4], 'scrolling removed response activity'
             finish.set()
             terminal.wait(lambda: 'ANSWER_COMPLETE' in '\n'.join(screen()), 'completion missing')
             terminal.pump(.2)
             verify()
             assert 'Executing tools...' not in '\n'.join(screen())
+            assert 'Responding...' not in '\n'.join(screen()), 'activity remained after completion'
+            assert 'Completed in' in '\n'.join(screen()) and '500 tokens' in '\n'.join(screen()), screen()
+            transcript = list((workspace / '.takiza/sessions').glob('*.json'))
+            assert any('ResponseStats' in path.read_text() and '500' in path.read_text() for path in transcript)
             print(f'PASS {cols}x{rows}: tool activity, concurrent reasoning/input, long answer, fixed frame')
         finally:
             finish.set()

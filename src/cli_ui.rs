@@ -17,23 +17,26 @@ pub struct TerminalScreen {
 impl TerminalScreen {
     pub fn enter() -> std::io::Result<Self> {
         let active = stdout().is_terminal();
+        let screen = Self { active };
         if active {
-            execute!(stdout(), crossterm::terminal::EnterAlternateScreen,
+            execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate,
+                crossterm::event::DisableMouseCapture, crossterm::event::DisableBracketedPaste,
+                ResetColor, crossterm::terminal::EnterAlternateScreen,
                 crossterm::event::EnableMouseCapture, crossterm::event::EnableBracketedPaste)?;
         }
-        Ok(Self { active })
+        Ok(screen)
     }
 }
 
 impl Drop for TerminalScreen {
     fn drop(&mut self) {
         if self.active {
-            let _ = crossterm::terminal::disable_raw_mode();
             let mut out = stdout();
             let _ = execute!(out, crossterm::terminal::EndSynchronizedUpdate,
                 ResetColor, cursor::Show, crossterm::event::DisableBracketedPaste,
                 crossterm::event::DisableMouseCapture, crossterm::terminal::LeaveAlternateScreen);
             let _ = out.flush();
+            let _ = crossterm::terminal::disable_raw_mode();
         }
     }
 }
@@ -107,6 +110,76 @@ pub fn coalesce_scroll(mut delta: i32, pending: &mut Option<crossterm::event::Ev
 
 static INPUT_ROWS: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(3);
 static CONTENT_FRAME: Mutex<Option<(u16, u16, Vec<String>)>> = Mutex::new(None);
+// Preserve the undecorated transcript for mouse selection and clipboard copying.
+static TEXT_FRAME: Mutex<Option<(u16, u16, Vec<String>)>> = Mutex::new(None);
+
+struct SnowSurface {
+    top: u16,
+    size: (u16, u16),
+    text: Vec<String>,
+    painted: Vec<String>,
+}
+static SNOW_SURFACE: Mutex<Option<SnowSurface>> = Mutex::new(None);
+
+fn remember_snow_surface(top: u16, cols: u16, rows: u16, text: Vec<String>, painted: Vec<String>) {
+    *SNOW_SURFACE.lock().unwrap() = crate::snow::enabled().then_some(SnowSurface { top, size: (cols, rows), text, painted });
+}
+
+/// Animate the existing background without touching input, menus or the caret.
+pub fn animate_background() {
+    if !crate::snow::due() || terminal_is_small() || !stdout().is_terminal()
+        || MOUSE_SELECTION.lock().unwrap().is_some() { return; }
+    let mut surface = SNOW_SURFACE.lock().unwrap();
+    let Some(surface) = surface.as_mut() else { return; };
+    if surface.size != terminal_size() { return; }
+    let snow = crate::snow::Frame::new(surface.size.0.saturating_sub(1) as usize, surface.text.len());
+    let painted = surface.text.iter().enumerate().map(|(row, text)| snow.line(text, row)).collect::<Vec<_>>();
+    let mut frame = Vec::new();
+    let _ = queue!(frame, crossterm::terminal::BeginSynchronizedUpdate, cursor::SavePosition, ResetColor);
+    for (row, line) in painted.iter().enumerate() {
+        if surface.painted.get(row) == Some(line) { continue; }
+        let _ = queue!(frame, cursor::MoveTo(0, surface.top + row as u16),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
+            crossterm::style::Print(line), ResetColor);
+    }
+    let _ = queue!(frame, cursor::RestorePosition, crossterm::terminal::EndSynchronizedUpdate);
+    {
+        let mut out = stdout().lock();
+        let _ = out.write_all(&frame); let _ = out.flush();
+    }
+    // Keep the main renderer's diff cache synchronized with decorative frames.
+    if surface.top == 0 {
+        if let Some((cols, rows, lines)) = CONTENT_FRAME.lock().unwrap().as_mut() {
+            if (*cols, *rows) == surface.size {
+                for (row, line) in painted.iter().enumerate() {
+                    if let Some(cached) = lines.get_mut(row) { *cached = line.clone(); }
+                }
+            }
+        }
+    }
+    surface.painted = painted;
+}
+
+pub fn read_event_with_background() -> std::io::Result<crossterm::event::Event> {
+    if !crate::snow::enabled() { return crossterm::event::read(); }
+    loop {
+        if crossterm::event::poll(crate::snow::FRAME_INTERVAL)? { return crossterm::event::read(); }
+        animate_background();
+    }
+}
+
+/// Onboarding owns its banner; only the gap above its panel is animated.
+pub(crate) fn paint_onboarding_snow(out: &mut impl Write, top: u16, bottom: u16) -> std::io::Result<()> {
+    let (cols, rows) = terminal_size();
+    let text = vec![String::new(); bottom.saturating_sub(top) as usize];
+    let snow = crate::snow::Frame::new(cols.saturating_sub(1) as usize, text.len());
+    let painted = text.iter().enumerate().map(|(row, text)| snow.line(text, row)).collect::<Vec<_>>();
+    for (row, line) in painted.iter().enumerate() {
+        queue!(out, cursor::MoveTo(0, top + row as u16), crossterm::style::Print(line), ResetColor)?;
+    }
+    remember_snow_surface(top, cols, rows, text, painted);
+    Ok(())
+}
 
 #[derive(Clone)]
 struct MouseSelection {
@@ -176,7 +249,7 @@ pub fn mouse_action(mouse: crossterm::event::MouseEvent) -> Option<MouseAction> 
     let point = (mouse.row.min(content_rows.saturating_sub(1)), mouse.column.min(cols.saturating_sub(1)));
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) if mouse.row < content_rows => {
-            let snapshot = CONTENT_FRAME.lock().unwrap().clone();
+            let snapshot = TEXT_FRAME.lock().unwrap().clone().or_else(|| CONTENT_FRAME.lock().unwrap().clone());
             if let Some((w, h, mut lines)) = snapshot {
                 lines.truncate(content_rows as usize);
                 *MOUSE_SELECTION.lock().unwrap() = Some(MouseSelection {
@@ -223,7 +296,10 @@ pub fn set_input_rows(rows: u16) {
     INPUT_ROWS.store(rows, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub fn invalidate_content_frame() { *CONTENT_FRAME.lock().unwrap() = None; }
+pub fn invalidate_content_frame() {
+    *CONTENT_FRAME.lock().unwrap() = None;
+    *TEXT_FRAME.lock().unwrap() = None;
+}
 
 static PENDING_PROMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -338,7 +414,7 @@ pub fn render_small_terminal() {
     let (cols, _) = terminal_size();
     let mut out = stdout();
     let _ = execute!(out, cursor::Hide, crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-        cursor::MoveTo(0, 0), crossterm::style::Print(crate::prompt::truncate_visible("Resize terminal", cols.saturating_sub(1) as usize)));
+        cursor::MoveTo(0, 0), crossterm::style::Print(crate::prompt::truncate_visible(crate::i18n::tr("Resize terminal"), cols.saturating_sub(1) as usize)));
     let _ = out.flush();
 }
 
@@ -348,14 +424,7 @@ pub fn get_box_width() -> usize {
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        s.to_string()
-    } else if max_len > 1 {
-        let truncated: String = s.chars().take(max_len.saturating_sub(1)).collect();
-        format!("{}…", truncated)
-    } else {
-        s.chars().take(max_len).collect()
-    }
+    crate::prompt::truncate_visible(s, max_len)
 }
 
 pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, workspace: &str, git_info: &str) -> u16 {
@@ -365,7 +434,7 @@ pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, worksp
     }
     let (term_cols, term_rows) = terminal_size();
     if term_cols < 65 || term_rows < 18 {
-        let lines = ["Takiza Code".to_string(), format!("Model: {}", model),
+        let lines = ["Takiza Code".to_string(), crate::i18n::tf!("Model: {}", model),
             format!("Git: {}", git_info)];
         for (row, line) in lines.iter().enumerate() {
             let _ = queue!(out, cursor::MoveTo(0, row as u16),
@@ -387,20 +456,28 @@ pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, worksp
         let div_w = info_w.min(48);
         let divider = "─".repeat(div_w);
 
-        let info_lines = [
+        let mut info_lines = vec![
             format!("{}TAKIZA \x1b[1;38;2;245;245;250mCODE\x1b[0m  \x1b[38;2;120;120;125mv{}\x1b[0m", p_ansi, env!("TAKIZA_VERSION")),
-            format!("\x1b[38;2;160;160;165m{}\x1b[0m", truncate_str("Autonomous AI Software Engineering Agent", info_w)),
-            format!("\x1b[38;2;60;60;65m{}\x1b[0m", divider),
-            format!("{}Model     \x1b[38;2;70;70;75m│\x1b[0m \x1b[38;2;230;230;235m{}\x1b[0m", p_ansi, truncate_str(model, info_w.saturating_sub(12))),
-            format!("{}Endpoint  \x1b[38;2;70;70;75m│\x1b[0m \x1b[38;2;170;170;175m{}\x1b[0m", p_ansi, truncate_str(base_url, info_w.saturating_sub(12))),
-            format!("{}Workspace \x1b[38;2;70;70;75m│\x1b[0m \x1b[38;2;170;170;175m{}\x1b[0m", p_ansi, truncate_str(workspace, info_w.saturating_sub(12))),
-            format!("{}Git       \x1b[38;2;70;70;75m│\x1b[0m \x1b[38;2;130;215;145m{}\x1b[0m", p_ansi, truncate_str(git_info, info_w.saturating_sub(12))),
+            format!("\x1b[38;2;160;160;165m{}\x1b[0m", truncate_str(crate::i18n::tr("Autonomous AI Software Engineering Agent"), info_w)),
             format!("\x1b[38;2;60;60;65m{}\x1b[0m", divider),
         ];
+        for (label, value, color) in [
+            ("Model", model, "\x1b[38;2;230;230;235m"),
+            ("Endpoint", base_url, "\x1b[38;2;170;170;175m"),
+            ("Workspace", workspace, "\x1b[38;2;170;170;175m"),
+            ("Git", git_info, "\x1b[38;2;130;215;145m"),
+        ] {
+            let label = crate::i18n::tr(label);
+            let padding = " ".repeat(10usize.saturating_sub(str_width(label)));
+            let value = truncate_str(value, info_w.saturating_sub(13));
+            info_lines.push(format!("{p_ansi}{label}{padding}\x1b[38;2;70;70;75m│\x1b[0m {color}{value}\x1b[0m"));
+        }
+        info_lines.push(format!("\x1b[38;2;60;60;65m{}\x1b[0m", divider));
 
         for i in 0..crate::logo::LOGO_HEIGHT {
             let logo_part = crate::logo::LOGO_LINES[i];
             let info_part = if i < info_lines.len() { &info_lines[i] } else { "" };
+            let info_part = crate::interactive::fit_menu_text(info_part, info_w);
             let _ = queue!(
                 out,
                 cursor::MoveTo(0, row),
@@ -433,9 +510,9 @@ pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, worksp
 
         let lines = [
             format!("  {}╭─ TAKIZA \x1b[38;2;245;245;250mCODE\x1b[0m \x1b[38;2;120;120;125mv{}{} {}╮\x1b[0m", p_ansi, env!("TAKIZA_VERSION"), p_ansi, top_div),
-            format!("  {}│\x1b[0m {}Model:     \x1b[0m\x1b[38;2;230;230;235m{}\x1b[0m", p_ansi, p_ansi, truncate_str(model, val_w)),
-            format!("  {}│\x1b[0m {}Endpoint:  \x1b[0m\x1b[38;2;170;170;175m{}\x1b[0m", p_ansi, p_ansi, truncate_str(base_url, val_w)),
-            format!("  {}│\x1b[0m {}Workspace: \x1b[0m\x1b[38;2;170;170;175m{}\x1b[0m", p_ansi, p_ansi, truncate_str(workspace, val_w)),
+            crate::i18n::tf!("  {}│\x1b[0m {}Model:     \x1b[0m\x1b[38;2;230;230;235m{}\x1b[0m", p_ansi, p_ansi, truncate_str(model, val_w)),
+            crate::i18n::tf!("  {}│\x1b[0m {}Endpoint:  \x1b[0m\x1b[38;2;170;170;175m{}\x1b[0m", p_ansi, p_ansi, truncate_str(base_url, val_w)),
+            crate::i18n::tf!("  {}│\x1b[0m {}Workspace: \x1b[0m\x1b[38;2;170;170;175m{}\x1b[0m", p_ansi, p_ansi, truncate_str(workspace, val_w)),
             format!("  {}│\x1b[0m {}Git:       \x1b[0m\x1b[38;2;130;215;145m{}\x1b[0m", p_ansi, p_ansi, truncate_str(git_info, val_w)),
             format!("  {}╰{}╯\x1b[0m", p_ansi, bot_div),
         ];
@@ -458,42 +535,39 @@ pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, worksp
 }
 
 pub fn print_user_cmd(cmd: &str) {
-    let th = crate::theme::current();
-    let mut out = stdout();
-    execute!(out, SetForegroundColor(th.primary_crossterm())).ok();
-    print!("❯ ");
-    execute!(out, ResetColor).ok();
-    println!("{}\n", cmd);
+    let color = crate::theme::current().primary_ansi();
+    println!("\x1b[1m{color}❯ {}\x1b[0m\n", plain_terminal_text(cmd));
 }
 
 pub fn print_help() {
     let th = crate::theme::current();
     println!();
     execute!(stdout(), SetForegroundColor(th.primary_crossterm())).ok();
-    println!("Type while the agent responds; submitted prompts wait in FIFO order.");
-    println!("Slash commands run immediately. Changing session/model interrupts the active response.\n");
-    println!("Available Slash Commands:");
-    println!("  /help               - Show this help summary");
-    println!("  /clear              - Start a new chat and clear conversation history");
-    println!("  /theme [name]       - View or switch visual theme (amber, cyberpunk, emerald, nord, monochrome)");
-    println!("  /mode [manual|moa]  - Switch execution mode (Takiza Manual: pick model, Takiza MoA: auto)");
-    println!("  /model <name>       - Switch model (e.g. /model gpt-4o, /model claude-3-5-sonnet)");
-    println!("  /provider <name>    - Switch preset provider (openai, openrouter, deepseek, ollama, groq)");
-    println!("  /rewind, /restore   - Restore files and chat from a pre-prompt checkpoint");
-    println!("  /diff               - View git diff of changes made in the workspace");
-    println!("  /status             - View current session info, git status, and token usage");
-    println!("  /usage              - View daily quotas and token usage breakdown (Manual / MoA)");
-    println!("  /sessions           - List saved conversation sessions");
-    println!("  /reset              - Reset conversation history to start fresh");
-    println!("  /approval           - Toggle auto-approving commands vs asking permissions");
-    println!("  /tools              - List available agent tools");
-    println!("  /skills             - Choose a skill (type to search, Enter to insert, F5 to rescan)");
-    println!("  /exit or /quit      - Exit Takiza Code");
-    println!("  !<shell command>    - Execute bash command directly (e.g. !git status, !cargo test)");
-    println!("  Ctrl+O              - Toggle expansion of command/search output (max 5 lines in standard mode)");
-    println!("\nCLI Flags (on startup):");
-    println!("  -c, --continue      - Continue previous session");
-    println!("  -y, --yes, -a       - Skip command permissions (default: ask permission before running commands)");
+    println!("{}", crate::i18n::tf!("Type while the agent responds; submitted prompts wait in FIFO order."));
+    println!("{}", crate::i18n::tf!("Slash commands run immediately. Changing session/model interrupts the active response.\n"));
+    println!("{}", crate::i18n::tf!("Available Slash Commands:"));
+    println!("  /config             - {}", crate::i18n::tr("Configure language, theme, provider, model and permissions"));
+    println!("{}", crate::i18n::tf!("  /help               - Show this help summary"));
+    println!("{}", crate::i18n::tf!("  /clear              - Start a new chat and clear conversation history"));
+    println!("{}", crate::i18n::tf!("  /theme [name]       - View or switch visual theme (amber, cyberpunk, emerald, nord, monochrome)"));
+    println!("{}", crate::i18n::tf!("  /mode [manual|moa]  - Switch execution mode (Takiza Manual: pick model, Takiza MoA: auto)"));
+    println!("{}", crate::i18n::tf!("  /model <name>       - Switch model (e.g. /model gpt-4o, /model claude-3-5-sonnet)"));
+    println!("{}", crate::i18n::tf!("  /provider <name>    - Switch preset provider (openai, openrouter, deepseek, ollama, groq)"));
+    println!("{}", crate::i18n::tf!("  /rewind, /restore   - Restore files and chat from a pre-prompt checkpoint"));
+    println!("{}", crate::i18n::tf!("  /diff               - View git diff of changes made in the workspace"));
+    println!("{}", crate::i18n::tf!("  /status             - View current session info, git status, and token usage"));
+    println!("{}", crate::i18n::tf!("  /usage              - View daily quotas and token usage breakdown (Manual / MoA)"));
+    println!("{}", crate::i18n::tf!("  /sessions           - List saved conversation sessions"));
+    println!("{}", crate::i18n::tf!("  /reset              - Reset conversation history to start fresh"));
+    println!("{}", crate::i18n::tf!("  /approval           - Toggle auto-approving commands vs asking permissions"));
+    println!("{}", crate::i18n::tf!("  /tools              - List available agent tools"));
+    println!("{}", crate::i18n::tf!("  /skills             - Choose a skill (type to search, Enter to insert, F5 to rescan)"));
+    println!("{}", crate::i18n::tf!("  /exit or /quit      - Exit Takiza Code"));
+    println!("{}", crate::i18n::tf!("  !<shell command>    - Execute bash command directly (e.g. !git status, !cargo test)"));
+    println!("{}", crate::i18n::tf!("  Ctrl+O              - Toggle expansion of command/search output (max 5 lines in standard mode)"));
+    println!("{}", crate::i18n::tf!("\nCLI Flags (on startup):"));
+    println!("{}", crate::i18n::tf!("  -c, --continue      - Continue previous session"));
+    println!("{}", crate::i18n::tf!("  -y, --yes, -a       - Skip command permissions (default: ask permission before running commands)"));
     execute!(stdout(), ResetColor).ok();
     println!();
 }
@@ -517,46 +591,28 @@ pub fn render_bottom_box(prompt: &str, branch_tag: &str) -> (u16, u16) {
 
     let queued = PENDING_PROMPTS.load(std::sync::atomic::Ordering::Relaxed);
     let title_tag = if queued > 0 {
-        format!(" You [{queued} queued] ")
+        crate::i18n::tf!(" You [{queued} queued] ", queued = queued)
     } else if branch_tag.is_empty() {
-        " You ".to_string()
+        crate::i18n::tr(" You ").to_string()
     } else {
-        format!(" You [{}] ", branch_tag.trim())
+        crate::i18n::tf!(" You [{}] ", branch_tag.trim())
     };
     let title_w = str_width(&title_tag);
     let (safe_title, safe_title_w) = if title_w + 4 >= box_width {
-        (" You ".to_string(), 5)
+        (crate::i18n::tr(" You ").to_string(), 5)
     } else {
         (title_tag, title_w)
     };
     let dashes_top = box_width.saturating_sub(safe_title_w + 3);
 
-    // Split prompt into lines
-    let chars: Vec<char> = prompt.chars().collect();
-    let mut lines = Vec::new();
-    if chars.is_empty() {
-        lines.push(String::new());
-    } else {
-        let mut start = 0;
-        while start < chars.len() {
-            let mut cur_w = 0;
-            let mut end = start;
-            while end < chars.len() {
-                let cw = char_width(chars[end]);
-                if cur_w + cw > max_content && end > start {
-                    break;
-                }
-                cur_w += cw;
-                end += 1;
-            }
-            lines.push(chars[start..end].iter().collect::<String>());
-            start = end;
-        }
-    }
+    let (mut lines, caret_row, caret_col) = crate::prompt::input_layout(
+        prompt, prompt.chars().count(), max_content);
+    let mut first = 0;
 
     let visible = 3.min((term_rows as usize).saturating_sub(3).max(1));
     if lines.len() > visible {
-        lines.drain(..lines.len() - visible);
+        first = lines.len() - visible;
+        lines.drain(..first);
     }
     let box_rows = 1 + lines.len() + 1;
     set_input_rows(box_rows as u16);
@@ -593,9 +649,10 @@ pub fn render_bottom_box(prompt: &str, branch_tag: &str) -> (u16, u16) {
 
     // 2. Content lines
     for (i, line) in lines.iter().enumerate() {
-        let prefix = if i == 0 { "> " } else { "  " };
+        let prefix = if first + i == 0 { "> " } else { "" };
         let line_w = str_width(line);
-        let pad = max_content.saturating_sub(line_w);
+        let row_width = max_content + if first + i == 0 { 0 } else { 2 };
+        let pad = row_width.saturating_sub(line_w);
         let row = start_row + 1 + i as u16;
         let _ = execute!(
             out,
@@ -616,14 +673,14 @@ pub fn render_bottom_box(prompt: &str, branch_tag: &str) -> (u16, u16) {
     // 3. Bottom border - strictly no \r\n so it stays on the very bottom line
     let hint = if box_width >= 62 {
         if is_output_expanded() {
-            " Ctrl+O: Collapse • Esc/Ctrl+C: Stop "
+            crate::i18n::tr(" Ctrl+O: Collapse • Esc/Ctrl+C: Stop ")
         } else {
-            " Ctrl+O: Expand • Esc/Ctrl+C: Stop "
+            crate::i18n::tr(" Ctrl+O: Expand • Esc/Ctrl+C: Stop ")
         }
     } else if box_width >= 50 {
-        " Esc/Ctrl+C: Stop "
+        crate::i18n::tr(" Esc/Ctrl+C: Stop ")
     } else {
-        " Esc: Stop "
+        crate::i18n::tr(" Esc: Stop ")
     };
     let hint_w = str_width(hint);
 
@@ -670,9 +727,8 @@ pub fn render_bottom_box(prompt: &str, branch_tag: &str) -> (u16, u16) {
     );
     let _ = out.flush();
 
-    let last_len = lines.last().map(|l| str_width(l)).unwrap_or(0);
-    let cursor_x = 4 + viewport.as_ref().map(|(_, caret)| *caret).unwrap_or(last_len) as u16;
-    let cursor_y = start_row + lines.len() as u16;
+    let cursor_x = (crate::prompt::input_column(caret_row) + caret_col) as u16;
+    let cursor_y = start_row + 1 + caret_row.saturating_sub(first) as u16;
 
     (cursor_x, cursor_y)
 }
@@ -700,17 +756,23 @@ fn restore_prompt_cursor_to(prompt: &str, out: &mut impl Write) {
     let _ = out.flush();
 }
 
-fn wrap_text_line(line: &str, max_width: usize) -> Vec<String> {
+pub(crate) fn wrap_text_line(line: &str, max_width: usize) -> Vec<String> {
     if line.is_empty() {
         return vec![String::new()];
     }
     let chars: Vec<char> = line.chars().collect();
+    let max_width = max_width.max(1);
     let mut result = Vec::new();
     let mut start = 0;
     while start < chars.len() {
         let mut cur_w = 0;
         let mut end = start;
         while end < chars.len() {
+            if end > start && !chars[end].is_whitespace() && chars[end - 1].is_whitespace() {
+                let word_width: usize = chars[end..].iter().copied()
+                    .take_while(|c| !c.is_whitespace()).map(char_width).sum();
+                if cur_w + word_width > max_width { break; }
+            }
             let cw = char_width(chars[end]);
             if cur_w + cw > max_width && end > start {
                 break;
@@ -735,28 +797,7 @@ pub fn prepare_output_line_internal(row: &mut u16, needed: u16, prompt: &str, br
     let (_, term_rows) = terminal_size();
     let box_width = get_box_width();
     let max_content = box_width.saturating_sub(6);
-    let chars: Vec<char> = prompt.chars().collect();
-    let lines_count = if chars.is_empty() {
-        1
-    } else {
-        let mut count = 0;
-        let mut start = 0;
-        while start < chars.len() {
-            let mut cur_w = 0;
-            let mut end = start;
-            while end < chars.len() {
-                let cw = char_width(chars[end]);
-                if cur_w + cw > max_content && end > start {
-                    break;
-                }
-                cur_w += cw;
-                end += 1;
-            }
-            count += 1;
-            start = end;
-        }
-        count.max(1)
-    };
+    let lines_count = crate::prompt::input_layout(prompt, prompt.chars().count(), max_content).0.len();
     let box_rows = active_box_rows(term_rows).unwrap_or(2 + lines_count.min(term_rows.saturating_sub(2) as usize) as u16);
     let limit = term_rows.saturating_sub(box_rows + 1);
     let start_row = term_rows.saturating_sub(box_rows as u16);
@@ -818,10 +859,11 @@ fn activity_line(width: usize) -> String {
     let activity = *ACTIVE_ACTIVITY.lock().unwrap();
     let view = HISTORY_VIEW.lock().unwrap();
     let scroll = if view.offset > 0 {
-        format!("{}/{} · Ctrl+End: latest", view.total.saturating_sub(view.offset), view.total)
+        crate::i18n::tf!("{}/{} · Ctrl+End: latest", view.total.saturating_sub(view.offset), view.total)
     } else { String::new() };
     match activity {
         Some((message, frame)) => {
+            let message = crate::i18n::tr(message);
             let status = format!("{} {message}", SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]);
             let status = crate::prompt::truncate_visible(&status, width);
             let spare = width.saturating_sub(str_width(&status));
@@ -1265,7 +1307,7 @@ fn extract_compact_arg(name: &str, args: &str) -> String {
         if let Some(obj) = v.as_object() {
             if name == "ask_question" {
                 if let Some(questions) = obj.get("questions").and_then(|value| value.as_array()) {
-                    return format!("{} {}", questions.len(), if questions.len() == 1 { "question" } else { "questions" });
+                    return format!("{} {}", questions.len(), if questions.len() == 1 { crate::i18n::tr("question") } else { "questions" });
                 }
             }
             if name == "read_skill" {
@@ -1295,25 +1337,25 @@ fn extract_compact_arg(name: &str, args: &str) -> String {
 
 fn get_tool_icon(name: &str) -> &'static str {
     match name {
-        "run_command" => "command",
-        "write_file" => "write",
-        "edit_file" => "edit",
-        "read_file" => "read",
-        "find_files" => "find",
-        "grep_search" => "search",
-        "list_dir" => "list",
-        "ask_question" => "question",
-        "read_skill" => "skill",
-        _ => "tool",
+        "run_command" | "web_search" => crate::i18n::tr("command"),
+        "write_file" => crate::i18n::tr("write"),
+        "edit_file" => crate::i18n::tr("edit"),
+        "read_file" => crate::i18n::tr("read"),
+        "find_files" => crate::i18n::tr("find"),
+        "grep_search" => crate::i18n::tr("search"),
+        "list_dir" => crate::i18n::tr("list"),
+        "ask_question" => crate::i18n::tr("question"),
+        "read_skill" => crate::i18n::tr("skill"),
+        _ => crate::i18n::tr("tool"),
     }
 }
 
 fn tool_detail(name: &str, result: Option<&str>, is_error: bool) -> String {
-    if is_error { return "failed".into(); }
-    let Some(result) = result else { return "running".into(); };
+    if is_error { return crate::i18n::tr("failed").into(); }
+    let Some(result) = result else { return crate::i18n::tr("running").into(); };
     match name {
-        "list_dir" => format!("{} items", result.lines().filter(|line| !line.trim().is_empty()).count()),
-        "read_file" => format!("{} lines", result.lines().count()),
+        "list_dir" => crate::i18n::tf!("{} items", result.lines().filter(|line| !line.trim().is_empty()).count()),
+        "read_file" => crate::i18n::tf!("{} lines", result.lines().count()),
         _ => String::new(),
     }
 }
@@ -1324,13 +1366,25 @@ fn tool_error_lines(result: &str, width: usize, expanded: bool) -> Vec<String> {
     let mut lines: Vec<_> = wrapped[..visible].iter()
         .map(|line| format!("    \x1b[31m{line}\x1b[0m")).collect();
     if wrapped.len() > visible {
-        lines.push(format!("    \x1b[90m+{} lines  · Ctrl+O to expand\x1b[0m", wrapped.len() - visible));
+        lines.push(crate::i18n::tf!("    \x1b[90m+{} lines  · Ctrl+O to expand\x1b[0m", wrapped.len() - visible));
+    }
+    lines
+}
+
+fn tool_output_lines(logs: &[&str], width: usize, expanded: bool) -> Vec<String> {
+    let wrapped: Vec<_> = logs.iter()
+        .flat_map(|text| wrap_history_text(text.trim(), width.max(1))).collect();
+    let visible = if expanded { wrapped.len() } else { wrapped.len().min(3) };
+    let mut lines: Vec<_> = wrapped[..visible].iter()
+        .map(|line| format!("    \x1b[90m{line}\x1b[0m")).collect();
+    if wrapped.len() > visible {
+        lines.push(crate::i18n::tf!("    \x1b[90m+{} lines  · Ctrl+O to expand\x1b[0m", wrapped.len() - visible));
     }
     lines
 }
 
 fn tool_header_parts(name: &str, args: &str, detail: &str, width: usize) -> (String, String, String) {
-    let label = if width >= 32 { format!("  {:<8}", get_tool_icon(name)) } else { format!("  {} ", get_tool_icon(name)) };
+    let label = if width >= 32 { format!("  {}{}", get_tool_icon(name), " ".repeat(8usize.saturating_sub(str_width(get_tool_icon(name))))) } else { format!("  {} ", get_tool_icon(name)) };
     let detail = if detail.is_empty() || width < 32 { String::new() } else { format!("  · {detail}") };
     let target = plain_terminal_text(&extract_compact_arg(name, args)).replace(['\n', '\r'], " ");
     let target = truncate_str(&target, width.saturating_sub(str_width(&label) + str_width(&detail)));
@@ -1354,7 +1408,7 @@ fn print_tool_header(name: &str, args: &str, result: Option<&str>, is_error: boo
         crossterm::style::Print(detail), ResetColor);
     *row += 1;
     if is_error {
-        for line in tool_error_lines(result.unwrap_or("Unknown error"), cols.saturating_sub(6).max(1) as usize, is_output_expanded()) {
+        for line in tool_error_lines(result.unwrap_or(crate::i18n::tr("Unknown error")), cols.saturating_sub(6).max(1) as usize, is_output_expanded()) {
             prepare_output_line_internal(row, 1, prompt, branch, render_bottom);
             let _ = execute!(out, cursor::MoveTo(0, *row),
                 crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
@@ -1391,7 +1445,7 @@ pub fn print_tool_log_internal(line: &str, row: &mut u16, prompt: &str, branch_t
         ("     Answer: ", Color::DarkGrey, crate::theme::current().primary_crossterm()),
     ] {
         if let Some(text) = line.strip_prefix(prefix) {
-            let display_prefix = if prefix.contains("Question") { "    question  " } else { "    answer    " };
+            let display_prefix = if prefix.contains("Question") { crate::i18n::tr("    question  ") } else { crate::i18n::tr("    answer    ") };
             print_question_transcript_line(display_prefix, text, prefix_color, text_color,
                 row, prompt, branch_tag, render_bottom);
             return;
@@ -1401,10 +1455,10 @@ pub fn print_tool_log_internal(line: &str, row: &mut u16, prompt: &str, branch_t
     let max_log_w = (term_cols as usize).saturating_sub(6).max(1);
     let trimmed = line.trim();
     let normalized = if trimmed.starts_with("⚠") && trimmed.contains("Permission: $") {
-        "approval requested"
+        crate::i18n::tr("approval requested")
     } else if trimmed.contains("Command approved") {
-        if trimmed.contains("Always") { "approval allowed for session" } else { "approval allowed" }
-    } else if trimmed.contains("Command denied") { "approval denied" }
+        if trimmed.contains("Always") { crate::i18n::tr("approval allowed for session") } else { crate::i18n::tr("approval allowed") }
+    } else if trimmed.contains("Command denied") { crate::i18n::tr("approval denied") }
     else { trimmed };
     let truncated_log = truncate_str(normalized, max_log_w);
 
@@ -1443,7 +1497,7 @@ pub fn print_tool_collapsed_indicator_internal(hidden_count: usize, row: &mut u1
         cursor::MoveTo(0, *row),
         crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
         SetForegroundColor(Color::DarkGrey),
-        crossterm::style::Print(format!("    +{hidden_count} lines  · Ctrl+O to expand")),
+        crossterm::style::Print(crate::i18n::tf!("    +{hidden_count} lines  · Ctrl+O to expand", hidden_count = hidden_count)),
         ResetColor
     );
     *row += 1;
@@ -1524,7 +1578,7 @@ fn render_permission_bottom_box(command: &str, branch_tag: &str, selected: usize
     let start = rows - 6;
     let theme = crate::theme::current();
     let border = theme.border_crossterm();
-    let title = crate::prompt::truncate_visible(&format!(" Permission [{}] ", branch_tag), width - 3);
+    let title = crate::prompt::truncate_visible(&crate::i18n::tf!(" Permission [{}] ", branch_tag), width - 3);
     let mut frame = Vec::new();
     let _ = queue!(frame, crossterm::terminal::BeginSynchronizedUpdate, cursor::Hide,
         cursor::MoveTo(0, start), crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
@@ -1532,7 +1586,7 @@ fn render_permission_bottom_box(command: &str, branch_tag: &str, selected: usize
         SetForegroundColor(theme.primary_crossterm()), crossterm::style::Print(&title),
         SetForegroundColor(border), crossterm::style::Print("─".repeat(width - str_width(&title) - 3)),
         crossterm::style::Print("╮"));
-    let choices = [("Allow once", 'y'), ("Deny", 'n'), ("Allow for session", 'a')];
+    let choices = [(crate::i18n::tr("Allow once"), 'y'), (crate::i18n::tr("Deny"), 'n'), (crate::i18n::tr("Allow for session"), 'a')];
     let label_width = choices.iter().map(|(label, _)| str_width(label)).max().unwrap_or(0)
         .min(inner.saturating_sub(6));
     for (index, text) in std::iter::once(format!("$ {}", command))
@@ -1552,7 +1606,7 @@ fn render_permission_bottom_box(command: &str, branch_tag: &str, selected: usize
             SetForegroundColor(color), crossterm::style::Print(fit_to_width(&text, inner)),
             SetForegroundColor(border), crossterm::style::Print(" │"));
     }
-    let hint = if inner >= 32 { " ↑↓ Select · Enter · Esc Deny " } else { " ↑↓ · Enter · Esc " };
+    let hint = if inner >= 32 { crate::i18n::tr(" ↑↓ Select · Enter · Esc Deny ") } else { " ↑↓ · Enter · Esc " };
     let _ = queue!(frame, cursor::MoveTo(0, rows - 1), SetForegroundColor(border),
         crossterm::style::Print(format!("╰{}{}─╯", "─".repeat(width - str_width(hint) - 3), hint)),
         ResetColor, crossterm::terminal::EndSynchronizedUpdate);
@@ -1635,9 +1689,9 @@ pub fn ask_command_permission_with_redraw(
     );
 
     let status = match choice {
-        PermissionChoice::AllowOnce => "approval allowed",
-        PermissionChoice::AllowAlways => "approval allowed for session",
-        PermissionChoice::Deny => "approval denied",
+        PermissionChoice::AllowOnce => crate::i18n::tr("approval allowed"),
+        PermissionChoice::AllowAlways => crate::i18n::tr("approval allowed for session"),
+        PermissionChoice::Deny => crate::i18n::tr("approval denied"),
     };
     print_tool_log_internal(status, row, "", branch_tag, true);
 
@@ -1673,28 +1727,56 @@ fn fit_to_width(s: &str, max_w: usize) -> String {
     }
 }
 
-fn question_input_line(input: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    if width == 1 {
-        return "█".into();
-    }
-    if str_width(input) + 1 <= width {
-        return fit_to_width(&format!("{}█", input), width);
-    }
-    let mut suffix = Vec::new();
-    let mut used = 0;
-    for character in input.chars().rev() {
-        let character_width = char_width(character);
-        if used + character_width > width - 2 {
-            break;
+struct QuestionLine {
+    prefix: String,
+    text: String,
+    prefix_color: Color,
+    text_color: Color,
+}
+
+fn question_body_lines(
+    item: &crate::agent::QuestionItem,
+    selected: &std::collections::HashSet<usize>,
+    focused: usize,
+    input: &str,
+    editing: bool,
+    width: usize,
+) -> (Vec<QuestionLine>, usize) {
+    let mut lines = Vec::new();
+    let mut focus_row = 0;
+    let mut append = |prefix: &str, text: &str, prefix_color, text_color| {
+        let start = lines.len();
+        for (label, text) in question_transcript_lines(prefix, text, width + 1) {
+            lines.push(QuestionLine { prefix: label, text, prefix_color, text_color });
         }
-        suffix.push(character);
-        used += character_width;
+        start..lines.len()
+    };
+    append("", &item.question, Color::White, Color::White);
+    for (index, option) in item.options.iter().enumerate() {
+        let active = focused == index && !editing;
+        let chosen = selected.contains(&index);
+        let mark = if item.is_multi_select {
+            if chosen { "[✔]" } else { "[ ]" }
+        } else if chosen { "(●)" } else { "( )" };
+        let prefix = format!("{} [{}] {} ", if active { "▶" } else { " " }, (index + 1) % 10, mark);
+        let range = append(&prefix, option,
+            if active { Color::Cyan } else { Color::DarkGrey },
+            if chosen { Color::Green } else if active { Color::White } else { Color::Grey });
+        if focused == index { focus_row = range.start; }
     }
-    let tail: String = suffix.into_iter().rev().collect();
-    fit_to_width(&format!("…{}█", tail), width)
+    if item.options.is_empty() || item.allow_custom {
+        let active = item.options.is_empty() || focused == item.options.len() || editing;
+        let prefix = if item.options.is_empty() { crate::i18n::tr("Your answer: ").to_string() }
+            else { crate::i18n::tf!("{} [0] Custom: ", if active { "▶" } else { " " }) };
+        let text = if editing { format!("{input}█") }
+            else if input.is_empty() { crate::i18n::tr("(write custom response...)").into() }
+            else { input.to_string() };
+        let range = append(&prefix, &text,
+            if active { Color::Cyan } else { Color::DarkGrey },
+            if editing { Color::Yellow } else if input.is_empty() { Color::DarkGrey } else { Color::Green });
+        if active { focus_row = if editing { range.end - 1 } else { range.start }; }
+    }
+    (lines, focus_row)
 }
 
 fn question_transcript_lines(prefix: &str, text: &str, width: usize) -> Vec<(String, String)> {
@@ -1805,7 +1887,7 @@ fn question_answer_text(answer: Option<&crate::agent::QuestionAnswer>) -> String
         }
     }
     if parts.is_empty() {
-        "[Skipped / No answer]".into()
+        crate::i18n::tr("[Skipped / No answer]").into()
     } else {
         parts.join(" | ")
     }
@@ -1816,23 +1898,24 @@ fn question_review_lines(
     answers: &[crate::agent::QuestionAnswer],
     width: usize,
     focused: usize,
-) -> (Vec<String>, Vec<std::ops::Range<usize>>) {
+) -> (Vec<(String, Color)>, Vec<std::ops::Range<usize>>) {
     let mut lines = Vec::new();
     let mut ranges = Vec::new();
     for (index, question) in questions.iter().enumerate() {
         let first = lines.len();
         let marker = if index == focused { "▶" } else { " " };
         let title = format!("{} {}. {}", marker, index + 1, question.question);
+        let color = if index == focused { Color::Cyan } else { Color::White };
         for line in title.lines() {
-            lines.extend(wrap_text_line(line, width));
+            lines.extend(wrap_text_line(line, width).into_iter().map(|line| (line, color)));
         }
         let answer = answers.iter().find(|answer| answer.question_index == index);
-        let text = format!("   Answer: {}", question_answer_text(answer));
+        let text = crate::i18n::tf!("   Answer: {}", question_answer_text(answer));
         for line in text.lines() {
-            lines.extend(wrap_text_line(line, width));
+            lines.extend(wrap_text_line(line, width).into_iter().map(|line| (line, Color::White)));
         }
         ranges.push(first..lines.len());
-        lines.push(String::new());
+        lines.push((String::new(), Color::White));
     }
     (lines, ranges)
 }
@@ -1916,7 +1999,7 @@ fn review_question_answers(
             g: 60,
             b: 65,
         };
-        let title = " Review answers ";
+        let title = crate::i18n::tr(" Review answers ");
         let _ = queue!(
             frame,
             cursor::MoveTo(0, *row),
@@ -1929,24 +2012,20 @@ fn review_question_answers(
             crossterm::style::Print("╮")
         );
         let mut display_lines =
-            vec!["Check your answers. Select a question to change it.".to_string()];
+            vec![(crate::i18n::tr("Check your answers. Select a question to change it.").to_string(), Color::White)];
         display_lines.extend(lines[layout.visible_options.clone()].iter().cloned());
-        display_lines.push(if inner_width < 64 {
-            "[y] Send  [↵] Edit".into()
+        display_lines.push((if inner_width < 64 {
+            crate::i18n::tr("[y] Send  [↵] Edit").into()
         } else {
-            "[y/Ctrl+Enter] Send  [↑↓/Enter] Edit  [PgUp/PgDn] Scroll  [Esc] Cancel".into()
-        });
-        for (index, line) in display_lines.iter().enumerate() {
+            crate::i18n::tr("[y/Ctrl+Enter] Send  [↑↓/Enter] Edit  [PgUp/PgDn] Scroll  [Esc] Cancel").into()
+        }, Color::White));
+        for (index, (line, color)) in display_lines.iter().enumerate() {
             let _ = queue!(
                 frame,
                 cursor::MoveTo(0, *row + index as u16 + 1),
                 SetForegroundColor(border),
                 crossterm::style::Print("│ "),
-                SetForegroundColor(if line.starts_with('▶') {
-                    Color::Cyan
-                } else {
-                    Color::White
-                }),
+                SetForegroundColor(*color),
                 crossterm::style::Print(fit_to_width(line, inner_width)),
                 SetForegroundColor(border),
                 crossterm::style::Print(" │")
@@ -2078,6 +2157,8 @@ pub fn ask_interactive_question_with_redraw(
         let total_selectable = num_options + if allow_custom { 1 } else { 0 };
         let mut current_start_row;
         let mut last_size = None;
+        let mut body_offset = 0usize;
+        let mut follow_focus = true;
 
         loop {
             let geometry = begin_terminal_frame();
@@ -2087,7 +2168,7 @@ pub fn ask_interactive_question_with_redraw(
                     out,
                     cursor::MoveTo(0, 0),
                     crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-                    crossterm::style::Print(fit_to_width("Resize terminal", term_cols as usize))
+                    crossterm::style::Print(fit_to_width(crate::i18n::tr("Resize terminal"), term_cols as usize))
                 );
                 drop(geometry);
                 let event = crossterm::event::read();
@@ -2110,8 +2191,19 @@ pub fn ask_interactive_question_with_redraw(
             let box_width = term_cols as usize;
             let inner_w = box_width.saturating_sub(4);
 
-            let opt_rows = if num_options == 0 { 1 } else { total_selectable };
-            let layout = question_layout(*row, term_rows, opt_rows, cursor_option);
+            let (body, focus_row) = question_body_lines(item, &selected, cursor_option,
+                &custom_input, in_custom_edit_mode, inner_w);
+            let capacity = term_rows.saturating_sub(3).max(1) as usize;
+            if follow_focus || last_size != Some((term_cols, term_rows)) {
+                if focus_row < body_offset { body_offset = focus_row; }
+                if focus_row >= body_offset + capacity { body_offset = focus_row + 1 - capacity; }
+            }
+            body_offset = body_offset.min(body.len().saturating_sub(capacity));
+            let visible_body = body_offset..(body_offset + capacity).min(body.len());
+            let start_row = term_rows.saturating_sub((visible_body.len() + 3) as u16);
+            let layout = QuestionLayout {
+                start_row, scroll: row.saturating_sub(start_row), visible_options: visible_body,
+            };
 
             // Clear the old box, preserving the transcript before scrolling it up.
             if layout.scroll > 0 {
@@ -2122,6 +2214,10 @@ pub fn ask_interactive_question_with_redraw(
                     crossterm::terminal::ScrollUp(layout.scroll)
                 );
             }
+            // Erase rows left behind when the answer shrinks or editing ends.
+            let _ = queue!(frame,
+                cursor::MoveTo(0, row.saturating_sub(layout.scroll).min(layout.start_row)),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown));
             *row = layout.start_row;
             let start_row = layout.start_row;
             current_start_row = start_row;
@@ -2142,10 +2238,14 @@ pub fn ask_interactive_question_with_redraw(
 
             // 1. Top border with category integrated cleanly
             let title = if let Some(ref hdr) = item.header {
-                format!(" Question [{}/{}] • {} ", q_idx + 1, total_q, hdr)
+                crate::i18n::tf!(" Question [{}/{}] • {} ", q_idx + 1, total_q, hdr)
             } else {
-                format!(" Question [{}/{}] ", q_idx + 1, total_q)
+                crate::i18n::tf!(" Question [{}/{}] ", q_idx + 1, total_q)
             };
+            let title = if body.len() > capacity {
+                format!("{} • {}-{}/{} · PgUp/PgDn ", title.trim_end(),
+                    body_offset + 1, layout.visible_options.end, body.len())
+            } else { title };
             let title = crate::prompt::truncate_visible(&title, box_width.saturating_sub(3));
             let title_w = str_width(&title);
             let dashes_top = box_width.saturating_sub(title_w + 3);
@@ -2163,135 +2263,38 @@ pub fn ask_interactive_question_with_redraw(
             );
             cur_r += 1;
 
-            // 2. Question line
-            let q_line = fit_to_width(&item.question, inner_w);
-            let _ = queue!(
-                frame,
-                cursor::MoveTo(0, cur_r),
-                SetForegroundColor(border_color),
-                crossterm::style::Print("│ "),
-                SetForegroundColor(Color::White),
-                crossterm::style::Print(q_line),
-                SetForegroundColor(border_color),
-                crossterm::style::Print(" │"),
-                ResetColor
-            );
-            cur_r += 1;
-
-            // 3. Options
-            if num_options == 0 {
-                let prompt_label = "Your answer: ";
-                let avail_w = inner_w.saturating_sub(str_width(prompt_label));
-                let disp_val = question_input_line(&custom_input, avail_w);
+            // Question, options and custom answer share a wrapping, scrollable body.
+            for line in &body[layout.visible_options.clone()] {
+                let padding = inner_w.saturating_sub(str_width(&line.prefix) + str_width(&line.text));
                 let _ = queue!(
                     frame,
                     cursor::MoveTo(0, cur_r),
                     SetForegroundColor(border_color),
                     crossterm::style::Print("│ "),
-                    SetForegroundColor(Color::Cyan),
-                    crossterm::style::Print(prompt_label),
-                    SetForegroundColor(Color::Yellow),
-                    crossterm::style::Print(disp_val),
+                    SetForegroundColor(line.prefix_color),
+                    crossterm::style::Print(&line.prefix),
+                    SetForegroundColor(line.text_color),
+                    crossterm::style::Print(&line.text),
+                    crossterm::style::Print(" ".repeat(padding)),
                     SetForegroundColor(border_color),
                     crossterm::style::Print(" │"),
                     ResetColor
                 );
                 cur_r += 1;
-            } else {
-                for (i, opt) in item.options.iter().enumerate()
-                    .skip(layout.visible_options.start)
-                    .take(layout.visible_options.len())
-                {
-                    let is_focused = cursor_option == i && !in_custom_edit_mode;
-                    let is_sel = selected.contains(&i);
-
-                    let num_str = format!("[{}]", (i + 1) % 10);
-                    let check_str = if is_multi {
-                        if is_sel { "[✔]" } else { "[ ]" }
-                    } else {
-                        if is_sel { "(●)" } else { "( )" }
-                    };
-                    let focus_indicator = if is_focused { "▶" } else { " " };
-                    let prefix = format!("{} {} {} ", focus_indicator, num_str, check_str);
-                    let prefix_w = str_width(&prefix);
-                    let avail_w = inner_w.saturating_sub(prefix_w);
-                    let opt_text = fit_to_width(opt, avail_w);
-
-                    let opt_color = if is_sel { Color::Green } else if is_focused { Color::White } else { Color::Grey };
-
-                    let _ = queue!(
-                        frame,
-                        cursor::MoveTo(0, cur_r),
-                        SetForegroundColor(border_color),
-                        crossterm::style::Print("│ "),
-                        SetForegroundColor(if is_focused { Color::Cyan } else { Color::DarkGrey }),
-                        crossterm::style::Print(prefix),
-                        SetForegroundColor(opt_color),
-                        crossterm::style::Print(opt_text),
-                        SetForegroundColor(border_color),
-                        crossterm::style::Print(" │"),
-                        ResetColor
-                    );
-                    cur_r += 1;
-                }
-
-                if allow_custom && layout.visible_options.contains(&num_options) {
-                    let is_focused = (cursor_option == num_options) || in_custom_edit_mode;
-                    let focus_indicator = if is_focused { "▶" } else { " " };
-                    let prefix = format!("{} [0] Custom: ", focus_indicator);
-                    let prefix_w = str_width(&prefix);
-                    let avail_w = inner_w.saturating_sub(prefix_w);
-
-                    let disp_text = if in_custom_edit_mode {
-                        format!("{}█", custom_input)
-                    } else if !custom_input.is_empty() {
-                        custom_input.clone()
-                    } else {
-                        "(write custom response...)".to_string()
-                    };
-                    let opt_text = if in_custom_edit_mode {
-                        question_input_line(&custom_input, avail_w)
-                    } else {
-                        fit_to_width(&disp_text, avail_w)
-                    };
-
-                    let text_color = if in_custom_edit_mode {
-                        Color::Yellow
-                    } else if !custom_input.is_empty() {
-                        Color::Green
-                    } else {
-                        Color::DarkGrey
-                    };
-
-                    let _ = queue!(
-                        frame,
-                        cursor::MoveTo(0, cur_r),
-                        SetForegroundColor(border_color),
-                        crossterm::style::Print("│ "),
-                        SetForegroundColor(if is_focused { Color::Cyan } else { Color::DarkGrey }),
-                        crossterm::style::Print(prefix),
-                        SetForegroundColor(text_color),
-                        crossterm::style::Print(opt_text),
-                        SetForegroundColor(border_color),
-                        crossterm::style::Print(" │"),
-                        ResetColor
-                    );
-                    cur_r += 1;
-                }
             }
 
             // 4. Hint row
             let hint_str = if in_custom_edit_mode {
                 if num_options == 0 {
-                    "[Enter] Submit  [Esc] Cancel"
+                    crate::i18n::tr("[Enter] Submit  [Esc] Cancel")
                 } else {
-                    "[Enter] Done editing  [Esc] Back to options"
+                    crate::i18n::tr("[Enter] Done editing  [Esc] Back to options")
                 }
             } else {
                 if is_multi {
-                    "[Space/1-9] Toggle  [Enter] Confirm  [Arrows] Move  [0/c] Custom  [s] Skip  [Esc] Cancel"
+                    crate::i18n::tr("[Space/1-9] Toggle  [Enter] Confirm  [Arrows] Move  [0/c] Custom  [s] Skip  [Esc] Cancel")
                 } else {
-                    "[Enter] Confirm  [1-9/Arrows] Select  [0/c] Custom  [s] Skip  [Esc] Cancel"
+                    crate::i18n::tr("[Enter] Confirm  [1-9/Arrows] Select  [0/c] Custom  [s] Skip  [Esc] Cancel")
                 }
             };
             let hint_line = fit_to_width(hint_str, inner_w);
@@ -2335,6 +2338,17 @@ pub fn ask_interactive_question_with_redraw(
                     crossterm::event::Event::Key(key) => {
                         if key.kind != crossterm::event::KeyEventKind::Press {
                             continue;
+                        }
+
+                        match key.code {
+                            crossterm::event::KeyCode::PageUp | crossterm::event::KeyCode::PageDown => {
+                                body_offset = if key.code == crossterm::event::KeyCode::PageUp {
+                                    body_offset.saturating_sub(capacity)
+                                } else { (body_offset + capacity).min(body.len().saturating_sub(capacity)) };
+                                follow_focus = false;
+                                continue;
+                            }
+                            _ => follow_focus = true,
                         }
 
                         if in_custom_edit_mode {
@@ -2465,7 +2479,7 @@ pub fn ask_interactive_question_with_redraw(
                                         cursor::MoveTo(0, *row),
                                         crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
                                         SetForegroundColor(Color::DarkGrey),
-                                        crossterm::style::Print("  ℹ Questionnaire cancelled by user."),
+                                        crossterm::style::Print(crate::i18n::tr("  ℹ Questionnaire cancelled by user.")),
                                         ResetColor
                                     );
                                     *row += 1;
@@ -2526,14 +2540,14 @@ pub fn ask_interactive_question_with_redraw(
             }
         }
         let (ans_str, ans_color) = if parts.is_empty() {
-            ("[Skipped / No response]".to_string(), Color::DarkGrey)
+            (crate::i18n::tr("[Skipped / No response]").to_string(), Color::DarkGrey)
         } else {
             (parts.join(" | "), Color::Green)
         };
 
-        print_question_transcript_line("    question  ", &ans.question, crate::theme::current().secondary_crossterm(),
+        print_question_transcript_line(crate::i18n::tr("    question  "), &ans.question, crate::theme::current().secondary_crossterm(),
             Color::White, row, "", branch_tag, false);
-        print_question_transcript_line("    answer    ", &ans_str, Color::DarkGrey,
+        print_question_transcript_line(crate::i18n::tr("    answer    "), &ans_str, Color::DarkGrey,
             ans_color, row, "", branch_tag, false);
     }
 
@@ -2552,6 +2566,7 @@ pub enum HistoryItem {
         args: String,
     },
     ToolLog(String),
+    FileDiff(String),
     ToolEnd {
         name: String,
         #[serde(default)]
@@ -2560,7 +2575,23 @@ pub enum HistoryItem {
         is_error: bool,
     },
     AssistantMessage(String),
+    ResponseStats { elapsed_ms: u64, tokens: Option<u64>, usage_complete: bool },
     Error(String),
+}
+
+pub fn response_stats_text(elapsed_ms: u64, tokens: Option<u64>, usage_complete: bool) -> String {
+    let seconds = elapsed_ms / 1000;
+    let duration = if seconds >= 3600 {
+        crate::i18n::tf!("{}h {:02}m {:02}s", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    } else if seconds >= 60 {
+        crate::i18n::tf!("{}m {:02}s", seconds / 60, seconds % 60)
+    } else { crate::i18n::tf!("{:.1}s", elapsed_ms as f64 / 1000.0) };
+    let usage = match tokens {
+        Some(tokens) if usage_complete => crate::i18n::tf!("{tokens} tokens", tokens = tokens),
+        Some(tokens) => crate::i18n::tf!("≥ {tokens} tokens", tokens = tokens),
+        None => crate::i18n::tr("tokens unavailable").to_string(),
+    };
+    crate::i18n::tf!("Completed in {duration} · {usage}", duration = duration, usage = usage)
 }
 
 pub fn update_streamed_thought(history: &mut Vec<HistoryItem>, index: &mut Option<usize>, text: &str, complete: bool) {
@@ -2631,15 +2662,22 @@ fn wrap_history_text(text: &str, width: usize) -> Vec<String> {
 }
 
 fn thought_lines(text: &str, width: usize, expanded: bool) -> Vec<String> {
-    let wrapped = wrap_history_text(text, width.saturating_sub(4).max(1))
-        .into_iter().filter(|line| !line.trim().is_empty()).collect::<Vec<_>>();
+    let secondary = crate::theme::current().secondary_ansi();
+    let wrapped = plain_terminal_text(text).lines()
+        .filter(|line| !line.trim().is_empty())
+        .flat_map(|line| {
+            let rendered = crate::markdown::render_inline(line);
+            crate::markdown::wrap_rendered_line(
+                &format!("{secondary}\x1b[2;3m{rendered}\x1b[0m"),
+                width.saturating_sub(4).max(1),
+            )
+        }).collect::<Vec<_>>();
     if wrapped.is_empty() { return Vec::new(); }
     let count = if expanded { wrapped.len() } else { wrapped.len().min(3) };
-    let secondary = crate::theme::current().secondary_ansi();
-    let mut lines = vec![format!("  {secondary}Reasoning\x1b[0m")];
+    let mut lines = vec![crate::i18n::tf!("  {secondary}Reasoning\x1b[0m", secondary = secondary)];
     lines.extend(wrapped[..count].iter().map(|line| format!("  {secondary}│ \x1b[2;3m{line}\x1b[0m")));
     if count < wrapped.len() {
-        let hint = truncate_str(&format!("+{} reasoning lines · Ctrl+O to expand", wrapped.len() - count), width.saturating_sub(4));
+        let hint = truncate_str(&crate::i18n::tf!("+{} reasoning lines · Ctrl+O to expand", wrapped.len() - count), width.saturating_sub(4));
         lines.push(format!("  {secondary}│ \x1b[2m{hint}\x1b[0m"));
     }
     lines.push(String::new());
@@ -2647,15 +2685,45 @@ fn thought_lines(text: &str, width: usize, expanded: bool) -> Vec<String> {
 }
 
 fn question_log_lines(text: &str, width: usize) -> Option<Vec<String>> {
+    let text_is_question = text.starts_with("  📋 Question: ");
     let theme = crate::theme::current();
     let (label, text, color) = if let Some(text) = text.strip_prefix("  📋 Question: ") {
-        ("    question  ", text, "\x1b[37m")
+        (crate::i18n::tr("    question  "), text, "\x1b[37m")
     } else if let Some(text) = text.strip_prefix("     Answer: ") {
-        ("    answer    ", text, theme.primary_ansi())
+        (crate::i18n::tr("    answer    "), text, theme.primary_ansi())
     } else { return None; };
-    let label_color = if label.contains("question") { theme.secondary_ansi() } else { "\x1b[90m" };
+    let label_color = if text_is_question { theme.secondary_ansi() } else { "\x1b[90m" };
     Some(question_transcript_lines(label, &plain_terminal_text(text), width + 6).into_iter()
         .map(|(label, line)| format!("{label_color}{label}{color}{line}\x1b[0m")).collect())
+}
+
+fn file_diff_lines(diff: &str, width: usize, expanded: bool) -> Vec<String> {
+    let theme = crate::theme::current();
+    let (added, removed) = theme.diff_colors_ansi();
+    let (added_background, removed_background) = theme.diff_backgrounds_ansi();
+    let secondary = theme.secondary_ansi();
+    let inner_width = width.saturating_sub(4).max(1);
+    let mut rows = Vec::new();
+    for line in plain_terminal_text(diff).lines() {
+        if !expanded && line.starts_with(' ') { continue; }
+        let (color, background) = if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
+            (secondary, "")
+        } else if line.starts_with('+') { (added, added_background) }
+        else if line.starts_with('-') { (removed, removed_background) }
+        else { ("\x1b[90m", "") };
+        for wrapped in wrap_text_line(line, inner_width) {
+            let padding = if background.is_empty() { 0 } else { inner_width.saturating_sub(str_width(&wrapped)) };
+            rows.push(format!("    {background}{color}{wrapped}{}\x1b[0m", " ".repeat(padding)));
+        }
+    }
+    let count = if expanded { rows.len() } else { rows.len().min(10) };
+    let hidden = rows.len() - count;
+    rows.truncate(count);
+    if hidden > 0 {
+        let hint = truncate_str(&crate::i18n::tf!("+{hidden} diff lines · Ctrl+O to expand", hidden = hidden), inner_width);
+        rows.push(format!("    \x1b[90m{hint}\x1b[0m"));
+    }
+    rows
 }
 
 fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
@@ -2668,7 +2736,7 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
         match &history[index] {
             HistoryItem::UserPrompt(text) => {
                 for (i, line) in wrap_history_text(text, width).into_iter().enumerate() {
-                    lines.push(format!("{primary}{}{line}\x1b[0m", if i == 0 { "❯ " } else { "  " }));
+                    lines.push(format!("\x1b[1m{primary}{}{line}\x1b[0m", if i == 0 { "❯ " } else { "  " }));
                 }
                 lines.push(String::new());
             }
@@ -2677,13 +2745,19 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
                     .into_iter().map(|line| format!("{ASSISTANT_INDENT}{line}")));
                 lines.push(String::new());
             }
+            HistoryItem::ResponseStats { elapsed_ms, tokens, usage_complete } => {
+                let stats = response_stats_text(*elapsed_ms, *tokens, *usage_complete);
+                lines.extend(wrap_text_line(&stats, width.saturating_sub(2).max(1)).into_iter()
+                    .map(|line| format!("{ASSISTANT_INDENT}\x1b[90m{line}\x1b[0m")));
+                lines.push(String::new());
+            }
             HistoryItem::Thought(text) => {
                 lines.extend(thought_lines(text, width, is_output_expanded()));
             }
             HistoryItem::ToolStart { name, args } => {
                 let start = index + 1;
                 let mut end = start;
-                while end < history.len() && matches!(history[end], HistoryItem::ToolLog(_)) { end += 1; }
+                while end < history.len() && matches!(history[end], HistoryItem::ToolLog(_) | HistoryItem::FileDiff(_)) { end += 1; }
                 let completed = match history.get(end) {
                     Some(HistoryItem::ToolEnd { result, is_error, .. }) => Some((result.as_str(), *is_error)), _ => None,
                 };
@@ -2696,14 +2770,16 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
                 let logs: Vec<_> = history[start..end].iter().filter_map(|item| match item {
                     HistoryItem::ToolLog(text) if !text.starts_with("$ ") && question_log_lines(text, width).is_none()
                         && !completed.is_some_and(|(result, error)| error && name == "run_command"
-                            && plain_terminal_text(result).contains(plain_terminal_text(text).trim())) => Some(text), _ => None,
+                            && plain_terminal_text(result).contains(plain_terminal_text(text).trim())) => Some(text.as_str()), _ => None,
                 }).collect();
-                let visible = if is_output_expanded() { logs.len() } else { logs.len().min(3) };
-                for text in &logs[..visible] {
-                    lines.extend(wrap_history_text(text.trim(), width.max(1)).into_iter()
-                        .map(|line| format!("    \x1b[90m{line}\x1b[0m")));
+                lines.extend(tool_output_lines(&logs, width, is_output_expanded()));
+                if completed.is_some_and(|(_, error)| !error) {
+                    for item in &history[start..end] {
+                        if let HistoryItem::FileDiff(diff) = item {
+                            lines.extend(file_diff_lines(diff, width, is_output_expanded()));
+                        }
+                    }
                 }
-                if logs.len() > visible { lines.push(format!("    \x1b[90m+{} lines  · Ctrl+O to expand\x1b[0m", logs.len() - visible)); }
                 // Answers are conversation content, so keep them visible even when tool output is collapsed.
                 for item in &history[start..end] {
                     if let HistoryItem::ToolLog(text) = item {
@@ -2712,6 +2788,9 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
                 }
                 index = if completed.is_some() { end + 1 } else { end };
                 continue;
+            }
+            HistoryItem::FileDiff(diff) => {
+                lines.extend(file_diff_lines(diff, width, is_output_expanded()));
             }
             HistoryItem::ToolLog(text) => {
                 if let Some(answer_lines) = question_log_lines(text, width) { lines.extend(answer_lines); }
@@ -2725,7 +2804,8 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
                 if *is_error { lines.extend(tool_error_lines(result, width, is_output_expanded())); }
             }
             HistoryItem::Error(text) => {
-                lines.extend(tool_error_lines(text, width, is_output_expanded()));
+                let display = text.strip_prefix("LLM error: ").map(|detail| crate::i18n::tf!("LLM error: {}", detail));
+                lines.extend(tool_error_lines(display.as_deref().unwrap_or(text), width, is_output_expanded()));
             }
         }
         index += 1;
@@ -2760,10 +2840,48 @@ fn banner_lines(model: &str, base_url: &str, workspace: &str, git_info: &str) ->
     lines
 }
 
+struct ChatBackground {
+    model: String,
+    base_url: String,
+    workspace: String,
+    git_info: String,
+    history: Vec<HistoryItem>,
+}
+
+static CHAT_BACKGROUND: Mutex<Option<ChatBackground>> = Mutex::new(None);
+
+/// Reflow the current transcript above a menu, including live theme previews.
+pub fn paint_chat_background(out: &mut impl Write, panel_top: u16) -> std::io::Result<()> {
+    let background = CHAT_BACKGROUND.lock().unwrap();
+    let Some(chat) = background.as_ref() else { return Ok(()); };
+    let (cols, term_rows) = terminal_size();
+    let mut lines = banner_lines(&chat.model, &chat.base_url, &chat.workspace, &chat.git_info);
+    lines.extend(history_lines(&chat.history, cols.saturating_sub(6).max(1) as usize));
+    let offset = HISTORY_VIEW.lock().unwrap().offset.min(lines.len().saturating_sub(panel_top as usize));
+    let end = lines.len().saturating_sub(offset);
+    let start = end.saturating_sub(panel_top as usize);
+    let text = (0..panel_top).map(|row| lines.get(start + row as usize)
+        .filter(|_| start + (row as usize) < end).cloned().unwrap_or_default()).collect::<Vec<_>>();
+    let snow = crate::snow::Frame::new(cols.saturating_sub(1) as usize, text.len());
+    let painted = text.iter().enumerate().map(|(row, line)| snow.line(line, row)).collect::<Vec<_>>();
+    for (row, line) in painted.iter().enumerate() {
+        queue!(out, cursor::MoveTo(0, row as u16), ResetColor,
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
+            crossterm::style::Print(line), ResetColor)?;
+    }
+    remember_snow_surface(0, cols, term_rows, text, painted);
+    invalidate_content_frame();
+    Ok(())
+}
+
 pub fn redraw_all(
     model: &str, base_url: &str, workspace: &str, git_info: &str,
     history: &[HistoryItem], _branch_tag: &str, _current_prompt: &str,
 ) -> u16 {
+    *CHAT_BACKGROUND.lock().unwrap() = Some(ChatBackground {
+        model: model.to_string(), base_url: base_url.to_string(), workspace: workspace.to_string(),
+        git_info: git_info.to_string(), history: history.to_vec(),
+    });
     let _geometry = begin_terminal_frame();
     if terminal_is_small() { render_small_terminal(); return 0; }
     let (cols, rows) = terminal_size();
@@ -2775,13 +2893,18 @@ pub fn redraw_all(
     let range = HISTORY_VIEW.lock().unwrap().range(lines.len(), height);
     let mut visible = lines[range.clone()].to_vec();
     visible.resize(height, String::new());
+    let text = visible.clone();
     // Keep the text under the mouse fixed while a streamed response grows.
     let selection = MOUSE_SELECTION.lock().unwrap().clone();
     if let Some(selection) = selection.filter(|selection| selection.size == (cols, rows)) {
         visible = selection.highlighted();
         visible.resize(height, String::new());
         visible.truncate(height);
+    } else {
+        let snow = crate::snow::Frame::new(cols.saturating_sub(1) as usize, height);
+        visible = visible.iter().enumerate().map(|(row, line)| snow.line(line, row)).collect();
     }
+    let painted = visible.clone();
     visible.push(activity_line(width));
 
     // Only changed content rows are painted. The editor and dropdown own the bottom rows.
@@ -2802,13 +2925,27 @@ pub fn redraw_all(
     let mut out = stdout().lock();
     let _ = out.write_all(&frame);
     let _ = out.flush();
+    drop(out);
     *previous = Some((cols, rows, visible));
+    drop(previous);
+    let mut clean = text.clone();
+    clean.push(activity_line(width));
+    *TEXT_FRAME.lock().unwrap() = Some((cols, rows, clean));
+    remember_snow_surface(0, cols, rows, text, painted);
     range.len().min(height.saturating_sub(1)) as u16
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_search_renders_as_an_ordinary_command() {
+        let (label, target, detail) = tool_header_parts("web_search", r#"{"query":"Rust documentation"}"#, "", 80);
+        assert!(label.contains("command"));
+        assert!(target.contains("Rust documentation"));
+        assert!(detail.is_empty());
+    }
 
     #[test]
     fn successive_stream_chunks_never_print_inside_the_prompt() {
@@ -2874,17 +3011,75 @@ mod tests {
     }
 
     #[test]
-    fn long_question_input_keeps_the_tail_and_cursor_visible() {
-        let text = "Мы хотим нанимать ML специалистов на роль фронтендера";
-        let display = question_input_line(text, 24);
-        assert!(display.starts_with('…'));
-        assert!(display.ends_with("фронтендера█"));
-        assert_eq!(str_width(&display), 24);
-        assert_eq!(question_input_line("коротко", 9), "коротко█ ");
-        for width in 1..20 {
-            let display = question_input_line("Ответ с иероглифами 界界 и эмодзи 🤖🤖", width);
-            assert_eq!(str_width(&display), width);
-            assert!(display.contains('█'));
+    fn response_stats_follow_answer_and_survive_serialization() {
+        assert_eq!(response_stats_text(12345, Some(1832), true), "Completed in 12.3s · 1832 tokens");
+        assert_eq!(response_stats_text(125000, None, false), "Completed in 2m 05s · tokens unavailable");
+        assert_eq!(response_stats_text(3601000, Some(42), false), "Completed in 1h 00m 01s · ≥ 42 tokens");
+        let history = vec![HistoryItem::AssistantMessage("FINAL_ANSWER".into()),
+            HistoryItem::ResponseStats { elapsed_ms: 12345, tokens: Some(1832), usage_complete: true }];
+        let restored: Vec<HistoryItem> = serde_json::from_str(&serde_json::to_string(&history).unwrap()).unwrap();
+        let lines = history_lines(&restored, 80);
+        let answer_row = lines.iter().position(|line| line.contains("FINAL_ANSWER")).unwrap();
+        assert!(lines[answer_row + 1].is_empty());
+        assert!(lines[answer_row + 2].contains("Completed in 12.3s · 1832 tokens"));
+        let narrow = history_lines(&restored, 20);
+        assert!(narrow.iter().all(|line| str_width(&plain_terminal_text(line)) <= 20));
+    }
+
+    #[test]
+    fn collapsed_tool_output_counts_wrapped_screen_rows() {
+        let long_line = "x".repeat(310);
+        let logs = [long_line.as_str(), "TAIL"];
+        let collapsed = tool_output_lines(&logs, 20, false);
+        assert_eq!(collapsed.len(), 4);
+        assert!(collapsed[..3].iter().all(|line| plain_terminal_text(line) == format!("    {}", "x".repeat(20))));
+        assert!(collapsed[3].contains("+14 lines  · Ctrl+O to expand"));
+        assert!(!collapsed.iter().any(|line| line.contains("TAIL")));
+        let expanded = tool_output_lines(&logs, 20, true);
+        assert_eq!(expanded.len(), 17);
+        assert!(expanded.last().unwrap().contains("TAIL"));
+        assert!(!expanded.iter().any(|line| line.contains("Ctrl+O")));
+        assert_eq!(tool_output_lines(&["short"], 20, false).len(), 1);
+    }
+
+    #[test]
+    fn user_prompt_history_wraps_whole_words_and_skill_names() {
+        let text = "используй $claude-design и $frontend-excellence для проверки результата";
+        let history = vec![HistoryItem::UserPrompt(text.into())];
+        let lines = history_lines(&history, 24);
+        let content: Vec<_> = lines.iter().filter(|line| !line.is_empty())
+            .map(|line| plain_terminal_text(line).chars().skip(2).collect::<String>()).collect();
+        assert_eq!(content.concat(), text);
+        assert!(content.iter().all(|line| str_width(line) <= 24));
+        for word in text.split_whitespace() {
+            assert!(content.iter().any(|line| line.contains(word)), "Split word: {word}");
+        }
+        assert_eq!(wrap_text_line("проверки результата", 16), ["проверки ", "результата"]);
+        assert_eq!(wrap_text_line("a abcdefghijk", 5), ["a ", "abcde", "fghij", "k"]);
+    }
+
+    #[test]
+    fn question_body_preserves_full_question_and_custom_answer() {
+        let question = "Какой точный путь к папке сайта? В репозитории вижу каталог npm — подтверди расположение.";
+        let answer = "Письменный ответ с иероглифами 界界 и эмодзи 🤖🤖. ".repeat(5);
+        for options in [vec![], vec!["Первый вариант".into(), "Второй вариант".into()]] {
+            let item = crate::agent::QuestionItem {
+                question: question.into(), header: None, options, is_multi_select: false,
+                allow_custom: true, placeholder: None,
+            };
+            for width in [16, 24, 80] {
+                let (lines, focus) = question_body_lines(&item, &Default::default(),
+                    item.options.len(), &answer, true, width);
+                assert!(lines.iter().all(|line| str_width(&line.prefix) + str_width(&line.text) <= width));
+                let text = lines.iter().map(|line| line.text.as_str()).collect::<String>();
+                assert!(text.starts_with(question));
+                assert!(text.ends_with(&format!("{answer}█")));
+                assert!(lines[focus].text.ends_with('█'));
+                let (confirmed, _) = question_body_lines(&item, &Default::default(),
+                    item.options.len(), &answer, false, width);
+                let text = confirmed.iter().map(|line| line.text.as_str()).collect::<String>();
+                assert!(text.ends_with(&answer));
+            }
         }
     }
 
@@ -2938,12 +3133,22 @@ mod tests {
             custom_text: Some("A long custom answer that must remain readable".into()),
         }];
         let (lines, ranges) = question_review_lines(&questions, &answers, 20, 0);
-        assert!(lines.iter().all(|line| str_width(line) <= 20));
-        let first = lines[ranges[0].clone()].concat();
+        assert!(lines.iter().all(|(line, _)| str_width(line) <= 20));
+        let first = lines[ranges[0].clone()].iter().map(|(line, _)| line.as_str()).collect::<String>();
         assert!(first.contains(&questions[0].question));
         assert!(first.contains("First choice | Second choice"));
         assert!(first.contains(answers[0].custom_text.as_ref().unwrap()));
-        assert!(lines[ranges[1].clone()].concat().contains("[Skipped / No answer]"));
+        assert!(lines[ranges[1].clone()].iter().map(|(line, _)| line.as_str()).collect::<String>()
+            .contains("[Skipped / No answer]"));
+        let cyan_rows: Vec<_> = lines.iter().filter(|(_, color)| *color == Color::Cyan).collect();
+        assert!(cyan_rows.len() > 1);
+        assert_eq!(cyan_rows.iter().map(|(line, _)| line.as_str()).collect::<String>(),
+            format!("▶ 1. {}", questions[0].question));
+        assert!(lines[ranges[1].clone()].iter().all(|(_, color)| *color == Color::White));
+        let (refocused, _) = question_review_lines(&questions, &answers, 20, 1);
+        assert_eq!(refocused.iter().filter(|(_, color)| *color == Color::Cyan)
+            .map(|(line, _)| line.as_str()).collect::<String>(),
+            format!("▶ 2. {}", questions[1].question));
     }
 
     #[test]

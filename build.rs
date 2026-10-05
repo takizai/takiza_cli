@@ -9,6 +9,29 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    // Generate format macros from the same catalog as ordinary UI labels.
+    // Rust validates all translated placeholders at each call site.
+    println!("cargo:rerun-if-changed=src/locales/ui.json");
+    let catalog: std::collections::BTreeMap<String, [String; 2]> = serde_json::from_str(
+        &std::fs::read_to_string("src/locales/ui.json").expect("read interface catalog"),
+    )
+    .expect("valid interface catalog");
+    let mut macros = String::from("macro_rules! tf {\n");
+    for (english, [russian, chinese]) in catalog {
+        let english_literal = format!("{english:?}").replace("\\u{1b}", "\\x1b");
+        macros.push_str(&format!(
+            "({english_literal} $(, $($args:tt)*)?) => {{ match $crate::i18n::current() {{\n\
+             $crate::i18n::Language::English => format!({english_literal} $(, $($args)*)?),\n\
+             $crate::i18n::Language::Russian => format!({russian:?} $(, $($args)*)?),\n\
+             $crate::i18n::Language::Chinese => format!({chinese:?} $(, $($args)*)?),\n\
+             }} }};\n"
+        ));
+    }
+    macros.push_str("}\npub(crate) use tf;\n");
+    let output_dir =
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output directory"));
+    std::fs::write(output_dir.join("ui_formats.rs"), macros)
+        .expect("write interface format macros");
     // Watch Git metadata as well as sources: moving HEAD or adding a tag must
     // update the version even when no Rust file changed (including worktrees).
     for path in ["HEAD", "refs", "packed-refs"] {

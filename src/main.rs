@@ -13,8 +13,11 @@ mod markdown;
 mod onboarding;
 mod prompt;
 mod session;
+mod snow;
 mod theme;
+mod i18n;
 mod tools;
+mod web_search;
 mod moa_router;
 pub mod skills;
 
@@ -51,7 +54,7 @@ fn collect_chat_title(pending: &mut PendingTitle, session: &mut Session, workspa
             let _ = session.save(workspace);
         }
         Some(Ok(Err(error))) => {
-            history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(format!("Chat title unavailable: {error:#}")));
+            history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(crate::i18n::tf!("Chat title unavailable: {error:#}", error = error)));
         }
         _ => return false,
     }
@@ -64,12 +67,12 @@ fn clear_screen_and_banner(config: &Config) -> u16 {
     let git_display = match &git_info.branch {
         Some(b) => {
             if git_info.is_dirty {
-                format!("{} (dirty)", b)
+                crate::i18n::tf!("{} (dirty)", b)
             } else {
-                format!("{} (clean)", b)
+                crate::i18n::tf!("{} (clean)", b)
             }
         }
-        None => "(no git)".to_string(),
+        None => crate::i18n::tr("(no git)").to_string(),
     };
 
     let mut out = stdout();
@@ -92,12 +95,12 @@ fn redraw_full_screen(config: &Config, history: &[cli_ui::HistoryItem]) -> u16 {
     let git_display = match &current_git.branch {
         Some(b) => {
             if current_git.is_dirty {
-                format!("{} (dirty)", b)
+                crate::i18n::tf!("{} (dirty)", b)
             } else {
-                format!("{} (clean)", b)
+                crate::i18n::tf!("{} (clean)", b)
             }
         }
-        None => "(no git)".to_string(),
+        None => crate::i18n::tr("(no git)").to_string(),
     };
     let branch_tag = match &current_git.branch {
         Some(b) => {
@@ -126,14 +129,11 @@ async fn redraw_active_view(
     history: &[cli_ui::HistoryItem],
     _branch_tag: &str,
     output_row: &Arc<StdMutex<u16>>,
-    spinner: &mut Option<cli_ui::Spinner>,
+    _spinner: &mut Option<cli_ui::Spinner>,
     stream_writer: &mut Option<String>,
 ) {
     // Streaming and browsing share the same Markdown layout and content viewport.
     // Never replay the response through terminal scrolling commands.
-    if stream_writer.is_some() {
-        if let Some(active_spinner) = spinner.take() { active_spinner.stop().await; }
-    }
     let _update = cli_ui::begin_content_update();
     let mut snapshot = history.to_vec();
     if let Some(text) = stream_writer.as_ref() {
@@ -147,10 +147,7 @@ async fn redraw_active_editor(
     output_row: &Arc<StdMutex<u16>>, spinner: &mut Option<cli_ui::Spinner>,
     stream_writer: &mut Option<String>,
 ) {
-    // Stop concurrent terminal writes before opening one frame for content and editor.
-    if stream_writer.is_some() {
-        if let Some(active_spinner) = spinner.take() { active_spinner.stop().await; }
-    }
+    // Paint content and editor in one frame while the activity indicator stays active.
     let _update = cli_ui::begin_content_update();
     redraw_active_view(config, history, branch_tag, output_row, spinner, stream_writer).await;
     let (x, y) = cli_ui::render_bottom_box("", branch_tag);
@@ -319,9 +316,39 @@ async fn handle_tui_command(
     branch_tag: &str, active: &mut Option<ActiveAgent>,
 ) -> anyhow::Result<CommandResult> {
     cli_ui::invalidate_content_frame();
+    if line == "/config" {
+        let mut selection = 0;
+        loop {
+            let ctx = interactive::ScreenContext::from_config(config);
+            let Some(action) = interactive::configure_interactive(&ctx, config, user_prefs, selection)? else { break; };
+            selection = action as usize;
+            if matches!(action, interactive::ConfigAction::Language) {
+                if let Some(language) = interactive::select_language_interactive(Some(&ctx), user_prefs.language)? {
+                    user_prefs.language = language;
+                    user_prefs.save()?;
+                    i18n::set_current(language);
+                }
+            } else {
+                let command = match action {
+                    interactive::ConfigAction::Theme => "/theme",
+                    interactive::ConfigAction::Provider => "/provider",
+                    interactive::ConfigAction::Model => "/model",
+                    interactive::ConfigAction::Mode => "/mode",
+                    interactive::ConfigAction::Effort => "/effort",
+                    interactive::ConfigAction::Approval => "/approval",
+                    interactive::ConfigAction::Language => unreachable!(),
+                };
+                Box::pin(handle_tui_command(command, config, user_prefs, agent, current_session,
+                    history, output_row, branch_tag, active)).await?;
+            }
+            *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
+        }
+        *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
+        return Ok(CommandResult::Handled);
+    }
         // Handle slash commands
         if line == "/exit" || line == "/quit" {
-            println!("Goodbye!");
+            println!("{}", crate::i18n::tf!("Goodbye!"));
             return Ok(CommandResult::Exit);
         }
 
@@ -334,14 +361,14 @@ async fn handle_tui_command(
                 let points = checkpoints::list(&config.workspace_dir, &current_session.id)?;
                 let ctx = interactive::ScreenContext::from_config(config);
                 let choices = points.iter().map(|point| format!("{}  {}", point.created_at, point.label)).collect::<Vec<_>>();
-                let Some(selected) = interactive::rewind_menu(&ctx, "Restore workspace checkpoint", &[], &choices)? else { return Ok(None); };
+                let Some(selected) = interactive::rewind_menu(&ctx, crate::i18n::tr("Restore workspace checkpoint"), &[], &choices)? else { return Ok(None); };
                 let point = &points[selected];
                 let changes = checkpoints::preview(&config.workspace_dir, point)?;
                 let conversation = checkpoints::conversation_at(point, current_session)?;
                 let mut changes = changes;
-                changes.push("Restore chat to this checkpoint; later prompts, answers and tool results will be removed".into());
-                let options = vec!["Cancel".to_string(), "Restore files and chat".to_string()];
-                if interactive::rewind_menu(&ctx, "Review restore · a safety checkpoint will be saved", &changes, &options)? != Some(1) { return Ok(None); }
+                changes.push(crate::i18n::tr("Restore chat to this checkpoint; later prompts, answers and tool results will be removed").into());
+                let options = vec![crate::i18n::tr("Cancel").to_string(), crate::i18n::tr("Restore files and chat").to_string()];
+                if interactive::rewind_menu(&ctx, crate::i18n::tr("Review restore · a safety checkpoint will be saved"), &changes, &options)? != Some(1) { return Ok(None); }
                 checkpoints::restore_session(&config.workspace_dir, point, current_session)?;
                 Ok(Some(conversation))
             })();
@@ -355,7 +382,7 @@ async fn handle_tui_command(
                     current_session.save(&config.workspace_dir)?;
                 }
                 Ok(None) => {}
-                Err(error) => history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(format!("Restore unavailable: {error:#}"))),
+                Err(error) => history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(crate::i18n::tf!("Restore unavailable: {error:#}", error = error))),
             }
             *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
             return Ok(CommandResult::Handled);
@@ -370,14 +397,16 @@ async fn handle_tui_command(
 
         if line == "/approval" || line == "/permissions" {
             config.auto_approve = !config.auto_approve;
+            user_prefs.auto_approve = Some(config.auto_approve);
+            user_prefs.save()?;
             let mut locked = command_agent(agent, active, current_session, history, config).await;
             locked.config.auto_approve = config.auto_approve;
             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
             cli_ui::print_user_cmd(&line);
             if config.auto_approve {
-                println!("Command execution approval: AUTO-APPROVE (commands run without asking)\n");
+                println!("{}", crate::i18n::tf!("Command execution approval: AUTO-APPROVE (commands run without asking)\n"));
             } else {
-                println!("Command execution approval: ASK (permission requested before each command)\n");
+                println!("{}", crate::i18n::tf!("Command execution approval: ASK (permission requested before each command)\n"));
             }
             return Ok(CommandResult::Handled);
         }
@@ -389,13 +418,11 @@ async fn handle_tui_command(
                     user_prefs.theme = th;
                     let _ = user_prefs.save();
                     theme::set_current(th);
-                    *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                    cli_ui::print_user_cmd(&line);
-                    println!("Switched theme to: {}\n", th.name());
+                    *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
                 } else {
                     clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
-                    println!("Unknown theme: '{}'. Available themes: amber, cyberpunk, emerald, nord, monochrome\n", parts[1]);
+                    println!("{}", crate::i18n::tf!("Unknown theme: '{}'. Available themes: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n", parts[1]));
                 }
             } else {
                 let ctx = interactive::ScreenContext::from_config(&config);
@@ -403,12 +430,8 @@ async fn handle_tui_command(
                     user_prefs.theme = new_th;
                     let _ = user_prefs.save();
                     theme::set_current(new_th);
-                    *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                    cli_ui::print_user_cmd(&line);
-                    println!("Switched theme to: {}\n", new_th.name());
-                } else {
-                    *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 }
+                *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
             }
             return Ok(CommandResult::Handled);
         }
@@ -433,10 +456,10 @@ async fn handle_tui_command(
                                 *current_session = Session::new(config.model.clone());
                                 *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                                 cli_ui::print_user_cmd(&line);
-                                println!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nActive model: \x1b[1;38;2;0;220;255m{}\x1b[0m", config.model);
+                                println!("{}", crate::i18n::tf!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nActive model: \x1b[1;38;2;0;220;255m{}\x1b[0m", config.model));
                                 if let Some(curated) = interactive::CURATED_MODELS.iter().find(|m| interactive::is_curated_model_match(m.id, &chosen)) {
                                     if curated.is_expensive {
-                                        println!("  \x1b[1;38;2;255;95;80m⚠ WARNING:\x1b[0m High-tier model ($10/1M in, $50/1M out). Quota and token limits will be consumed significantly faster!");
+                                        println!("{}", crate::i18n::tf!("  \x1b[1;38;2;255;95;80m⚠ WARNING:\x1b[0m High-tier model ($10/1M in, $50/1M out). Quota and token limits will be consumed significantly faster!"));
                                     }
                                 }
                                 println!();
@@ -451,9 +474,9 @@ async fn handle_tui_command(
                                 *current_session = Session::new(config.model.clone());
                                 *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                                 cli_ui::print_user_cmd(&line);
-                                println!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nSelected Model: \x1b[1;38;2;0;220;255m{} ({})\x1b[0m • {}", curated.name, curated.provider, curated.description);
+                                println!("{}", crate::i18n::tf!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nSelected Model: \x1b[1;38;2;0;220;255m{} ({})\x1b[0m • {}", curated.name, curated.provider, i18n::tr(curated.description)));
                                 if curated.is_expensive {
-                                    println!("  \x1b[1;38;2;255;95;80m⚠ WARNING:\x1b[0m High-tier model ($10/1M in, $50/1M out). Quota and token limits will be consumed significantly faster!");
+                                    println!("{}", crate::i18n::tf!("  \x1b[1;38;2;255;95;80m⚠ WARNING:\x1b[0m High-tier model ($10/1M in, $50/1M out). Quota and token limits will be consumed significantly faster!"));
                                 }
                                 println!();
                             } else {
@@ -466,13 +489,13 @@ async fn handle_tui_command(
                             let _ = user_prefs.save();
                             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                             cli_ui::print_user_cmd(&line);
-                            println!("Mode switched to: \x1b[1mTakiza MoA\x1b[0m\n  \x1b[1;38;2;40;220;120m⚡ ~45% Cheaper:\x1b[0m Smart task orchestration — routine search and file inspection run on fast models, while complex code routes to flagships without token waste!\n");
+                            println!("{}", crate::i18n::tf!("Mode switched to: \x1b[1mTakiza MoA\x1b[0m\n  \x1b[1;38;2;40;220;120m⚡ ~45% Cheaper:\x1b[0m Smart task orchestration — routine search and file inspection run on fast models, while complex code routes to flagships without token waste!\n"));
                         }
                     }
                 } else {
                     clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
-                    println!("Unknown mode: '{}'. Available modes: manual, moa\n", sub);
+                    println!("{}", crate::i18n::tf!("Unknown mode: '{}'. Available modes: manual, moa\n", sub));
                 }
             } else if let Ok(Some(chosen_mode)) = interactive::select_mode_interactive(&ctx, config.mode) {
                 match chosen_mode {
@@ -488,9 +511,9 @@ async fn handle_tui_command(
                             *current_session = Session::new(config.model.clone());
                             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                             cli_ui::print_user_cmd(&line);
-                            println!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nSelected Model: \x1b[1;38;2;0;220;255m{} ({})\x1b[0m • {}", curated.name, curated.provider, curated.description);
+                            println!("{}", crate::i18n::tf!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nSelected Model: \x1b[1;38;2;0;220;255m{} ({})\x1b[0m • {}", curated.name, curated.provider, i18n::tr(curated.description)));
                             if curated.is_expensive {
-                                println!("  \x1b[1;38;2;255;95;80m⚠ WARNING:\x1b[0m High-tier model ($10/1M in, $50/1M out). Quota and token limits will be consumed significantly faster!");
+                                println!("{}", crate::i18n::tf!("  \x1b[1;38;2;255;95;80m⚠ WARNING:\x1b[0m High-tier model ($10/1M in, $50/1M out). Quota and token limits will be consumed significantly faster!"));
                             }
                             println!();
                         } else {
@@ -503,7 +526,7 @@ async fn handle_tui_command(
                         let _ = user_prefs.save();
                         *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                         cli_ui::print_user_cmd(&line);
-                        println!("Mode switched to: \x1b[1mTakiza MoA\x1b[0m\n  \x1b[1;38;2;40;220;120m⚡ ~45% Cheaper:\x1b[0m Smart task orchestration — routine search and file inspection run on fast models, while complex code routes to flagships without token waste!\n");
+                        println!("{}", crate::i18n::tf!("Mode switched to: \x1b[1mTakiza MoA\x1b[0m\n  \x1b[1;38;2;40;220;120m⚡ ~45% Cheaper:\x1b[0m Smart task orchestration — routine search and file inspection run on fast models, while complex code routes to flagships without token waste!\n"));
                     }
                 }
             } else {
@@ -538,16 +561,16 @@ async fn handle_tui_command(
                 if diff.trim().is_empty() {
                     clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
-                    println!("No changes (working tree clean).\n");
+                    println!("{}", crate::i18n::tf!("No changes (working tree clean).\n"));
                 } else {
                     let ctx = interactive::ScreenContext::from_config(&config);
                     interactive::show_interactive_diff(&ctx, &diff, &config.workspace_dir)?;
-                    *output_row.lock().unwrap() = clear_screen_and_banner(&config);
+                    *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
                 }
             } else {
                 clear_screen_and_banner(&config);
                 cli_ui::print_user_cmd(&line);
-                println!("No git repository found in workspace.\n");
+                println!("{}", crate::i18n::tf!("No git repository found in workspace.\n"));
             }
             return Ok(CommandResult::Handled);
         }
@@ -565,7 +588,7 @@ async fn handle_tui_command(
                 *current_session = Session::new(config.model.clone());
                 *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 cli_ui::print_user_cmd(&line);
-                println!("Switched model to: {}\n", config.model);
+                println!("{}", crate::i18n::tf!("Switched model to: {}\n", config.model));
             } else {
                 let ctx = interactive::ScreenContext::from_config(&config);
                 if let Ok(Some(chosen_model)) = interactive::select_model(&ctx, &config.base_url, &config.model) {
@@ -579,7 +602,7 @@ async fn handle_tui_command(
                     *current_session = Session::new(config.model.clone());
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
-                    println!("Switched model to: {}\n", config.model);
+                    println!("{}", crate::i18n::tf!("Switched model to: {}\n", config.model));
                 } else {
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 }
@@ -596,7 +619,7 @@ async fn handle_tui_command(
                     _ => {
                         *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                         cli_ui::print_user_cmd(&line);
-                        println!("Unknown effort: {}. Available: low, medium, high\n", parts[1]);
+                        println!("{}", crate::i18n::tf!("Unknown effort: {}. Available: low, medium, high\n", parts[1]));
                         None
                     }
                 }
@@ -622,9 +645,9 @@ async fn handle_tui_command(
                 cli_ui::print_user_cmd(&line);
                 let is_supported = llm::supports_reasoning_effort(&config.model);
                 if is_supported {
-                    println!("Set reasoning effort to: {}\n", eff);
+                    println!("{}", crate::i18n::tf!("Set reasoning effort to: {}\n", eff));
                 } else {
-                    println!("Set reasoning effort to: {} (Note: current model '{}' may not use reasoning effort; setting will apply when switching to o1, o3-mini, claude-3-7, deepseek-r1, etc.)\n", eff, config.model);
+                    println!("{}", crate::i18n::tf!("Set reasoning effort to: {} (Note: current model '{}' may not use reasoning effort; setting will apply when switching to o1, o3-mini, claude-3-7, deepseek-r1, etc.)\n", eff, config.model));
                 }
             }
             return Ok(CommandResult::Handled);
@@ -647,11 +670,11 @@ async fn handle_tui_command(
                     *current_session = Session::new(config.model.clone());
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
-                    println!("Switched provider: {}\n  Endpoint: {}\n  Model:    {}\n", preset.name, config.base_url, config.model);
+                    println!("{}", crate::i18n::tf!("Switched provider: {}\n  Endpoint: {}\n  Model:    {}\n", preset.name, config.base_url, config.model));
                 } else {
                     clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
-                    println!("Unknown provider: {}. Available: groq, openrouter, openai, deepseek, ollama\n", p);
+                    println!("{}", crate::i18n::tf!("Unknown provider: {}. Available: groq, openrouter, openai, deepseek, ollama\n", p));
                 }
             } else {
                 let ctx = interactive::ScreenContext::from_config(&config);
@@ -672,7 +695,7 @@ async fn handle_tui_command(
                     *current_session = Session::new(config.model.clone());
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
-                    println!("Switched provider: {}\n  Endpoint: {}\n  Model:    {}\n", selected_provider.name, config.base_url, config.model);
+                    println!("{}", crate::i18n::tf!("Switched provider: {}\n  Endpoint: {}\n  Model:    {}\n", selected_provider.name, config.base_url, config.model));
                 } else {
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 }
@@ -781,7 +804,7 @@ async fn handle_tui_command(
             history.lock().unwrap().clear();
             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
             cli_ui::print_user_cmd(&line);
-            println!("Conversation reset. Started a new session.\n");
+            println!("{}", crate::i18n::tf!("Conversation reset. Started a new session.\n"));
             return Ok(CommandResult::Handled);
         }
 
@@ -790,27 +813,27 @@ async fn handle_tui_command(
             cli_ui::print_user_cmd(&line);
             let sess_dir = Session::sessions_dir(&config.workspace_dir);
             let md_path = sess_dir.join(format!("{}.md", current_session.id));
-            println!("Current Session: {}", current_session.id);
-            println!("Created:         {}", current_session.created_at);
-            println!("Model:           {}", current_session.model);
-            println!("Messages:        {}", current_session.message_count());
+            println!("{}", crate::i18n::tf!("Current Session: {}", current_session.id));
+            println!("{}", crate::i18n::tf!("Created:         {}", current_session.created_at));
+            println!("{}", crate::i18n::tf!("Model:           {}", current_session.model));
+            println!("{}", crate::i18n::tf!("Messages:        {}", current_session.message_count()));
             if md_path.exists() {
-                println!("Markdown Log:    {}", md_path.display());
+                println!("{}", crate::i18n::tf!("Markdown Log:    {}", md_path.display()));
             }
             let session_ids = Session::list(&config.workspace_dir);
-            println!("\nSaved Sessions ({}):", session_ids.len());
+            println!("{}", crate::i18n::tf!("\nSaved Sessions ({}):", session_ids.len()));
             for id in session_ids.iter().take(8) {
-                let is_cur = if id == &current_session.id { " (current)" } else { "" };
+                let is_cur = if id == &current_session.id { crate::i18n::tr(" (current)") } else { "" };
                 if let Some(s) = Session::load(&config.workspace_dir, id) {
-                    println!("  • {} | {:2} msgs | \"{}\"{}", s.id, s.message_count(), s.title(), is_cur);
+                    println!("{}", crate::i18n::tf!("  • {} | {:2} msgs | \"{}\"{}", s.id, s.message_count(), s.title(), is_cur));
                 } else {
                     println!("  • {}{}", id, is_cur);
                 }
             }
             if session_ids.len() > 8 {
-                println!("  ... and {} more (use /sessions to browse)", session_ids.len() - 8);
+                println!("{}", crate::i18n::tf!("  ... and {} more (use /sessions to browse)", session_ids.len() - 8));
             }
-            println!("\nTip: Use /sessions to interactively resume or delete past sessions.\n");
+            println!("{}", crate::i18n::tf!("\nTip: Use /sessions to interactively resume or delete past sessions.\n"));
             return Ok(CommandResult::Handled);
         }
 
@@ -842,7 +865,7 @@ async fn handle_tui_command(
                 if sessions.is_empty() {
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
-                    println!("No saved chat sessions found in .takiza/sessions/\n");
+                    println!("{}", crate::i18n::tf!("No saved chat sessions found in .takiza/sessions/\n"));
                 } else {
                     let ctx = interactive::ScreenContext::from_config(&config);
                     match interactive::select_session(&ctx, &config.workspace_dir) {
@@ -878,7 +901,7 @@ async fn handle_tui_command(
 
 
     cli_ui::print_user_cmd(line);
-    println!("Unknown command: {line}. Use /help to see available commands.");
+    println!("{}", crate::i18n::tf!("Unknown command: {line}. Use /help to see available commands.", line = line));
     Ok(CommandResult::Handled)
 }
 
@@ -886,23 +909,24 @@ async fn handle_tui_command(
 async fn main() -> anyhow::Result<()> {
     let cli_args = config::CliArgs::parse();
 
+    i18n::set_current(theme::UserPreferences::load().language);
     if cli_args.show_help {
-        println!("Takiza Code v{} - Autonomous AI Software Engineering Agent\n", env!("TAKIZA_VERSION"));
-        println!("USAGE:");
+        println!("{}", crate::i18n::tf!("Takiza Code v{} - Autonomous AI Software Engineering Agent\n", env!("TAKIZA_VERSION")));
+        println!("{}", crate::i18n::tf!("USAGE:"));
         println!("    takiza [OPTIONS] [PROMPT]\n");
-        println!("OPTIONS:");
-        println!("    -c, --continue, --resume");
-        println!("            Continue previous conversation session from where you left off\n");
+        println!("{}", crate::i18n::tf!("OPTIONS:"));
+        println!("{}", crate::i18n::tf!("    -c, --continue, --resume"));
+        println!("{}", crate::i18n::tf!("            Continue previous conversation session from where you left off\n"));
         println!("    -y, --yes, -a, --auto-approve, --dangerously-skip-permissions");
-        println!("            Skip asking for permission before executing commands (auto-approve)");
-        println!("            (Default: ask user for permission before running each command)\n");
+        println!("{}", crate::i18n::tf!("            Skip asking for permission before executing commands (auto-approve)"));
+        println!("{}", crate::i18n::tf!("            (Default: ask user for permission before running each command)\n"));
         println!("    -h, --help");
-        println!("            Print help information\n");
+        println!("{}", crate::i18n::tf!("            Print help information\n"));
         println!("    -v, -V, --version");
-        println!("            Print version information\n");
-        println!("ARGS:");
+        println!("{}", crate::i18n::tf!("            Print version information\n"));
+        println!("{}", crate::i18n::tf!("ARGS:"));
         println!("    [PROMPT]");
-        println!("            Optional initial prompt to send to the agent\n");
+        println!("{}", crate::i18n::tf!("            Optional initial prompt to send to the agent\n"));
         return Ok(());
     }
 
@@ -914,7 +938,15 @@ async fn main() -> anyhow::Result<()> {
     let _terminal_screen = cli_ui::TerminalScreen::enter()?;
 
     // 1. Run onboarding wizard if user has not yet accepted terms
-    let (mut user_prefs, onboarding_shown) = onboarding::Onboarding::run_if_needed()?;
+    let (mut user_prefs, onboarding_shown) = match onboarding::Onboarding::run_if_needed() {
+        Ok(result) => result,
+        Err(error) if error.is::<onboarding::OnboardingDeclined>() => {
+            drop(_terminal_screen);
+            println!("{}", crate::i18n::tf!("You must accept the user agreement to use Takiza Harness. Goodbye!"));
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     theme::set_current(user_prefs.theme);
 
     // If onboarding was not shown, purge previous terminal output (e.g. `cargo run`).
@@ -948,7 +980,7 @@ async fn main() -> anyhow::Result<()> {
             *output_row.lock().unwrap() = redraw_full_screen(&config, &restored_history);
         } else {
             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-            println!("  ℹ  No previous session found in .takiza/sessions. Started a new session.\n");
+            println!("{}", crate::i18n::tf!("  ℹ  No previous session found in .takiza/sessions. Started a new session.\n"));
         }
     } else {
         *output_row.lock().unwrap() = clear_screen_and_banner(&config);
@@ -992,12 +1024,12 @@ async fn main() -> anyhow::Result<()> {
                 let git_display = match &git_info.branch {
                     Some(b) => {
                         if git_info.is_dirty {
-                            format!("{} (dirty)", b)
+                            crate::i18n::tf!("{} (dirty)", b)
                         } else {
-                            format!("{} (clean)", b)
+                            crate::i18n::tf!("{} (clean)", b)
                         }
                     }
-                    None => "(no git)".to_string(),
+                    None => crate::i18n::tr("(no git)").to_string(),
                 };
                 let hist = history_clone.lock().unwrap().clone();
                 let new_row = cli_ui::redraw_all(
@@ -1014,7 +1046,7 @@ async fn main() -> anyhow::Result<()> {
 
             match input_res {
                 PromptResult::Exit => {
-                    println!("Goodbye!");
+                    println!("{}", crate::i18n::tf!("Goodbye!"));
                     break;
                 }
                 PromptResult::Interrupted => {
@@ -1133,6 +1165,9 @@ async fn main() -> anyhow::Result<()> {
 
         cli_ui::scroll_history(i32::MIN);
         // Autonomous AI Agent Execution
+        let response_started = std::time::Instant::now();
+        let mut response_tokens: Option<u64> = None;
+        let mut usage_complete = true;
         history.lock().unwrap().push(cli_ui::HistoryItem::UserPrompt(line.clone()));
         {
             *output_row.lock().unwrap() = redraw_full_screen(&config, &history.lock().unwrap());
@@ -1162,7 +1197,7 @@ async fn main() -> anyhow::Result<()> {
 
         cli_ui::set_active_draft(Some(line_editor.draft.clone()));
         let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(100);
-        let mut thinking_message = cli_ui::random_thinking_message();
+        let thinking_message = cli_ui::random_thinking_message();
         let mut spinner = Some(cli_ui::Spinner::start_with_box(
             thinking_message,
             "",
@@ -1195,7 +1230,7 @@ async fn main() -> anyhow::Result<()> {
             }
             let error = match capture { Ok(Ok(_)) => None, Ok(Err(error)) => Some(format!("{error:#}")), Err(error) => Some(error.to_string()) };
             if let Some(error) = error {
-                let _ = event_tx.send(AgentEvent::ToolLog(format!("Checkpoint unavailable: {error}"))).await;
+                let _ = event_tx.send(AgentEvent::ToolLog(crate::i18n::tf!("Checkpoint unavailable: {error}", error = error))).await;
             }
             let mut locked = agent_clone.lock().await;
             locked
@@ -1212,9 +1247,15 @@ async fn main() -> anyhow::Result<()> {
         let mut tool_log_count = 0usize;
 
         let mut title_tick = tokio::time::interval(std::time::Duration::from_millis(100));
+        let mut background_tick = tokio::time::interval(snow::FRAME_INTERVAL);
+        background_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Event processing loop
         loop {
             let event = tokio::select! {
+                _ = background_tick.tick(), if snow::enabled() => {
+                    cli_ui::animate_background();
+                    continue;
+                }
                 _ = title_tick.tick(), if pending_title.is_some() => {
                     if collect_chat_title(&mut pending_title, &mut current_session, &config.workspace_dir, &history) {
                         let snapshot = history.lock().unwrap().clone();
@@ -1340,7 +1381,7 @@ async fn main() -> anyhow::Result<()> {
                                     // Plain command output remains readable until the user returns to the chat.
                                     let name = submitted.split_whitespace().next().unwrap_or("");
                                     if matches!(name, "/help" | "/history") || !prompt::SLASH_COMMANDS.iter().any(|c| c.name == name) {
-                                        println!("Press any key to return to the response.");
+                                        println!("{}", crate::i18n::tf!("Press any key to return to the response."));
                                         loop {
                                             if matches!(crossterm::event::read()?, crossterm::event::Event::Key(_)) { break; }
                                         }
@@ -1391,10 +1432,19 @@ async fn main() -> anyhow::Result<()> {
                 AgentEvent::StatusUpdate(status) => {
                     if status == "Thinking..." {
                         thought_index = None;
-                        thinking_message = cli_ui::random_thinking_message();
-                        if let Some(s) = spinner.take() { s.stop().await; }
+                        if spinner.as_ref().is_none_or(|s| s.message() != thinking_message) {
+                            if let Some(s) = spinner.take() { s.stop().await; }
+                            spinner = Some(cli_ui::Spinner::start_with_box(
+                                thinking_message, "", &branch_tag, output_row.clone(),
+                            ));
+                        }
+                    } else if status.starts_with("Connection interrupted;") && spinner.is_none() {
                         spinner = Some(cli_ui::Spinner::start_with_box(
-                            thinking_message, "", &branch_tag, output_row.clone(),
+                            "Reconnecting...", "", &branch_tag, output_row.clone(),
+                        ));
+                    } else if status.starts_with("Invalid tool call;") && spinner.is_none() {
+                        spinner = Some(cli_ui::Spinner::start_with_box(
+                            "Retrying tool call...", "", &branch_tag, output_row.clone(),
                         ));
                     }
                 }
@@ -1420,9 +1470,9 @@ async fn main() -> anyhow::Result<()> {
                     };
 
                     let status_log = match choice {
-                        cli_ui::PermissionChoice::AllowOnce => "approval allowed",
-                        cli_ui::PermissionChoice::AllowAlways => "approval allowed for session",
-                        cli_ui::PermissionChoice::Deny => "approval denied",
+                        cli_ui::PermissionChoice::AllowOnce => crate::i18n::tr("approval allowed"),
+                        cli_ui::PermissionChoice::AllowAlways => crate::i18n::tr("approval allowed for session"),
+                        cli_ui::PermissionChoice::Deny => crate::i18n::tr("approval denied"),
                     };
                     history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(status_log.to_string()));
 
@@ -1513,6 +1563,20 @@ async fn main() -> anyhow::Result<()> {
                         output_row.clone(),
                     ));
                 }
+                AgentEvent::StreamRetry => {
+                    if let Some(s) = spinner.take() { s.stop().await; }
+                    stream_writer.take();
+                    if let Some(index) = thought_index.take() {
+                        history.lock().unwrap().remove(index);
+                    }
+                    let snapshot = history.lock().unwrap().clone();
+                    *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
+                }
+                AgentEvent::TokenUsage(tokens) => {
+                    if let Some(tokens) = tokens {
+                        response_tokens = Some(response_tokens.unwrap_or(0).saturating_add(tokens));
+                    } else { usage_complete = false; }
+                }
                 AgentEvent::ThoughtToken(token) => {
                     cli_ui::update_streamed_thought(&mut history.lock().unwrap(), &mut thought_index, &token, false);
                     let snapshot = history.lock().unwrap().clone();
@@ -1525,8 +1589,11 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 AgentEvent::AssistantToken(token) => {
-                    if let Some(s) = spinner.take() {
-                        s.stop().await;
+                    if spinner.as_ref().is_none_or(|s| s.message() != "Responding...") {
+                        if let Some(s) = spinner.take() { s.stop().await; }
+                        spinner = Some(cli_ui::Spinner::start_with_box(
+                            "Responding...", "", &branch_tag, output_row.clone(),
+                        ));
                     }
                     stream_writer.get_or_insert_with(String::new).push_str(&token);
                     let snapshot = history.lock().unwrap().clone();
@@ -1558,6 +1625,9 @@ async fn main() -> anyhow::Result<()> {
                     spinner = Some(cli_ui::Spinner::start_with_box(
                         "Executing tools...", "", &branch_tag, output_row.clone(),
                     ));
+                }
+                AgentEvent::FileDiff(diff) => {
+                    history.lock().unwrap().push(cli_ui::HistoryItem::FileDiff(diff));
                 }
                 AgentEvent::ToolLog(log_item) => {
                     if log_item.starts_with("$ ") { continue; }
@@ -1594,11 +1664,14 @@ async fn main() -> anyhow::Result<()> {
                     ));
                 }
                 AgentEvent::AssistantMessage(msg) => {
-                    if let Some(s) = spinner.take() {
-                        s.stop().await;
-                    }
                     stream_writer.take();
+                    thought_index = None;
                     history.lock().unwrap().push(cli_ui::HistoryItem::AssistantMessage(msg));
+                    history.lock().unwrap().push(cli_ui::HistoryItem::ResponseStats {
+                        elapsed_ms: response_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                        tokens: response_tokens,
+                        usage_complete,
+                    });
                     let snapshot = history.lock().unwrap().clone();
                     *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
                 }
@@ -1610,7 +1683,7 @@ async fn main() -> anyhow::Result<()> {
                             history.lock().unwrap().push(cli_ui::HistoryItem::AssistantMessage(partial));
                         }
                     }
-                    let message = "⏸ Stopped by user";
+                    let message = crate::i18n::tr("⏸ Stopped by user");
                     history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(message.to_string()));
                     let snapshot = history.lock().unwrap().clone();
                     *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
@@ -1679,7 +1752,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some((_, task)) = pending_title.take() { task.abort(); }
         }
         if interrupted_by_command || exit_requested {
-            if exit_requested { println!("Goodbye!"); break 'chat; }
+            if exit_requested { println!("{}", crate::i18n::tf!("Goodbye!")); break 'chat; }
             continue;
         }
 

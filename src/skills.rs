@@ -209,8 +209,8 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     }
     out.push_str("\nUsers can explicitly select a skill with $skill-name or a Markdown link to its SKILL.md. These references request that you read and apply that skill.\n");
     out.push_str("\nSKILL USAGE RULES:\n");
-    out.push_str("1. If the user's task matches or relates to one of these skills (e.g. design/UI styling, frontend architecture, engineering standards), you MUST read the skill's instructions first using `read_skill` or `read_file`.\n");
-    out.push_str("2. Always strictly apply the guidelines, patterns, and principles defined in the skill.\n");
+    out.push_str("1. Read skills explicitly requested by the user and skills whose descriptions clearly fit the task, using `read_skill` or `read_file` before applying them. Descriptions are not full instructions; do not load unrelated skills based only on shared keywords.\n");
+    out.push_str("2. Follow applicable skill instructions within the user's authorized scope. Direct user instructions take precedence over skills and project documents. Resolve routine implementation choices yourself; ask only for necessary missing information or authorization.\n");
     out.push_str("</skills>\n");
 
     out

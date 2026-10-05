@@ -69,6 +69,7 @@ pub struct SlashCommand {
 }
 
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
+    SlashCommand { name: "/config", description: "Configure language, theme, provider, model and permissions", has_args: false },
     SlashCommand {
         name: "/help",
         description: "Show help summary and all slash commands",
@@ -194,7 +195,7 @@ pub fn get_matching_commands(buffer: &str) -> Vec<SlashCommand> {
     if matches.is_empty() && !query_no_slash.is_empty() {
         for cmd in SLASH_COMMANDS {
             let name_lower = cmd.name.to_lowercase();
-            if name_lower.contains(query_no_slash) || cmd.description.to_lowercase().contains(query_no_slash) {
+            if name_lower.contains(query_no_slash) || crate::i18n::tr(cmd.description).to_lowercase().contains(query_no_slash) {
                 matches.push(*cmd);
             }
         }
@@ -227,7 +228,7 @@ fn skill_matches(text: &str, cursor: usize, skills: &[crate::skills::Skill]) -> 
     let query = query.to_lowercase();
     skills.iter().filter(|skill| skill.name.to_lowercase().contains(&query))
         .map(|skill| Completion { name: format!("${}", skill.name),
-            description: format!("{} · {}", if skill.is_workspace { "local" } else { "global" }, skill.description),
+            description: format!("{} · {}", if skill.is_workspace { crate::i18n::tr("local") } else { crate::i18n::tr("global") }, skill.description),
             has_args: false, is_skill: true }).collect()
 }
 
@@ -237,7 +238,7 @@ fn get_completions(text: &str, cursor: usize) -> Vec<Completion> {
         return skill_matches(text, cursor, &crate::skills::completion_skills(&workspace));
     }
     get_matching_commands(text).into_iter().map(|command| Completion {
-        name: command.name.into(), description: command.description.into(), has_args: command.has_args, is_skill: false,
+        name: command.name.into(), description: crate::i18n::tr(command.description).into(), has_args: command.has_args, is_skill: false,
     }).collect()
 }
 
@@ -273,7 +274,11 @@ pub struct Draft {
 const MAX_INPUT_LINES: usize = 3;
 const DOUBLE_ESCAPE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
-fn input_layout(buffer: &str, cursor: usize, width: usize) -> (Vec<String>, usize, usize) {
+pub(crate) fn input_column(row: usize) -> usize {
+    if row == 0 { 4 } else { 2 }
+}
+
+pub(crate) fn input_layout(buffer: &str, cursor: usize, width: usize) -> (Vec<String>, usize, usize) {
     let chars: Vec<char> = buffer.chars().collect();
     let cursor = cursor.min(chars.len());
     let ranges = input_ranges(buffer, width);
@@ -296,9 +301,19 @@ fn input_ranges(buffer: &str, width: usize) -> Vec<std::ops::Range<usize>> {
     loop {
         let mut end = start;
         let mut used = 0;
+        let row_width = width.max(1) + if ranges.is_empty() { 0 } else { 2 };
         while end < chars.len() && chars[end] != '\n' {
+            if !chars[end].is_whitespace() && (end == start || chars[end - 1].is_whitespace()) {
+                let word_width: usize = chars[end..].iter().copied()
+                    .take_while(|c| !c.is_whitespace()).map(char_width).sum();
+                // Keep a word intact when it fits on a continuation row.
+                // Words wider than that row still need character wrapping.
+                if used + word_width > row_width && (end > start || word_width <= width.max(1) + 2) {
+                    break;
+                }
+            }
             let next = char_width(chars[end]);
-            if used + next > width.max(1) && end > start { break; }
+            if used + next > row_width && end > start { break; }
             used += next;
             end += 1;
         }
@@ -320,7 +335,7 @@ impl Draft {
         self.view_top = None;
         self.last_escape = None;
         let text = crate::attachments::pasted_text(text).unwrap_or_else(|error| {
-            crate::logger::log_warn("Attachments", &error);
+            crate::logger::log_warn(crate::i18n::tr("Attachments"), &error);
             text.to_string()
         });
         let text: String = text.replace("\r\n", "\n").replace('\r', "\n").replace('\t', "    ")
@@ -423,9 +438,9 @@ impl Draft {
             KeyCode::Up | KeyCode::Down => {
                 let (_, row, col) = input_layout(&self.text, self.cursor, width);
                 let ranges = input_ranges(&self.text, width);
-                let desired = *self.preferred_column.get_or_insert(col);
+                let desired = *self.preferred_column.get_or_insert(col + input_column(row));
                 let next = if key.code == KeyCode::Up { row.saturating_sub(1) } else { (row + 1).min(ranges.len() - 1) };
-                self.cursor = self.cursor_at(&ranges[next], desired);
+                self.cursor = self.cursor_at(&ranges[next], desired.saturating_sub(input_column(next)));
             }
             KeyCode::Home | KeyCode::End => {
                 let (_, row, _) = input_layout(&self.text, self.cursor, width);
@@ -489,7 +504,7 @@ impl Draft {
         match crate::clipboard::copy(&text) {
             Ok(()) if key.code == KeyCode::Char('x') => { self.delete_selection(); }
             Ok(()) => {}
-            Err(error) => crate::logger::log_warn("Clipboard", &error),
+            Err(error) => crate::logger::log_warn(crate::i18n::tr("Clipboard"), &error),
         }
         true
     }
@@ -506,8 +521,9 @@ impl Draft {
             if mouse.kind == MouseEventKind::Up(MouseButton::Left) { self.mouse_anchor = None; }
             return false;
         }
-        let range = &input_ranges(&self.text, width)[top + (mouse.row - start) as usize];
-        let next = self.cursor_at(range, mouse.column.saturating_sub(4) as usize);
+        let row = top + (mouse.row - start) as usize;
+        let range = &input_ranges(&self.text, width)[row];
+        let next = self.cursor_at(range, (mouse.column as usize).saturating_sub(input_column(row)));
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             self.selection_anchor = None;
             self.mouse_anchor = Some(next);
@@ -518,7 +534,7 @@ impl Draft {
         if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
             self.mouse_anchor = None;
             if let Some(text) = self.selected_text() {
-                if let Err(error) = crate::clipboard::copy(&text) { crate::logger::log_warn("Clipboard", &error); }
+                if let Err(error) = crate::clipboard::copy(&text) { crate::logger::log_warn(crate::i18n::tr("Clipboard"), &error); }
             }
         }
         true
@@ -618,7 +634,7 @@ pub fn render_active_command_box(branch: &str, draft: &Draft) -> std::io::Result
     let top = draft.view_top.unwrap_or(caret_row.saturating_add(1).saturating_sub(limit))
         .min(lines.len().saturating_sub(limit));
     let start = rows.saturating_sub(editor.prev_total_rows as u16);
-    Ok((4 + caret_col as u16, start + 1 + caret_row.saturating_sub(top).min(limit - 1) as u16))
+    Ok(((input_column(caret_row) + caret_col) as u16, start + 1 + caret_row.saturating_sub(top).min(limit - 1) as u16))
 }
 
 pub struct LineEditor {
@@ -727,7 +743,8 @@ impl LineEditor {
                 &mut previously_rendered, &matching, draft.menu_selected, &mut on_redraw)?;
             // Scroll only content; the editor and completion menu stay fixed.
             let event = loop {
-                if pending_event.is_none() && !event::poll(std::time::Duration::from_millis(100))? {
+                if pending_event.is_none() && !event::poll(crate::snow::input_poll_interval())? {
+                    cli_ui::animate_background();
                     if on_update() { break Event::Resize(cli_ui::terminal_size().0, cli_ui::terminal_size().1); }
                     continue;
                 }
@@ -763,14 +780,14 @@ impl LineEditor {
                     }
                     match cli_ui::mouse_action(mouse) {
                         Some(cli_ui::MouseAction::Copy(text)) => {
-                            if let Err(error) = crate::clipboard::copy(&text) { crate::logger::log_warn("Clipboard", &error); }
+                            if let Err(error) = crate::clipboard::copy(&text) { crate::logger::log_warn(crate::i18n::tr("Clipboard"), &error); }
                             on_redraw(&draft.text);
                         }
                         Some(cli_ui::MouseAction::Paste) => {
                             self.history_index = None;
                             match crate::clipboard::paste() {
                                 Ok(text) => draft.insert_text(&text),
-                                Err(error) => crate::logger::log_warn("Clipboard", &error),
+                                Err(error) => crate::logger::log_warn(crate::i18n::tr("Clipboard"), &error),
                             }
                             on_redraw(&draft.text);
                         }
@@ -791,7 +808,7 @@ impl LineEditor {
                     if control && key.code == KeyCode::Char('v') {
                         match crate::clipboard::paste() {
                             Ok(text) => draft.insert_text(&text),
-                            Err(error) => crate::logger::log_warn("Clipboard", &error),
+                            Err(error) => crate::logger::log_warn(crate::i18n::tr("Clipboard"), &error),
                         }
                         continue;
                     }
@@ -894,7 +911,7 @@ impl LineEditor {
         let max_content_chars = box_width.saturating_sub(6);
 
         let (mut content_lines, mut cursor_row, caret_col) = input_layout(buffer, cursor_char_idx, max_content_chars);
-        let cursor_col = 4 + caret_col;
+        let cursor_col = input_column(cursor_row) + caret_col;
 
         let (_, term_rows) = cli_ui::terminal_size();
         let menu_active = !menu_items.is_empty();
@@ -932,11 +949,11 @@ impl LineEditor {
         // 1. Draw Top border: ╭─ You [branch] ────────────────────────────────────────╮
         let queued = cli_ui::pending_prompt_count();
         let mut title_tag = if queued > 0 {
-            format!(" You [{queued} queued] ")
+            crate::i18n::tf!(" You [{queued} queued] ", queued = queued)
         } else if branch_tag.is_empty() {
-            " You ".to_string()
+            crate::i18n::tr(" You ").to_string()
         } else {
-            format!(" You [{}] ", branch_tag.trim())
+            crate::i18n::tf!(" You [{}] ", branch_tag.trim())
         };
         if total_content > visible_content {
             title_tag = format!("{} · {}-{}/{} ", title_tag.trim_end(), first + 1,
@@ -944,7 +961,7 @@ impl LineEditor {
         }
         let title_w = str_width(&title_tag);
         let (safe_title, safe_title_w) = if title_w + 4 >= box_width {
-            (" You ".to_string(), 5)
+            (crate::i18n::tr(" You ").to_string(), 5)
         } else {
             (title_tag, title_w)
         };
@@ -971,9 +988,10 @@ impl LineEditor {
         // 2. Draw Content lines
         for (i, line) in content_lines.iter().enumerate() {
             let row = start_row + 1 + i as u16;
-            let prefix = if i == 0 { "> " } else { "  " };
+            let prefix = if first + i == 0 { "> " } else { "" };
             let line_w = str_width(line);
-            let pad = max_content_chars.saturating_sub(line_w);
+            let row_width = max_content_chars + if first + i == 0 { 0 } else { 2 };
+            let pad = row_width.saturating_sub(line_w);
 
             queue!(
                 out,
@@ -986,7 +1004,7 @@ impl LineEditor {
             )?;
 
             if buffer.is_empty() {
-                let placeholder = "Type your prompt, /help for commands, !cmd for shell";
+                let placeholder = crate::i18n::tr("Type your prompt, /help for commands, !cmd for shell");
                 let mut ph_chars: Vec<char> = Vec::new();
                 let mut ph_w = 0;
                 for c in placeholder.chars() {
@@ -1145,13 +1163,13 @@ impl LineEditor {
             current_row += 1;
 
             let end_idx = (scroll_offset + visible_slots).min(menu_items.len());
-            let kind = if menu_items[0].is_skill { "skills" } else { "commands" };
+            let kind = if menu_items[0].is_skill { crate::i18n::tr("skills") } else { crate::i18n::tr("commands") };
             let status_text = if menu_items.len() > visible_slots {
                 let remaining = menu_items.len().saturating_sub(end_idx);
                 if remaining > 0 {
-                    format!("↓ {} more  ({}/{} {kind})", remaining, menu_selected_idx + 1, menu_items.len())
+                    crate::i18n::tf!("↓ {} more  ({}/{} {kind})", remaining, menu_selected_idx + 1, menu_items.len(), kind = kind)
                 } else {
-                    format!("↑ {} above  ({}/{} {kind})", scroll_offset, menu_selected_idx + 1, menu_items.len())
+                    crate::i18n::tf!("↑ {} above  ({}/{} {kind})", scroll_offset, menu_selected_idx + 1, menu_items.len(), kind = kind)
                 }
             } else {
                 format!("{}/{} {kind}", menu_selected_idx + 1, menu_items.len())
@@ -1191,80 +1209,14 @@ impl LineEditor {
                 ResetColor
             )?;
 
-            if inner_w >= 62 {
-                let vis_len = 60usize;
-                let right_pad = inner_w.saturating_sub(vis_len);
-                queue!(
-                    out,
-                    Print("  "),
-                    SetForegroundColor(primary_color),
-                    Print("↑/↓"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" Navigate · "),
-                    SetForegroundColor(primary_color),
-                    Print("enter"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" Select · "),
-                    SetForegroundColor(primary_color),
-                    Print("tab"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" Complete · "),
-                    SetForegroundColor(primary_color),
-                    Print("esc"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" to cancel"),
-                    Print(" ".repeat(right_pad)),
-                    ResetColor
-                )?;
-            } else if inner_w >= 44 {
-                let vis_len = 42usize;
-                let right_pad = inner_w.saturating_sub(vis_len);
-                queue!(
-                    out,
-                    Print("  "),
-                    SetForegroundColor(primary_color),
-                    Print("↑/↓"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" Nav · "),
-                    SetForegroundColor(primary_color),
-                    Print("↵"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" Select · "),
-                    SetForegroundColor(primary_color),
-                    Print("Tab"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" Fill · "),
-                    SetForegroundColor(primary_color),
-                    Print("Esc"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" Quit"),
-                    Print(" ".repeat(right_pad)),
-                    ResetColor
-                )?;
-            } else if inner_w >= 31 {
-                let vis_len = 31usize;
-                let right_pad = inner_w.saturating_sub(vis_len);
-                queue!(
-                    out,
-                    Print("  "),
-                    SetForegroundColor(primary_color),
-                    Print("↑/↓"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" Nav · "),
-                    SetForegroundColor(primary_color),
-                    Print("↵"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" Select · "),
-                    SetForegroundColor(primary_color),
-                    Print("Esc"),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" Quit"),
-                    Print(" ".repeat(right_pad)),
-                    ResetColor
-                )?;
+            let hint = if inner_w >= 62 {
+                crate::i18n::tr("↑/↓ Navigate · Enter Select · Tab Complete · Esc Cancel")
             } else {
-                queue!(out, Print(" ".repeat(inner_w)))?;
-            }
+                crate::i18n::tr("↑/↓ · Enter Select · Tab Complete · Esc Cancel")
+            };
+            let hint = truncate_visible(hint, inner_w);
+            let padding = " ".repeat(inner_w.saturating_sub(str_width(&hint)));
+            queue!(out, SetForegroundColor(Color::DarkGrey), Print(hint), Print(padding), ResetColor)?;
 
             queue!(
                 out,
@@ -1289,9 +1241,9 @@ impl LineEditor {
             // Normal Bottom border without menu: ╰────── 💬 Title • Ctrl+O: Expand • Ctrl+C: Cancel ───╯
             let hint = if box_width >= 62 {
                 if crate::cli_ui::is_output_expanded() {
-                    " Ctrl+O: Collapse • Ctrl+C: Cancel "
+                    crate::i18n::tr(" Ctrl+O: Collapse • Ctrl+C: Cancel ")
                 } else {
-                    " Ctrl+O: Expand • Ctrl+C: Cancel "
+                    crate::i18n::tr(" Ctrl+O: Expand • Ctrl+C: Cancel ")
                 }
             } else if box_width >= 50 {
                 " Enter: ↵  Ctrl+C: ✕ "
@@ -1654,13 +1606,32 @@ mod stop_key_tests {
         draft.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(draft.cursor, 12);
         draft.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(draft.cursor, 10);
+        assert_eq!(draft.cursor, 8); // The first row starts two columns farther right.
         draft.key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
         assert_eq!(draft.cursor, 6);
         draft.key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
         assert_eq!(draft.text, "alpha !beta\nz\nalpha beta");
         draft.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
         assert_eq!(draft.cursor, 0);
+    }
+
+    #[test]
+    fn input_wraps_words_with_wider_continuation_rows() {
+        let text = "Привет мир дальше";
+        let (lines, row, col) = input_layout(text, 7, 9);
+        assert_eq!(lines, ["Привет ", "мир дальше"]);
+        assert_eq!((row, col), (1, 0));
+        assert_eq!(lines.concat(), text);
+        assert_eq!(input_layout("a bbbbbbbbbb", 12, 8).0, ["a ", "bbbbbbbbbb"]);
+        assert_eq!(input_column(0), 4);
+        assert_eq!(input_column(1), 2);
+    }
+
+    #[test]
+    fn input_wraps_oversized_words_and_preserves_explicit_newlines() {
+        assert_eq!(input_layout("abcdefghijklmnop", 16, 5).0, ["abcde", "fghijkl", "mnop"]);
+        assert_eq!(input_layout("abc\n1234567\n", 12, 5).0, ["abc", "1234567", ""]);
+        assert_eq!(input_layout("123456", 6, 5), (vec![String::new(), "123456".into()], 1, 6));
     }
 
     #[test]

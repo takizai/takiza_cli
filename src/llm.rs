@@ -97,6 +97,52 @@ enum ThinkPhase {
     Content,
 }
 
+fn append_tool_arguments(buffer: &mut String, chunk: &Value) -> Result<()> {
+    match chunk {
+        Value::Null => {},
+        Value::String(fragment) => buffer.push_str(fragment),
+        Value::Object(_) => {
+            // Some OpenAI-compatible gateways send parsed JSON instead of a string.
+            // Treat it as a complete snapshot, never discard it with as_str().
+            let snapshot = chunk.to_string();
+            anyhow::ensure!(buffer.is_empty() || buffer == &snapshot,
+                "Provider mixed incompatible tool argument formats");
+            *buffer = snapshot;
+        },
+        _ => anyhow::bail!("Provider returned unsupported tool argument format"),
+    }
+    Ok(())
+}
+
+fn checked_tool_call(id: String, name: String, arguments: String) -> Result<ToolCall> {
+    validate_tool_call(id, name, arguments)
+        .map_err(|error| InvalidToolCall(error.to_string()).into())
+}
+
+fn validate_tool_call(id: String, name: String, arguments: String) -> Result<ToolCall> {
+    let definitions = get_tool_definitions();
+    let function = definitions.as_array().unwrap().iter()
+        .find(|tool| tool["function"]["name"].as_str() == Some(name.as_str()))
+        .map(|tool| &tool["function"])
+        .ok_or_else(|| anyhow::anyhow!("Provider requested an unknown tool"))?;
+    let schema = &function["parameters"];
+    let required = schema["required"].as_array();
+    let arguments = if arguments.trim().is_empty() {
+        anyhow::ensure!(required.is_none_or(|fields| fields.is_empty()),
+            "Provider returned an incomplete {name} call: missing JSON arguments. This call was not executed; resend the request or choose another model.");
+        "{}".to_string()
+    } else { arguments };
+    let parsed: Value = serde_json::from_str(&arguments)
+        .map_err(|_| anyhow::anyhow!("Provider returned invalid JSON arguments for {name}. This call was not executed; resend the request or choose another model."))?;
+    anyhow::ensure!(parsed.is_object(), "Provider returned non-object arguments for {name}");
+    if let Some(required) = required {
+        for field in required.iter().filter_map(Value::as_str) {
+            anyhow::ensure!(parsed.get(field).is_some(), "Provider returned an incomplete {name} call: missing required argument {field}");
+        }
+    }
+    Ok(ToolCall { id, name, arguments })
+}
+
 pub struct StreamThinkParser {
     phase: ThinkPhase,
     buffer: String,
@@ -241,11 +287,43 @@ pub struct LlmClient {
     config: Config,
 }
 
+#[derive(Debug)]
+struct StreamInterrupted(String);
+
+impl std::fmt::Display for StreamInterrupted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "LLM stream interrupted: {}", self.0)
+    }
+}
+
+impl std::error::Error for StreamInterrupted {}
+
+#[derive(Debug)]
+struct InvalidToolCall(String);
+
+impl std::fmt::Display for InvalidToolCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InvalidToolCall {}
+
+fn reported_tokens(value: &Value) -> Option<u64> {
+    let usage = value.get("usage")?;
+    usage.get("total_tokens").and_then(Value::as_u64).or_else(|| {
+        let input = usage.get("prompt_tokens").or_else(|| usage.get("input_tokens"))?.as_u64()?;
+        let output = usage.get("completion_tokens").or_else(|| usage.get("output_tokens"))?.as_u64()?;
+        input.checked_add(output)
+    })
+}
+
 impl LlmClient {
     pub fn new(mut config: Config) -> Self {
         config.base_url = crate::config::normalize_base_url(&config.base_url);
         let mut builder = Client::builder()
-            .timeout(std::time::Duration::from_secs(120));
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(120));
 
         if let Some(ref proxy_str) = config.proxy {
             if let Ok(proxy) = reqwest::Proxy::all(proxy_str) {
@@ -420,11 +498,9 @@ impl LlmClient {
                 for tc in tool_calls_val {
                     let id = tc["id"].as_str().unwrap_or("").to_string();
                     let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
-                    let arguments = tc["function"]["arguments"]
-                        .as_str()
-                        .unwrap_or("{}")
-                        .to_string();
-                    tool_calls.push(ToolCall { id, name, arguments });
+                    let mut arguments = String::new();
+                    append_tool_arguments(&mut arguments, &tc["function"]["arguments"])?;
+                    tool_calls.push(checked_tool_call(id, name, arguments)?);
                 }
                 let thought = content.or(reasoning);
                 return Ok(LlmResponse::ToolCalls(tool_calls, thought));
@@ -440,6 +516,45 @@ impl LlmClient {
         event_tx: &mpsc::Sender<AgentEvent>,
         cancel_token: &CancellationToken,
     ) -> Result<LlmResponse> {
+        let mut retry_messages = messages.to_vec();
+        for attempt in 1..=3 {
+            match self.chat_step_stream_once(&retry_messages, event_tx, cancel_token).await {
+                Err(error) if (error.is::<StreamInterrupted>() || error.is::<InvalidToolCall>())
+                    && !cancel_token.is_cancelled() => {
+                    crate::logger::log_warn("LLM", &format!("Stream attempt {attempt}/3 failed: {error:#}"));
+                    if attempt == 3 {
+                        return Err(error).context("LLM response failed after 3 attempts");
+                    }
+                    let repairing_tool = error.is::<InvalidToolCall>();
+                    if repairing_tool {
+                        retry_messages.push(ChatMessage {
+                            role: "user".to_string(),
+                            content: Some(format!("Your previous tool call was rejected before execution: {error}. Continue the original task by sending a complete function call using only the declared tool names and valid JSON object arguments with all required fields. No tools from that response were executed. Do not invent missing arguments or report a successful search.")),
+                            image_urls: Vec::new(), tool_calls: None, tool_call_id: None, name: None,
+                        });
+                    }
+                    let _ = event_tx.send(AgentEvent::StreamRetry).await;
+                    let _ = event_tx.send(AgentEvent::StatusUpdate(format!(
+                        "{} retrying ({attempt}/2)...",
+                        if repairing_tool { "Invalid tool call;" } else { "Connection interrupted;" }
+                    ))).await;
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => anyhow::bail!("Request cancelled"),
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(500 * attempt)) => {}
+                    }
+                }
+                result => return result,
+            }
+        }
+        unreachable!()
+    }
+
+    async fn chat_step_stream_once(
+        &self,
+        messages: &[ChatMessage],
+        event_tx: &mpsc::Sender<AgentEvent>,
+        cancel_token: &CancellationToken,
+    ) -> Result<LlmResponse> {
         let url = format!("{}/chat/completions", self.config.base_url);
         let tools = get_tool_definitions();
 
@@ -449,6 +564,7 @@ impl LlmClient {
             "tools": tools,
             "tool_choice": "auto",
             "stream": true,
+            "stream_options": { "include_usage": true },
             "max_tokens": 8192,
         });
 
@@ -505,6 +621,11 @@ impl LlmClient {
 
             if !status.is_success() {
                 let err_text = r.text().await.unwrap_or_default();
+                if matches!(status.as_u16(), 400 | 422) && body.get("stream_options").is_some()
+                    && (err_text.contains("stream_options") || err_text.contains("include_usage")) {
+                    body.as_object_mut().unwrap().remove("stream_options");
+                    continue;
+                }
                 let err_details = format!("API Error (status {status}) from {url}: {err_text}");
                 crate::logger::log_error("LLM", &err_details);
                 anyhow::bail!("API Error (status {}): {}", status, err_text);
@@ -528,6 +649,7 @@ impl LlmClient {
         let mut sse_buffer = Vec::<u8>::new();
         let mut finish_reason = None;
         let mut done_stream = false;
+        let mut token_usage = None;
 
         while !done_stream {
             let chunk_opt = tokio::select! {
@@ -540,7 +662,10 @@ impl LlmClient {
             let chunk_bytes = match chunk_opt {
                 Some(Ok(bytes)) => Some(bytes),
                 Some(Err(e)) => {
-                    return Err(e).context("Error reading stream chunk from LLM");
+                    // Some providers close the transport after the final choice.
+                    if finish_reason.is_some() { break; }
+                    let _ = event_tx.send(AgentEvent::TokenUsage(token_usage)).await;
+                    return Err(StreamInterrupted(format!("Error reading stream chunk from LLM: {e:#}")).into());
                 }
                 None => {
                     if sse_buffer.is_empty() { break; }
@@ -572,6 +697,8 @@ impl LlmClient {
                         Ok(v) => v,
                         Err(_) => continue,
                     };
+
+                    if let Some(tokens) = reported_tokens(&json_val) { token_usage = Some(tokens); }
 
                     let choice = match json_val.get("choices").and_then(|c| c.as_array()).and_then(|arr| arr.get(0)) {
                         Some(c) => c,
@@ -611,8 +738,17 @@ impl LlmClient {
 
                     // 3. Check tool_calls delta
                     if let Some(tool_calls_arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {
-                        for tc in tool_calls_arr {
-                            let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                        for (position, tc) in tool_calls_arr.iter().enumerate() {
+                            let idx = if let Some(index) = tc.get("index").and_then(Value::as_u64) {
+                                anyhow::ensure!(index < 128, "Provider returned an invalid tool-call index");
+                                index as usize
+                            } else if let Some(id) = tc.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+                                accum_tools.iter().position(|tool| tool.id == id).unwrap_or(accum_tools.len())
+                            } else if tool_calls_arr.len() > 1 { position }
+                            else {
+                                anyhow::ensure!(accum_tools.len() <= 1, "Provider omitted the index for an ambiguous tool-call fragment");
+                                0
+                            };
                             while accum_tools.len() <= idx {
                                 accum_tools.push(InFlightTool {
                                     id: String::new(),
@@ -639,8 +775,8 @@ impl LlmClient {
                                         }
                                     }
                                 }
-                                if let Some(args) = func.get("arguments").and_then(|s| s.as_str()) {
-                                    accum_tools[idx].arguments.push_str(args);
+                                if let Some(args) = func.get("arguments") {
+                                    append_tool_arguments(&mut accum_tools[idx].arguments, args)?;
                                 }
                             }
                         }
@@ -648,6 +784,11 @@ impl LlmClient {
                 }
             }
             if chunk_bytes.is_none() { break; }
+        }
+
+        let _ = event_tx.send(AgentEvent::TokenUsage(token_usage)).await;
+        if !done_stream && finish_reason.is_none() {
+            return Err(StreamInterrupted("connection closed before finish_reason or [DONE]".into()).into());
         }
 
         let (rem_th, rem_as) = think_parser.finish();
@@ -669,12 +810,11 @@ impl LlmClient {
             .into_iter()
             .filter(|t| !t.name.trim().is_empty())
             .enumerate()
-            .map(|(i, t)| ToolCall {
-                id: if t.id.trim().is_empty() { format!("call_{}", i) } else { t.id },
-                name: t.name,
-                arguments: t.arguments,
-            })
-            .collect();
+            .map(|(i, t)| checked_tool_call(
+                if t.id.trim().is_empty() { format!("call_{}", i) } else { t.id },
+                t.name, t.arguments,
+            ))
+            .collect::<Result<Vec<_>>>()?;
 
         if !valid_tools.is_empty() {
             let thought = if !accumulated_thought.trim().is_empty() {
@@ -700,6 +840,154 @@ fn final_message(content: String, finish_reason: Option<String>) -> LlmResponse 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn stream_fixture(responses: Vec<(String, bool)>) -> (LlmClient, tokio::task::JoinHandle<usize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut requests = 0;
+            for (body, truncated) in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                requests += 1;
+                let mut request = Vec::new();
+                let header_end = loop {
+                    let mut bytes = [0u8; 4096];
+                    let count = socket.read(&mut bytes).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&bytes[..count]);
+                    if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") { break end + 4; }
+                };
+                let length = String::from_utf8_lossy(&request[..header_end]).lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
+                }).unwrap();
+                while request.len() < header_end + length {
+                    let mut bytes = [0u8; 4096];
+                    let count = socket.read(&mut bytes).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&bytes[..count]);
+                }
+                let length = body.len() + if truncated { 50 } else { 0 };
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}").as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        let config = Config {
+            api_key: String::new(), base_url: format!("http://{address}/v1"),
+            model: "test".into(), workspace_dir: std::env::temp_dir(),
+            auto_approve: false, continue_session: false, proxy: None,
+            mode: crate::theme::AppMode::Manual, effort: None, max_steps: 100,
+        };
+        (LlmClient::new(config), server)
+    }
+
+    fn stream_event(delta: Value, finish: Option<&str>) -> String {
+        format!("data: {}\n\n", json!({"choices": [{"delta": delta, "finish_reason": finish}]}))
+    }
+
+    #[tokio::test]
+    async fn stream_usage_accepts_empty_choices_and_reports_only_final_total() {
+        let body = format!("{}data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            stream_event(json!({"content": "answer"}), Some("stop")),
+            json!({"choices": [], "usage": {"total_tokens": 120}}),
+            json!({"choices": [], "usage": {"prompt_tokens": 200, "completion_tokens": 56}}));
+        let (client, server) = stream_fixture(vec![(body, false)]).await;
+        let (tx, mut rx) = mpsc::channel(32);
+        let result = client.chat_step_stream(&[], &tx, &CancellationToken::new()).await.unwrap();
+        assert!(matches!(result, LlmResponse::Message(text) if text == "answer"));
+        assert_eq!(server.await.unwrap(), 1);
+        let mut usages = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::TokenUsage(usage) = event { usages.push(usage); }
+        }
+        assert_eq!(usages, [Some(256)]);
+        assert_eq!(reported_tokens(&json!({"usage": {"input_tokens": 4, "output_tokens": 5}})), Some(9));
+        assert_eq!(reported_tokens(&json!({"usage": {"completion_tokens": 5}})), None);
+        assert_eq!(reported_tokens(&json!({"usage": null})), None);
+    }
+
+    #[tokio::test]
+    async fn interrupted_stream_retries_and_discards_partial_tool_arguments() {
+        let broken = stream_event(json!({"content": "partial answer", "reasoning": "partial thought",
+            "tool_calls": [{"index": 0, "id": "broken", "function": {
+                "name": "read_file", "arguments": "{\"path\":\"incomplete"}}]}), None);
+        let complete = stream_event(json!({"tool_calls": [{"index": 0, "id": "complete", "function": {
+            "name": "read_file", "arguments": "{\"path\":\"README.md\"}"}}]}), Some("tool_calls"));
+        let (client, server) = stream_fixture(vec![(broken, true), (complete, false)]).await;
+        let (tx, mut rx) = mpsc::channel(32);
+        let result = client.chat_step_stream(&[], &tx, &CancellationToken::new()).await.unwrap();
+        let LlmResponse::ToolCalls(tools, thought) = result else { panic!("Expected complete tool call") };
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].id, "complete");
+        assert_eq!(tools[0].arguments, "{\"path\":\"README.md\"}");
+        assert!(thought.is_none());
+        assert_eq!(server.await.unwrap(), 2);
+        let mut resets = 0;
+        while let Ok(event) = rx.try_recv() { if matches!(event, AgentEvent::StreamRetry) { resets += 1; } }
+        assert_eq!(resets, 1);
+    }
+
+    #[tokio::test]
+    async fn premature_clean_eof_is_retried_and_retry_count_is_bounded() {
+        let incomplete = stream_event(json!({"content": "unfinished"}), None);
+        let (client, server) = stream_fixture(vec![(incomplete, false); 3]).await;
+        let (tx, mut rx) = mpsc::channel(32);
+        let error = client.chat_step_stream(&[], &tx, &CancellationToken::new()).await.err().unwrap();
+        assert!(format!("{error:#}").contains("before finish_reason or [DONE]"));
+        assert_eq!(server.await.unwrap(), 3);
+        let mut resets = 0;
+        while let Ok(event) = rx.try_recv() { if matches!(event, AgentEvent::StreamRetry) { resets += 1; } }
+        assert_eq!(resets, 2);
+    }
+
+    #[tokio::test]
+    async fn final_choice_survives_transport_error_after_completion() {
+        let complete = stream_event(json!({"content": "Полный ответ"}), Some("stop"));
+        let (client, server) = stream_fixture(vec![(complete, true)]).await;
+        let (tx, _) = mpsc::channel(32);
+        let result = client.chat_step_stream(&[], &tx, &CancellationToken::new()).await.unwrap();
+        assert!(matches!(result, LlmResponse::Message(text) if text == "Полный ответ"));
+        assert_eq!(server.await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_stream_retry_delay() {
+        let (client, server) = stream_fixture(vec![(String::new(), true)]).await;
+        let (tx, mut rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move { client.chat_step_stream(&[], &tx, &task_cancel).await });
+        while !matches!(rx.recv().await, Some(AgentEvent::StreamRetry)) {}
+        cancel.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_millis(200), task).await.unwrap().unwrap();
+        assert!(result.err().unwrap().to_string().contains("cancelled"));
+        assert_eq!(server.await.unwrap(), 1);
+    }
+
+    #[test]
+    fn parsed_object_arguments_are_preserved_and_required_arguments_are_checked() {
+        let mut arguments = String::new();
+        append_tool_arguments(&mut arguments, &json!({"query":"Сибирь новости"})).unwrap();
+        let tool = checked_tool_call("call".into(), "web_search".into(), arguments).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&tool.arguments).unwrap()["query"], "Сибирь новости");
+        assert!(checked_tool_call("call".into(), "web_search".into(), "".into()).unwrap_err().to_string().contains("missing JSON arguments"));
+        assert!(checked_tool_call("call".into(), "web_search".into(), "{}".into()).is_err());
+        assert!(checked_tool_call("call".into(), "web_search".into(), "{\"query\":".into()).is_err());
+        assert!(checked_tool_call("call".into(), "web_search".into(), "[]".into()).is_err());
+        assert_eq!(checked_tool_call("call".into(), "list_dir".into(), "".into()).unwrap().arguments, "{}");
+    }
+
+    #[test]
+    fn fragmented_string_arguments_still_assemble_without_data_loss() {
+        let mut arguments = String::new();
+        for fragment in ["{\"query\":", "\"news", " news\"}"] {
+            append_tool_arguments(&mut arguments, &Value::String(fragment.into())).unwrap();
+        }
+        let tool = checked_tool_call("call".into(), "web_search".into(), arguments).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&tool.arguments).unwrap()["query"], "news news");
+        assert!(append_tool_arguments(&mut String::new(), &json!(["invalid"])).is_err());
+    }
 
     #[test]
     fn empty_and_whitespace_completions_are_not_assistant_messages() {

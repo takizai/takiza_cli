@@ -2,14 +2,25 @@ use crate::theme::{Theme, UserPreferences};
 use chrono::Local;
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEventKind},
-    execute,
+    event::{Event, KeyCode, KeyEventKind},
+    execute, queue,
     style::Print,
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
 use std::io::{stdout, Write};
 
 pub struct Onboarding;
+
+#[derive(Debug)]
+pub struct OnboardingDeclined;
+
+impl std::fmt::Display for OnboardingDeclined {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(crate::i18n::tr("User agreement was not accepted"))
+    }
+}
+
+impl std::error::Error for OnboardingDeclined {}
 
 /// Computes visible width of a string in terminal columns, ignoring ANSI escape codes.
 pub fn visible_width(s: &str) -> usize {
@@ -56,171 +67,9 @@ fn truncate_visible(s: &str, max_w: usize) -> String {
 
 /// Word-wraps text into lines not exceeding `max_w` visible columns.
 fn wrap_words(text: &str, max_w: usize) -> Vec<String> {
-    if text.is_empty() {
-        return vec![String::new()];
-    }
-    let max_w = max_w.max(10);
-    let words = text.split_whitespace();
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    let mut current_len = 0;
-
-    for word in words {
-        let w_len = visible_width(word);
-        if current.is_empty() {
-            current.push_str(word);
-            current_len = w_len;
-        } else if current_len + 1 + w_len <= max_w {
-            current.push(' ');
-            current.push_str(word);
-            current_len += 1 + w_len;
-        } else {
-            lines.push(current);
-            current = word.to_string();
-            current_len = w_len;
-        }
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
+    crate::cli_ui::wrap_text_line(text, max_w.max(1))
 }
 
-fn draw_box_top(
-    out: &mut impl Write,
-    row: &mut u16,
-    prefix: &str,
-    p_ansi: &str,
-    title: &str,
-    box_w: usize,
-) -> std::io::Result<()> {
-    let title_vis = visible_width(title);
-    let dashes = box_w.saturating_sub(title_vis + 6);
-    execute!(
-        out,
-        cursor::MoveTo(0, *row),
-        Clear(ClearType::UntilNewLine),
-        Print(format!(
-            "{}{}\x1b[1m╭─ \x1b[0m{}\x1b[0m {}{}\x1b[1m─╮\x1b[0m",
-            prefix,
-            p_ansi,
-            title,
-            p_ansi,
-            "─".repeat(dashes)
-        ))
-    )?;
-    *row += 1;
-    Ok(())
-}
-
-fn draw_box_divider(
-    out: &mut impl Write,
-    row: &mut u16,
-    prefix: &str,
-    p_ansi: &str,
-    box_w: usize,
-) -> std::io::Result<()> {
-    let dashes = box_w.saturating_sub(2);
-    execute!(
-        out,
-        cursor::MoveTo(0, *row),
-        Clear(ClearType::UntilNewLine),
-        Print(format!(
-            "{}{}\x1b[1m├{}┤\x1b[0m",
-            prefix,
-            p_ansi,
-            "─".repeat(dashes)
-        ))
-    )?;
-    *row += 1;
-    Ok(())
-}
-
-fn draw_box_divider_with_label(
-    out: &mut impl Write,
-    row: &mut u16,
-    prefix: &str,
-    p_ansi: &str,
-    label: &str,
-    box_w: usize,
-) -> std::io::Result<()> {
-    let label_vis = visible_width(label);
-    let dashes = box_w.saturating_sub(label_vis + 6);
-    execute!(
-        out,
-        cursor::MoveTo(0, *row),
-        Clear(ClearType::UntilNewLine),
-        Print(format!(
-            "{}{}\x1b[1m├─ \x1b[0m{}\x1b[0m {}{}\x1b[1m─┤\x1b[0m",
-            prefix,
-            p_ansi,
-            label,
-            p_ansi,
-            "─".repeat(dashes)
-        ))
-    )?;
-    *row += 1;
-    Ok(())
-}
-
-fn draw_box_bottom(
-    out: &mut impl Write,
-    row: &mut u16,
-    prefix: &str,
-    p_ansi: &str,
-    hint: &str,
-    box_w: usize,
-) -> std::io::Result<()> {
-    let hint_vis = visible_width(hint);
-    let dashes = box_w.saturating_sub(hint_vis + 6);
-    execute!(
-        out,
-        cursor::MoveTo(0, *row),
-        Clear(ClearType::UntilNewLine),
-        Print(format!(
-            "{}{}\x1b[1m╰─ \x1b[0m{}\x1b[0m {}{}\x1b[1m─╯\x1b[0m",
-            prefix,
-            p_ansi,
-            hint,
-            p_ansi,
-            "─".repeat(dashes)
-        ))
-    )?;
-    *row += 1;
-    Ok(())
-}
-
-fn draw_box_line(
-    out: &mut impl Write,
-    row: &mut u16,
-    prefix: &str,
-    p_ansi: &str,
-    content: &str,
-    inner_w: usize,
-) -> std::io::Result<()> {
-    let vis_w = visible_width(content);
-    let pad = inner_w.saturating_sub(vis_w);
-    execute!(
-        out,
-        cursor::MoveTo(0, *row),
-        Clear(ClearType::UntilNewLine),
-        Print(format!(
-            "{}{}│\x1b[0m {}{}{} {}{}│\x1b[0m",
-            prefix,
-            p_ansi,
-            content,
-            " ".repeat(pad),
-            "",
-            p_ansi,
-            ""
-        ))
-    )?;
-    *row += 1;
-    Ok(())
-}
 
 fn render_banner(
     out: &mut impl Write,
@@ -241,13 +90,13 @@ fn render_banner(
 
         let mut info_lines: Vec<String> = vec![
             format!("{}TAKIZA \x1b[1;38;2;245;245;250mCODE\x1b[0m  \x1b[38;2;120;120;125mv{}\x1b[0m", p_ansi, env!("TAKIZA_VERSION")),
-            format!("\x1b[38;2;160;160;165m{}\x1b[0m", truncate_visible("Autonomous AI Software Engineering Agent", info_w)),
+            format!("\x1b[38;2;160;160;165m{}\x1b[0m", truncate_visible(crate::i18n::tr("Autonomous AI Software Engineering Agent"), info_w)),
             format!("\x1b[38;2;60;60;65m{}\x1b[0m", divider),
-            format!("{}Step {} of 2\x1b[0m   \x1b[38;2;70;70;75m│\x1b[0m \x1b[1;38;2;230;230;235m{}\x1b[0m", p_ansi, step_num, step_title),
+            crate::i18n::tf!("{}Step {} of 3\x1b[0m   \x1b[38;2;70;70;75m│\x1b[0m \x1b[1;38;2;230;230;235m{}\x1b[0m", p_ansi, step_num, step_title),
         ];
 
         for (label, val) in step_info {
-            let label_pad = 10usize.saturating_sub(label.len());
+            let label_pad = 10usize.saturating_sub(visible_width(label));
             info_lines.push(format!(
                 "{}{}{}\x1b[38;2;70;70;75m│\x1b[0m \x1b[38;2;170;170;175m{}\x1b[0m",
                 p_ansi,
@@ -262,6 +111,7 @@ fn render_banner(
         for i in 0..crate::logo::LOGO_HEIGHT {
             let logo_part = crate::logo::LOGO_LINES[i];
             let info_part = if i < info_lines.len() { &info_lines[i] } else { "" };
+            let info_part = crate::interactive::fit_menu_text(info_part, info_w);
             execute!(
                 out,
                 cursor::MoveTo(0, *row),
@@ -281,8 +131,8 @@ fn render_banner(
 
         let lines = [
             format!("  {}╭─ TAKIZA \x1b[38;2;245;245;250mCODE\x1b[0m \x1b[38;2;120;120;125mv{}{} {}╮\x1b[0m", p_ansi, env!("TAKIZA_VERSION"), p_ansi, top_div),
-            format!("  {}│\x1b[0m {}Step {}/2:   \x1b[0m\x1b[38;2;230;230;235m{}\x1b[0m", p_ansi, p_ansi, step_num, truncate_visible(step_title, val_w)),
-            format!("  {}│\x1b[0m {}Action:    \x1b[0m\x1b[38;2;170;170;175m{}\x1b[0m", p_ansi, p_ansi, truncate_visible(if step_num == 1 { "Select Theme" } else { "Review Terms" }, val_w)),
+            crate::i18n::tf!("  {}│\x1b[0m {}Step {}/3:   \x1b[0m\x1b[38;2;230;230;235m{}\x1b[0m", p_ansi, p_ansi, step_num, truncate_visible(step_title, val_w)),
+            crate::i18n::tf!("  {}│\x1b[0m {}Action:    \x1b[0m\x1b[38;2;170;170;175m{}\x1b[0m", p_ansi, p_ansi, truncate_visible(step_title, val_w)),
             format!("  {}╰{}╯\x1b[0m", p_ansi, bot_div),
         ];
 
@@ -301,8 +151,32 @@ fn render_banner(
 }
 
 impl Onboarding {
+    pub(crate) fn render_language_selector(lines: &[(String, crossterm::style::Color)], hint: &str) -> std::io::Result<()> {
+        let (cols, rows) = crate::cli_ui::terminal_size();
+        let theme = crate::theme::current();
+        let box_w = cols.saturating_sub(2) as usize;
+        let top = rows.saturating_sub(lines.len() as u16 + 2);
+        let mut frame = Vec::new();
+        queue!(frame, crossterm::terminal::BeginSynchronizedUpdate, cursor::Hide, Clear(ClearType::All))?;
+        let mut banner_row = 1;
+        render_banner(&mut frame, &mut banner_row, cols, theme, 1, crate::i18n::tr("Select Language"), &[(crate::i18n::tr("Step"), crate::i18n::tr("1 of 3"))])?;
+        crate::cli_ui::paint_onboarding_snow(&mut frame, banner_row, top)?;
+        crate::interactive::draw_bottom_box_top(&mut frame, top, crate::i18n::tr("Language / Язык / 语言 · 1/3"), box_w,
+            theme.primary_crossterm(), theme.border_crossterm())?;
+        for (index, (text, color)) in lines.iter().enumerate() {
+            let mut styled = Vec::new();
+            queue!(styled, crossterm::style::SetForegroundColor(*color), Print(text), crossterm::style::ResetColor)?;
+            crate::interactive::draw_bottom_box_line(&mut frame, top + index as u16 + 1,
+                &String::from_utf8_lossy(&styled), 0, box_w, theme.border_crossterm())?;
+        }
+        crate::interactive::draw_bottom_box_bottom(&mut frame, rows.saturating_sub(1), hint, box_w, theme.border_crossterm())?;
+        queue!(frame, crossterm::terminal::EndSynchronizedUpdate)?;
+        let mut out = stdout().lock(); out.write_all(&frame)?; out.flush()
+    }
     pub fn run_always() -> anyhow::Result<(UserPreferences, bool)> {
         let mut prefs = UserPreferences::load();
+        crate::i18n::set_current(prefs.language);
+        crate::theme::set_current(prefs.theme);
 
         let mut out = stdout();
         let _ = execute!(
@@ -322,17 +196,18 @@ impl Onboarding {
         let _ = execute!(out, cursor::Show);
         let _ = out.flush();
 
-        if let Ok(true) = res {
+        if res? {
             prefs.save()?;
             Ok((prefs, true))
         } else {
-            println!("You must accept the user agreement to use Takiza Harness. Goodbye!");
-            std::process::exit(0);
+            Err(OnboardingDeclined.into())
         }
     }
 
     pub fn run_if_needed() -> anyhow::Result<(UserPreferences, bool)> {
         let prefs = UserPreferences::load();
+        crate::i18n::set_current(prefs.language);
+        crate::theme::set_current(prefs.theme);
         if prefs.agreed_to_terms {
             return Ok((prefs, false));
         }
@@ -340,16 +215,15 @@ impl Onboarding {
     }
 
     fn interactive_wizard(prefs: &mut UserPreferences) -> std::io::Result<bool> {
-        // Step 1: Theme Selection
+        if let Some(language) = crate::interactive::select_language_interactive(None, prefs.language)? {
+            prefs.language = language;
+            crate::i18n::set_current(language);
+        }
+        // Step 2: Theme Selection
         let selected_theme = Self::select_theme(prefs.theme)?;
         prefs.theme = selected_theme;
 
-        // Clear screen before Step 2
-        let mut out = stdout();
-        let _ = execute!(out, Clear(ClearType::All), Clear(ClearType::Purge), cursor::MoveTo(0, 0));
-        let _ = out.flush();
-
-        // Step 2: Terms of Service review & acceptance
+        // Step 3: Terms of Service review & acceptance
         let accepted = Self::show_terms(prefs.theme)?;
         if accepted {
             prefs.agreed_to_terms = true;
@@ -367,7 +241,7 @@ impl Onboarding {
         loop {
             Self::render_theme_selector(themes, selected_idx)?;
 
-            match event::read()? {
+            match crate::cli_ui::read_event_with_background()? {
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
                         continue;
@@ -391,132 +265,89 @@ impl Onboarding {
                             return Ok(themes[selected_idx]);
                         }
                         KeyCode::Char('q') | KeyCode::Esc => {
-                            return Ok(themes[selected_idx]);
+                            crate::theme::set_current(initial);
+                            return Ok(initial);
                         }
                         _ => {}
                     }
                 }
-                Event::Resize(_, _) => {
-                    let mut out = stdout();
-                    let _ = execute!(out, Clear(ClearType::All), Clear(ClearType::Purge));
-                }
+                Event::Resize(_, _) => {}
                 _ => {}
             }
         }
     }
 
     fn render_theme_selector(themes: &[Theme], selected_idx: usize) -> std::io::Result<()> {
-        let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let mut out = stdout();
+        let (cols, rows) = crate::cli_ui::terminal_size();
+        let selected = themes[selected_idx];
+        crate::theme::set_current(selected);
+        let primary = selected.primary_ansi();
+        let secondary = selected.secondary_ansi();
+        let border = selected.border_crossterm();
+        let accent = selected.primary_crossterm();
+        let box_w = (cols as usize).saturating_sub(2);
+        let banner_height = if cols >= 80 { 10 } else { 6 };
+        let visible = (rows as usize).saturating_sub(banner_height + 5)
+            .clamp(1, 6).min(themes.len());
+        let offset = selected_idx.saturating_sub(visible.saturating_sub(1));
+        let top = rows.saturating_sub(visible as u16 + 4);
 
-        execute!(
-            out,
-            cursor::Hide,
-            cursor::MoveTo(0, 0)
-        )?;
-
-        let current_theme = themes[selected_idx];
-        let p_ansi = current_theme.primary_ansi();
-        let s_ansi = current_theme.secondary_ansi();
-
-        let prefix = "  "; // left-aligned with 2 spaces margin
-        let box_w = (term_cols as usize).saturating_sub(4).min(84);
-        let inner_w = box_w.saturating_sub(4);
-
-        let mut row: u16 = 0;
-        let _ = execute!(out, cursor::MoveTo(0, row), Clear(ClearType::UntilNewLine));
-        row += 1;
-
-        // 1. Banner (logo on left, step info on right)
-        let step_info = [
-            ("Controls", "Use ↑/↓ or j/k to preview"),
-            ("Action", "Press [Enter] to select"),
-            ("Selected", current_theme.name()),
+        let mut frame = Vec::new();
+        queue!(frame, crossterm::terminal::BeginSynchronizedUpdate,
+            cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+        let mut banner_row = 1;
+        let info = [
+            (crate::i18n::tr("Selected"), selected.name()),
+            (crate::i18n::tr("Controls"), "↑/↓ or j/k"),
+            (crate::i18n::tr("Step"), crate::i18n::tr("2 of 3")),
         ];
-        render_banner(&mut out, &mut row, term_cols, current_theme, 1, "Select Visual Theme", &step_info)?;
-        row += 1;
-
-        // 2. Card Header
-        draw_box_top(
-            &mut out,
-            &mut row,
-            prefix,
-            p_ansi,
-            &format!("{}\x1b[1mSTEP 1 OF 2: AVAILABLE THEMES\x1b[0m", p_ansi),
-            box_w,
-        )?;
-        let instructions = "Use [↑/↓] or [j/k] to preview theme, [Enter] to confirm";
-        draw_box_line(&mut out, &mut row, prefix, p_ansi, &format!("\x1b[38;2;160;160;165m{}\x1b[0m", instructions), inner_w)?;
-        draw_box_divider(&mut out, &mut row, prefix, p_ansi, box_w)?;
-
-        // 3. Theme List
-        let two_line_themes = term_rows >= 27;
-        for (i, t) in themes.iter().enumerate() {
-            let is_sel = i == selected_idx;
-            let marker = if is_sel { "▶ " } else { "  " };
-            let radio = if is_sel {
-                format!("{}◉ \x1b[1m{}\x1b[0m", t.primary_ansi(), t.name())
+        render_banner(&mut frame, &mut banner_row, cols, selected, 2,
+            crate::i18n::tr("Select Visual Theme"), &info)?;
+        crate::cli_ui::paint_onboarding_snow(&mut frame, banner_row, top)?;
+        crate::interactive::draw_bottom_box_top(&mut frame, top,
+            crate::i18n::tr("Select Visual Theme · 2/3"), box_w, accent, border)?;
+        for (row, (index, theme)) in themes.iter().enumerate()
+            .skip(offset).take(visible).enumerate() {
+            let text = if index == selected_idx {
+                format!("{primary}\x1b[1m❯ (●) {}\x1b[0m", theme.name())
             } else {
-                format!("\x1b[38;2;100;100;105m○ \x1b[38;2;220;220;225m{}\x1b[0m", t.name())
+                format!("\x1b[90m  ( ) {}\x1b[0m", theme.name())
             };
-            let badge = if is_sel {
-                format!("{}✔ SELECTED\x1b[0m", t.primary_ansi())
-            } else {
-                String::new()
-            };
-
-            if two_line_themes {
-                let left_vis = 2 + 2 + t.name().len();
-                let badge_vis = if is_sel { 10 } else { 0 };
-                let space_w = inner_w.saturating_sub(left_vis + badge_vis);
-                let line1 = format!("{}{}{}{}", marker, radio, " ".repeat(space_w), badge);
-                draw_box_line(&mut out, &mut row, prefix, p_ansi, &line1, inner_w)?;
-
-                let desc = format!("    \x1b[38;2;140;140;145m{}\x1b[0m", t.description());
-                draw_box_line(&mut out, &mut row, prefix, p_ansi, &desc, inner_w)?;
-            } else {
-                let left_vis = 2 + 2 + t.name().len();
-                let badge_vis = if is_sel { 10 } else { 0 };
-                let desc_avail = inner_w.saturating_sub(left_vis + badge_vis + 3);
-                let desc_short = truncate_visible(t.description(), desc_avail);
-                let desc_vis = visible_width(&desc_short);
-                let space_w = inner_w.saturating_sub(left_vis + 3 + desc_vis + badge_vis);
-                let line = format!(
-                    "{}{}\x1b[38;2;100;100;105m — \x1b[38;2;140;140;145m{}\x1b[0m{}{}",
-                    marker, radio, desc_short, " ".repeat(space_w), badge
-                );
-                draw_box_line(&mut out, &mut row, prefix, p_ansi, &line, inner_w)?;
-            }
+            crate::interactive::draw_bottom_box_line(&mut frame,
+                top + 1 + row as u16, &text, 0, box_w, border)?;
         }
-
-        // 4. Preview & Footer
-        draw_box_divider(&mut out, &mut row, prefix, p_ansi, box_w)?;
-        let preview_text = format!(
-            "Preview: {}❯ TAKIZA AGENT READY\x1b[0m  {}• Tools: bash, git, edit, grep\x1b[0m",
-            p_ansi, s_ansi
-        );
-        draw_box_line(&mut out, &mut row, prefix, p_ansi, &preview_text, inner_w)?;
-        draw_box_bottom(&mut out, &mut row, prefix, p_ansi, "Press [ENTER] to Confirm Selection", box_w)?;
-
-        execute!(out, Clear(ClearType::FromCursorDown))?;
+        let description = format!("\x1b[90m{}\x1b[0m", selected.description());
+        crate::interactive::draw_bottom_box_line(&mut frame,
+            top + 1 + visible as u16, &description, 0, box_w, border)?;
+        let preview = crate::i18n::tf!("{primary}\x1b[1m❯ Your message\x1b[0m  {secondary}│ Tool activity\x1b[0m", primary = primary, secondary = secondary);
+        crate::interactive::draw_bottom_box_line(&mut frame,
+            top + 2 + visible as u16, &preview, 0, box_w, border)?;
+        let hint = crate::i18n::tf!("↑/↓: {}/{} · Live Preview · Enter: confirm · Esc: keep current",
+            selected_idx + 1, themes.len());
+        crate::interactive::draw_bottom_box_bottom(&mut frame,
+            rows.saturating_sub(1), &hint, box_w, border)?;
+        queue!(frame, crossterm::terminal::EndSynchronizedUpdate)?;
+        let mut out = stdout().lock();
+        out.write_all(&frame)?;
         out.flush()?;
         Ok(())
     }
 
     fn show_terms(theme: Theme) -> std::io::Result<bool> {
+        crate::theme::set_current(theme);
         let mut scroll_offset: usize = 0;
         let mut user_choice = false;
 
         loop {
             let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-            let box_w = (term_cols as usize).saturating_sub(4).min(84);
+            let box_w = (term_cols as usize).saturating_sub(2);
             let inner_w = box_w.saturating_sub(4);
 
             let terms_lines = Self::get_wrapped_terms(inner_w, theme);
 
-            let banner_rows = if term_cols >= 80 { 8 + 1 } else { 4 + 1 };
-            let card_fixed = 6;
-            let view_height = (term_rows as usize).saturating_sub(banner_rows + card_fixed + 2).max(4);
+            let banner_rows = if term_cols >= 80 { 10 } else { 6 };
+            let view_height = (term_rows as usize).saturating_sub(banner_rows + 6).max(1)
+                .min(term_rows.saturating_sub(6).max(1) as usize);
             let max_scroll = terms_lines.len().saturating_sub(view_height);
             if scroll_offset > max_scroll {
                 scroll_offset = max_scroll;
@@ -532,7 +363,7 @@ impl Onboarding {
                 term_rows,
             )?;
 
-            match event::read()? {
+            match crate::cli_ui::read_event_with_background()? {
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
                         continue;
@@ -576,10 +407,7 @@ impl Onboarding {
                         _ => {}
                     }
                 }
-                Event::Resize(_, _) => {
-                    let mut out = stdout();
-                    let _ = execute!(out, Clear(ClearType::All), Clear(ClearType::Purge));
-                }
+                Event::Resize(_, _) => {}
                 _ => {}
             }
         }
@@ -592,87 +420,58 @@ impl Onboarding {
         theme: Theme,
         user_choice: bool,
         term_cols: u16,
-        _term_rows: u16,
+        term_rows: u16,
     ) -> std::io::Result<()> {
-        let mut out = stdout();
-        execute!(
-            out,
-            cursor::Hide,
-            cursor::MoveTo(0, 0)
-        )?;
-
-        let p_ansi = theme.primary_ansi();
-
-        let prefix = "  "; // left margin matching main screen
-        let box_w = (term_cols as usize).saturating_sub(4).min(84);
-        let inner_w = box_w.saturating_sub(4);
-
-        let mut row: u16 = 0;
-        let _ = execute!(out, cursor::MoveTo(0, row), Clear(ClearType::UntilNewLine));
-        row += 1;
-
-        // 1. Banner
-        let step_info = [
-            ("Scroll", "Use [↑/↓, PgUp/PgDn] to read"),
-            ("Decision", "Use [Tab] or [←/→] to choose"),
-            ("Action", "[Enter] accept  •  [Esc] exit"),
+        let mut frame = Vec::new();
+        queue!(frame, crossterm::terminal::BeginSynchronizedUpdate,
+            cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+        let primary = theme.primary_ansi();
+        let border = theme.border_crossterm();
+        let accent = theme.primary_crossterm();
+        let box_w = (term_cols as usize).saturating_sub(2);
+        let mut banner_row = 1;
+        let info = [
+            (crate::i18n::tr("Version"), "1.0.0"),
+            (crate::i18n::tr("Selected"), theme.name()),
+            (crate::i18n::tr("Step"), crate::i18n::tr("3 of 3")),
         ];
-        render_banner(&mut out, &mut row, term_cols, theme, 2, "User Agreement & Policies", &step_info)?;
-        row += 1;
+        render_banner(&mut frame, &mut banner_row, term_cols, theme, 3,
+            crate::i18n::tr("User Agreement"), &info)?;
 
-        // 2. Card Header
-        draw_box_top(
-            &mut out,
-            &mut row,
-            prefix,
-            p_ansi,
-            &format!("{}\x1b[1mSTEP 2 OF 2: USER AGREEMENT & SAFETY POLICIES\x1b[0m", p_ansi),
-            box_w,
-        )?;
-        let subtitle = "Scroll with [↑/↓, PgUp/PgDn]. Please review carefully:";
-        draw_box_line(&mut out, &mut row, prefix, p_ansi, &format!("\x1b[38;2;160;160;165m{}\x1b[0m", subtitle), inner_w)?;
-        draw_box_divider(&mut out, &mut row, prefix, p_ansi, box_w)?;
-
-        // 3. Scrollable terms content
-        let end_idx = (scroll_offset + view_height).min(lines.len());
-        for i in scroll_offset..end_idx {
-            draw_box_line(&mut out, &mut row, prefix, p_ansi, &lines[i], inner_w)?;
+        let top = term_rows.saturating_sub(view_height as u16 + 5);
+        crate::cli_ui::paint_onboarding_snow(&mut frame, banner_row, top)?;
+        crate::interactive::draw_bottom_box_top(&mut frame, top,
+            crate::i18n::tr("User Agreement · 3/3"), box_w, accent, border)?;
+        let end = (scroll_offset + view_height).min(lines.len());
+        let status = crate::i18n::tf!("\x1b[90mLines {}–{} of {} · v1.0.0\x1b[0m",
+            if lines.is_empty() { 0 } else { scroll_offset + 1 }, end, lines.len());
+        crate::interactive::draw_bottom_box_line(&mut frame, top + 1,
+            &status, 0, box_w, border)?;
+        for index in 0..view_height {
+            let line = lines.get(scroll_offset + index).map(String::as_str).unwrap_or("");
+            crate::interactive::draw_bottom_box_line(&mut frame, top + 2 + index as u16,
+                line, 0, box_w, border)?;
         }
-        for _ in (end_idx - scroll_offset)..view_height {
-            draw_box_line(&mut out, &mut row, prefix, p_ansi, "", inner_w)?;
+        let decision_row = top + 2 + view_height as u16;
+        for (index, (selected, label)) in [
+            (user_choice, crate::i18n::tr("I accept the terms")),
+            (!user_choice, crate::i18n::tr("Decline and exit")),
+        ].into_iter().enumerate() {
+            let text = if selected {
+                format!("{primary}\x1b[1m❯ (●) {label}\x1b[0m")
+            } else {
+                format!("\x1b[90m  ( ) {label}\x1b[0m")
+            };
+            crate::interactive::draw_bottom_box_line(&mut frame,
+                decision_row + index as u16, &text, 0, box_w, border)?;
         }
-
-        // 4. Scroll position divider
-        let pct = if lines.len() <= view_height {
-            100
-        } else {
-            ((scroll_offset * 100) / (lines.len() - view_height)).min(100)
-        };
-        let scroll_label = format!("\x1b[1m[Scroll: {:>2}%]\x1b[0m", pct);
-        draw_box_divider_with_label(&mut out, &mut row, prefix, p_ansi, &scroll_label, box_w)?;
-
-        // 5. Decision buttons
-        let accept_btn = if user_choice {
-            format!("\x1b[1;30;48;2;0;255;128m [✔] I ACCEPT THE TERMS \x1b[0m")
-        } else {
-            format!("\x1b[38;2;160;160;165;48;2;45;45;50m [ ] I ACCEPT THE TERMS \x1b[0m")
-        };
-        let decline_btn = if !user_choice {
-            format!("\x1b[1;30;48;2;255;75;75m [✕] DECLINE & EXIT \x1b[0m")
-        } else {
-            format!("\x1b[38;2;160;160;165;48;2;45;45;50m [ ] DECLINE & EXIT \x1b[0m")
-        };
-
-        let btn_total_vis = 25 + 4 + 21; // 50
-        let btn_pad = inner_w.saturating_sub(btn_total_vis) / 2;
-        let buttons_content = format!("{}{}{}{}", " ".repeat(btn_pad), accept_btn, "    ", decline_btn);
-        draw_box_line(&mut out, &mut row, prefix, p_ansi, &buttons_content, inner_w)?;
-
-        // 6. Card Bottom border
-        let footer_hint = "[Tab]/[←/→] to toggle, [Enter] to confirm, [Esc] to exit";
-        draw_box_bottom(&mut out, &mut row, prefix, p_ansi, footer_hint, box_w)?;
-
-        execute!(out, Clear(ClearType::FromCursorDown))?;
+        crate::interactive::draw_bottom_box_bottom(&mut frame,
+            term_rows.saturating_sub(1),
+            crate::i18n::tr("↑/↓ PgUp/PgDn: scroll · Tab: choose · Enter: confirm · Esc: exit"),
+            box_w, border)?;
+        queue!(frame, crossterm::terminal::EndSynchronizedUpdate)?;
+        let mut out = stdout().lock();
+        out.write_all(&frame)?;
         out.flush()?;
         Ok(())
     }
@@ -680,31 +479,31 @@ impl Onboarding {
     fn get_wrapped_terms(inner_w: usize, theme: Theme) -> Vec<String> {
         let p_ansi = theme.primary_ansi();
         let raw_sections: Vec<(&str, bool)> = vec![
-            ("TAKIZA HARNESS - END USER LICENSE & SAFETY AGREEMENT", true),
-            ("Version 1.0.0 • Effective Date: September 2026", false),
+            (crate::i18n::tr("TAKIZA HARNESS - END USER LICENSE & SAFETY AGREEMENT"), true),
+            (crate::i18n::tr("Version 1.0.0 • Effective Date: September 2026"), false),
             ("", false),
-            ("1. AUTONOMOUS AI AGENT CAPABILITIES", true),
-            ("Takiza Harness equips advanced AI models with direct tool access to your local operating system, file system, network, and shell. The agent possesses autonomous planning, code reading, editing, file creation, and command execution capabilities in your workspace.", false),
+            (crate::i18n::tr("1. AUTONOMOUS AI AGENT CAPABILITIES"), true),
+            (crate::i18n::tr("Takiza Harness equips advanced AI models with direct tool access to your local operating system, file system, network, and shell. The agent possesses autonomous planning, code reading, editing, file creation, and command execution capabilities in your workspace."), false),
             ("", false),
-            ("2. USER RESPONSIBILITY & OVERSIGHT", true),
-            ("You acknowledge and agree that:", false),
-            ("  • You retain full supervisory authority over all tool actions.", false),
-            ("  • You are responsible for inspecting commands before execution.", false),
-            ("  • You will keep critical files version-controlled with Git.", false),
-            ("  • You can press Ctrl+C at any time to abort running operations.", false),
+            (crate::i18n::tr("2. USER RESPONSIBILITY & OVERSIGHT"), true),
+            (crate::i18n::tr("You acknowledge and agree that:"), false),
+            (crate::i18n::tr("  • You retain full supervisory authority over all tool actions."), false),
+            (crate::i18n::tr("  • You are responsible for inspecting commands before execution."), false),
+            (crate::i18n::tr("  • You will keep critical files version-controlled with Git."), false),
+            (crate::i18n::tr("  • You can press Ctrl+C at any time to abort running operations."), false),
             ("", false),
-            ("3. SAFE COMPUTING & WORKSPACE ISOLATION", true),
-            ("  • Do not run Takiza Harness in root or privileged system directories.", false),
-            ("  • File modifications and shell tasks are scoped to your workspace.", false),
-            ("  • Do not provide credentials, private keys, or confidential data you are not authorized to share with third-party LLMs.", false),
+            (crate::i18n::tr("3. SAFE COMPUTING & WORKSPACE ISOLATION"), true),
+            (crate::i18n::tr("  • Do not run Takiza Harness in root or privileged system directories."), false),
+            (crate::i18n::tr("  • File modifications and shell tasks are scoped to your workspace."), false),
+            (crate::i18n::tr("  • Do not provide credentials, private keys, or confidential data you are not authorized to share with third-party LLMs."), false),
             ("", false),
-            ("4. THIRD-PARTY PROVIDERS & NETWORK USAGE", true),
-            ("Takiza Harness interfaces with user-specified LLM API endpoints (such as Groq, OpenAI, OpenRouter, DeepSeek, or local Ollama). Your prompt context and tool output snippets are transmitted to the selected endpoint pursuant to that provider's privacy policy.", false),
+            (crate::i18n::tr("4. THIRD-PARTY PROVIDERS & NETWORK USAGE"), true),
+            (crate::i18n::tr("Takiza Harness interfaces with user-specified LLM API endpoints (such as Groq, OpenAI, OpenRouter, DeepSeek, or local Ollama). Your prompt context and tool output snippets are transmitted to the selected endpoint pursuant to that provider's privacy policy."), false),
             ("", false),
-            ("5. NO WARRANTY & LIMITATION OF LIABILITY", true),
-            ("THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY DAMAGES, DATA LOSS, OR SYSTEM DAMAGE ARISING FROM THE USE OF AI AGENT AUTOMATION TOOLS.", false),
+            (crate::i18n::tr("5. NO WARRANTY & LIMITATION OF LIABILITY"), true),
+            (crate::i18n::tr("THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY DAMAGES, DATA LOSS, OR SYSTEM DAMAGE ARISING FROM THE USE OF AI AGENT AUTOMATION TOOLS."), false),
             ("", false),
-            ("By choosing 'I ACCEPT', you consent to all terms above.", true),
+            (crate::i18n::tr("By choosing 'I ACCEPT', you consent to all terms above."), true),
         ];
 
         let mut lines = Vec::new();
@@ -760,29 +559,6 @@ mod tests {
         assert_eq!(vis + pad, inner_w);
     }
 
-    #[test]
-    fn test_box_alignment() {
-        let check_elem = |name: &str, expected: usize, f: &dyn Fn(&mut Vec<u8>)| {
-            let mut buf = Vec::new();
-            f(&mut buf);
-            let s = String::from_utf8_lossy(&buf);
-            let w = visible_width(&s);
-            assert_eq!(w, expected, "{}: width {} != expected {}", name, w, expected);
-        };
-
-        let prefix = "  "; // 2 spaces
-        let p_ansi = "\x1b[38;2;255;195;0m";
-
-        for box_w in [44, 50, 60, 76, 80, 82, 100, 120] {
-            let inner_w = box_w - 4;
-            let exp = prefix.len() + box_w;
-            check_elem("draw_box_top", exp, &|b| { let mut r = 0; draw_box_top(b, &mut r, prefix, p_ansi, "TITLE", box_w).unwrap(); });
-            check_elem("draw_box_line", exp, &|b| { let mut r = 0; draw_box_line(b, &mut r, prefix, p_ansi, "Content Line", inner_w).unwrap(); });
-            check_elem("draw_box_divider", exp, &|b| { let mut r = 0; draw_box_divider(b, &mut r, prefix, p_ansi, box_w).unwrap(); });
-            check_elem("draw_box_divider_with_label", exp, &|b| { let mut r = 0; draw_box_divider_with_label(b, &mut r, prefix, p_ansi, "[Label 50%]", box_w).unwrap(); });
-            check_elem("draw_box_bottom", exp, &|b| { let mut r = 0; draw_box_bottom(b, &mut r, prefix, p_ansi, "HINT", box_w).unwrap(); });
-        }
-    }
 
     #[test]
     fn test_get_wrapped_terms_no_panic() {

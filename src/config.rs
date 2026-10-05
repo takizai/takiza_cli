@@ -146,7 +146,7 @@ impl Config {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
-        let auto_approve = cli_args.auto_approve || env_auto_approve;
+        let auto_approve = cli_args.auto_approve || prefs.auto_approve.unwrap_or(env_auto_approve);
 
         let effort = prefs.effort
             .filter(|s| !s.trim().is_empty())

@@ -12,6 +12,59 @@ use crossterm::{
 use std::io::{stdout, Write};
 use std::path::Path;
 
+/// Buffer menu painting so clearing, transcript and controls appear together.
+#[derive(Default)]
+struct MenuFrame {
+    bytes: Vec<u8>,
+}
+
+impl Write for MenuFrame {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.bytes.is_empty() { return Ok(()); }
+        let mut frame = Vec::new();
+        queue!(frame, crossterm::terminal::BeginSynchronizedUpdate)?;
+        frame.extend_from_slice(&self.bytes);
+        queue!(frame, crossterm::terminal::EndSynchronizedUpdate)?;
+        let mut out = stdout().lock();
+        out.write_all(&frame)?;
+        out.flush()?;
+        self.bytes.clear();
+        Ok(())
+    }
+}
+
+pub(crate) fn fit_menu_text(text: &str, width: usize) -> String {
+    if crate::markdown::visible_width(text) <= width { return text.to_string(); }
+    if width == 0 { return String::new(); }
+    let mut result = String::new();
+    let mut used = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            result.push(ch);
+            result.push(chars.next().unwrap());
+            for code in chars.by_ref() {
+                result.push(code);
+                if ('@'..='~').contains(&code) { break; }
+            }
+            continue;
+        }
+        let columns = crate::prompt::char_width(ch);
+        if used + columns > width.saturating_sub(1) {
+            result.push_str("…\x1b[0m");
+            break;
+        }
+        result.push(ch);
+        used += columns;
+    }
+    result
+}
+
 #[derive(Clone, Debug)]
 pub struct ScreenContext {
     pub model: String,
@@ -27,12 +80,12 @@ impl ScreenContext {
         let git_display = match &git.branch {
             Some(b) => {
                 if git.is_dirty {
-                    format!("{} (dirty)", b)
+                    crate::i18n::tf!("{} (dirty)", b)
                 } else {
-                    format!("{} (clean)", b)
+                    crate::i18n::tf!("{} (clean)", b)
                 }
             }
-            None => "(no git)".to_string(),
+            None => crate::i18n::tr("(no git)").to_string(),
         };
         let branch_tag = match &git.branch {
             Some(b) => {
@@ -53,6 +106,89 @@ impl ScreenContext {
             branch_tag,
         }
     }
+}
+
+/// Language selection preserves the surrounding terminal mode and transcript.
+pub fn select_language_interactive(ctx: Option<&ScreenContext>, initial: crate::i18n::Language) -> std::io::Result<Option<crate::i18n::Language>> {
+    let was_raw = crossterm::terminal::is_raw_mode_enabled()?;
+    if !was_raw { enable_raw_mode()?; }
+    let result = (|| {
+        let mut selected = crate::i18n::Language::ALL.iter().position(|language| *language == initial).unwrap_or(0);
+        let mut panel = BottomSelectionPanel::default();
+        loop {
+            let th = theme::current();
+            let lines = crate::i18n::Language::ALL.iter().enumerate().map(|(index, language)| (
+                format!("{} {}", if index == selected { "❯ (●)" } else { "  ( )" }, language.name()),
+                if index == selected { th.primary_crossterm() } else { th.secondary_crossterm() },
+            )).collect::<Vec<_>>();
+            let hint = crate::i18n::tr("↑/↓ · Enter: Confirm · Esc: Cancel");
+            if let Some(ctx) = ctx {
+                panel.draw(ctx, crate::i18n::tr("Select Language"), &lines, hint)?;
+            } else {
+                crate::onboarding::Onboarding::render_language_selector(&lines, hint)?;
+            }
+            match crate::cli_ui::read_event_with_background()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => selected = (selected + 2) % 3,
+                    KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1) % 3,
+                    KeyCode::Enter => return Ok(Some(crate::i18n::Language::ALL[selected])),
+                    KeyCode::Esc => return Ok(None),
+                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => return Ok(None),
+                    _ => {},
+                },
+                _ => {},
+            }
+        }
+    })();
+    if !was_raw { disable_raw_mode()?; }
+    result
+}
+
+#[derive(Clone, Copy)]
+pub enum ConfigAction { Language, Theme, Provider, Model, Mode, Effort, Approval }
+
+pub fn configure_interactive(ctx: &ScreenContext, config: &Config, prefs: &theme::UserPreferences, initial: usize) -> std::io::Result<Option<ConfigAction>> {
+    let was_raw = crossterm::terminal::is_raw_mode_enabled()?;
+    if !was_raw { enable_raw_mode()?; }
+    let result = (|| {
+        let mut selected = initial.min(6);
+        let mut panel = BottomSelectionPanel::default();
+        loop {
+            let entries = [
+                (ConfigAction::Language, crate::i18n::tr("Language"), prefs.language.name().to_string()),
+                (ConfigAction::Theme, crate::i18n::tr("Visual Theme"), prefs.theme.name().to_string()),
+                (ConfigAction::Provider, crate::i18n::tr("Provider"), config.base_url.clone()),
+                (ConfigAction::Model, crate::i18n::tr("Model"), config.model.clone()),
+                (ConfigAction::Mode, crate::i18n::tr("Mode"), config.mode.name().to_string()),
+                (ConfigAction::Effort, crate::i18n::tr("Reasoning Effort"), crate::i18n::tr(config.effort.as_deref().unwrap_or("default")).to_string()),
+                (ConfigAction::Approval, crate::i18n::tr("Approval"), crate::i18n::tr(if config.auto_approve { "Auto-approve" } else { "Ask confirmation" }).to_string()),
+            ];
+            let (_, rows) = crate::cli_ui::terminal_size();
+            let visible = rows.saturating_sub(13).clamp(1, entries.len() as u16) as usize;
+            let offset = selected.saturating_sub(visible.saturating_sub(1));
+            let th = theme::current();
+            let lines = entries.iter().enumerate().skip(offset).take(visible).map(|(index, (_, label, value))| {
+                let label = crate::i18n::tr(label);
+                let padding = " ".repeat(22usize.saturating_sub(str_width(label)));
+                (format!("{} {label}{padding} {value}", if index == selected { "❯" } else { " " }),
+                    if index == selected { th.primary_crossterm() } else { th.secondary_crossterm() })
+            }).collect::<Vec<_>>();
+            panel.draw(ctx, crate::i18n::tr("Settings"), &lines, crate::i18n::tr("↑/↓ · Enter: Select · Esc: Back"))?;
+            match crate::cli_ui::read_event_with_background()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => selected = (selected + entries.len() - 1) % entries.len(),
+                    KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1) % entries.len(),
+                    KeyCode::Enter => return Ok(Some(entries[selected].0)),
+                    KeyCode::Esc => return Ok(None),
+                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => return Ok(None),
+                    _ => {},
+                },
+                _ => {},
+            }
+        }
+    })();
+    if !was_raw { disable_raw_mode()?; }
+    result
 }
 
 #[derive(Clone, Debug)]
@@ -155,89 +291,8 @@ pub struct ProviderChoice {
     pub api_key: Option<String>,
 }
 
-fn draw_picker_top(out: &mut impl Write, row: &mut u16, title: &str, box_w: usize, p_color: Color, b_color: Color) -> std::io::Result<()> {
-    let title_w = str_width(title);
-    let dashes = box_w.saturating_sub(title_w + 5);
-    queue!(
-        out,
-        cursor::MoveTo(0, *row),
-        Clear(ClearType::UntilNewLine),
-        Print("  "),
-        SetForegroundColor(b_color),
-        Print("╭─ "),
-        SetForegroundColor(p_color),
-        Print(title),
-        SetForegroundColor(b_color),
-        Print(" "),
-        Print("─".repeat(dashes)),
-        Print("╮"),
-        ResetColor
-    )?;
-    *row += 1;
-    Ok(())
-}
 
-fn draw_picker_divider(out: &mut impl Write, row: &mut u16, box_w: usize, b_color: Color) -> std::io::Result<()> {
-    let dashes = box_w.saturating_sub(2);
-    queue!(
-        out,
-        cursor::MoveTo(0, *row),
-        Clear(ClearType::UntilNewLine),
-        Print("  "),
-        SetForegroundColor(b_color),
-        Print("├"),
-        Print("─".repeat(dashes)),
-        Print("┤"),
-        ResetColor
-    )?;
-    *row += 1;
-    Ok(())
-}
-
-fn draw_picker_line(out: &mut impl Write, row: &mut u16, content: &str, content_w: usize, box_w: usize, b_color: Color) -> std::io::Result<()> {
-    let inner_w = box_w.saturating_sub(4);
-    let pad = inner_w.saturating_sub(content_w);
-    queue!(
-        out,
-        cursor::MoveTo(0, *row),
-        Clear(ClearType::UntilNewLine),
-        Print("  "),
-        SetForegroundColor(b_color),
-        Print("│ "),
-        ResetColor,
-        Print(content),
-        Print(" ".repeat(pad)),
-        SetForegroundColor(b_color),
-        Print(" │"),
-        ResetColor
-    )?;
-    *row += 1;
-    Ok(())
-}
-
-fn draw_picker_bottom(out: &mut impl Write, row: &mut u16, hint: &str, box_w: usize, b_color: Color) -> std::io::Result<()> {
-    let hint_w = str_width(hint);
-    let dashes = box_w.saturating_sub(hint_w + 5);
-    queue!(
-        out,
-        cursor::MoveTo(0, *row),
-        Clear(ClearType::UntilNewLine),
-        Print("  "),
-        SetForegroundColor(b_color),
-        Print("╰─ "),
-        SetForegroundColor(Color::DarkGrey),
-        Print(hint),
-        SetForegroundColor(b_color),
-        Print(" "),
-        Print("─".repeat(dashes)),
-        Print("╯"),
-        ResetColor
-    )?;
-    *row += 1;
-    Ok(())
-}
-
-fn draw_bottom_box_top(
+pub(crate) fn draw_bottom_box_top(
     out: &mut impl Write,
     row: u16,
     title: &str,
@@ -245,10 +300,12 @@ fn draw_bottom_box_top(
     primary: Color,
     border: Color,
 ) -> std::io::Result<()> {
+    crate::cli_ui::paint_chat_background(out, row)?;
     let title_tag = format!(" {} ", title);
     let title_w = str_width(&title_tag);
     let (safe_title, safe_title_w) = if title_w + 4 >= box_w {
-        (format!(" {} ", truncate_visible(title, box_w.saturating_sub(6))), box_w.saturating_sub(4))
+        { let title = format!(" {} ", truncate_visible(title, box_w.saturating_sub(6)));
+          let width = str_width(&title); (title, width) }
     } else {
         (title_tag, title_w)
     };
@@ -290,16 +347,17 @@ fn draw_bottom_box_divider(
     Ok(())
 }
 
-fn draw_bottom_box_line(
+pub(crate) fn draw_bottom_box_line(
     out: &mut impl Write,
     row: u16,
     content: &str,
-    visible_width: usize,
+    _visible_width: usize,
     box_w: usize,
     border: Color,
 ) -> std::io::Result<()> {
     let inner_w = box_w.saturating_sub(4);
-    let pad = inner_w.saturating_sub(visible_width);
+    let content = fit_menu_text(content, inner_w);
+    let pad = inner_w.saturating_sub(crate::markdown::visible_width(&content));
 
     queue!(
         out,
@@ -308,7 +366,7 @@ fn draw_bottom_box_line(
         SetForegroundColor(border),
         Print("│ "),
         ResetColor,
-        Print(content),
+        Print(&content),
         Print(" ".repeat(pad)),
         SetForegroundColor(border),
         Print(" │"),
@@ -317,14 +375,14 @@ fn draw_bottom_box_line(
     Ok(())
 }
 
-fn draw_bottom_box_bottom(
+pub(crate) fn draw_bottom_box_bottom(
     out: &mut impl Write,
     row: u16,
     hint: &str,
     box_w: usize,
     border: Color,
 ) -> std::io::Result<()> {
-    let hint_tag = format!(" {} ", hint);
+    let hint_tag = format!(" {} ", truncate_visible(hint, box_w.saturating_sub(5)));
     let hint_w = str_width(&hint_tag);
     let dashes = box_w.saturating_sub(hint_w + 3);
 
@@ -356,7 +414,7 @@ pub fn prompt_string_input(ctx: &ScreenContext, title: &str, prompt_label: &str,
     let mut needs_clear = true;
 
     loop {
-        let mut out = stdout();
+        let mut out = MenuFrame::default();
         if needs_clear {
             queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
             needs_clear = false;
@@ -376,14 +434,14 @@ pub fn prompt_string_input(ctx: &ScreenContext, title: &str, prompt_label: &str,
         let display_line = format!("{} {}", prompt_label, buffer);
         let display_w = str_width(&display_line);
         draw_bottom_box_line(&mut out, start_row + 1, &display_line, display_w, box_w, b_color)?;
-        draw_bottom_box_bottom(&mut out, start_row + 2, "Enter: confirm  •  Esc: cancel", box_w, b_color)?;
+        draw_bottom_box_bottom(&mut out, start_row + 2, crate::i18n::tr("Enter: confirm  •  Esc: cancel"), box_w, b_color)?;
         
         let pre_cursor: String = buffer.chars().take(cursor_idx).collect();
         let cursor_x = 2 + str_width(prompt_label) + 1 + str_width(&pre_cursor);
         queue!(out, cursor::MoveTo(cursor_x as u16, start_row + 1), cursor::Show)?;
         out.flush()?;
 
-        match event::read()? {
+        match crate::cli_ui::read_event_with_background()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -463,7 +521,7 @@ pub fn prompt_custom_provider(ctx: &ScreenContext) -> std::io::Result<Option<Pro
         let p_color = th.primary_crossterm();
         let p_ansi = th.primary_ansi();
 
-        let mut out = stdout();
+        let mut out = MenuFrame::default();
         if needs_clear {
             queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
             needs_clear = false;
@@ -476,16 +534,16 @@ pub fn prompt_custom_provider(ctx: &ScreenContext) -> std::io::Result<Option<Pro
         let start_row = term_rows.saturating_sub(total_box_height as u16);
 
         let title = if ctx.branch_tag.is_empty() {
-            "Custom AI Provider Endpoint".to_string()
+            crate::i18n::tr("Custom AI Provider Endpoint").to_string()
         } else {
-            format!("Custom AI Provider Endpoint [{}]", ctx.branch_tag.trim())
+            crate::i18n::tf!("Custom AI Provider Endpoint [{}]", ctx.branch_tag.trim())
         };
         draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
 
         let fields = [
-            ("Base URL: ", &base_url, "http://localhost:8000/v1"),
-            ("Model ID: ", &model, "model-name"),
-            ("API Key:  ", &api_key, "(optional)"),
+            (crate::i18n::tr("Base URL: "), &base_url, "http://localhost:8000/v1"),
+            (crate::i18n::tr("Model ID: "), &model, "model-name"),
+            (crate::i18n::tr("API Key:  "), &api_key, crate::i18n::tr("(optional)")),
         ];
 
         for (i, (label, val, placeholder)) in fields.iter().enumerate() {
@@ -511,7 +569,7 @@ pub fn prompt_custom_provider(ctx: &ScreenContext) -> std::io::Result<Option<Pro
         draw_bottom_box_bottom(
             &mut out,
             start_row + 4,
-            "Tab/Enter: Next  •  Enter on Key: Save  •  Esc: Cancel",
+            crate::i18n::tr("Tab/Enter: Next  •  Enter on Key: Save  •  Esc: Cancel"),
             box_w,
             b_color,
         )?;
@@ -529,7 +587,7 @@ pub fn prompt_custom_provider(ctx: &ScreenContext) -> std::io::Result<Option<Pro
         queue!(out, cursor::MoveTo(cursor_x as u16, cursor_y), cursor::Show)?;
         out.flush()?;
 
-        match event::read()? {
+        match crate::cli_ui::read_event_with_background()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -555,7 +613,7 @@ pub fn prompt_custom_provider(ctx: &ScreenContext) -> std::io::Result<Option<Pro
                             };
                             return Ok(Some(ProviderChoice {
                                 id: "custom".to_string(),
-                                name: "Custom Provider".to_string(),
+                                name: crate::i18n::tr("Custom Provider").to_string(),
                                 base_url: base_url.trim().to_string(),
                                 default_model: model.trim().to_string(),
                                 api_key: final_key,
@@ -661,7 +719,7 @@ fn select_provider_inner(ctx: &ScreenContext, current_base_url: &str) -> std::io
         let p_color = th.primary_crossterm();
         let p_ansi = th.primary_ansi();
 
-        let mut out = stdout();
+        let mut out = MenuFrame::default();
         if needs_clear {
             queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
             needs_clear = false;
@@ -677,9 +735,9 @@ fn select_provider_inner(ctx: &ScreenContext, current_base_url: &str) -> std::io
         let start_row = term_rows.saturating_sub(total_box_height as u16);
 
         let title = if ctx.branch_tag.is_empty() {
-            "Select AI Provider".to_string()
+            crate::i18n::tr("Select AI Provider").to_string()
         } else {
-            format!("Select AI Provider [{}]", ctx.branch_tag.trim())
+            crate::i18n::tf!("Select AI Provider [{}]", ctx.branch_tag.trim())
         };
 
         draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
@@ -698,25 +756,25 @@ fn select_provider_inner(ctx: &ScreenContext, current_base_url: &str) -> std::io
 
             if two_lines {
                 let name_styled = if is_sel {
-                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;140;140;145mDefault: \x1b[38;2;210;210;215m{}\x1b[0m", prefix, mark_str, p_ansi, p.name, p.default_model)
+                    crate::i18n::tf!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;140;140;145mDefault: \x1b[38;2;210;210;215m{}\x1b[0m", prefix, mark_str, p_ansi, crate::i18n::tr(p.name), p.default_model)
                 } else {
-                    format!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;120;120;125mDefault: \x1b[38;2;170;170;175m{}\x1b[0m", prefix, mark_str, p.name, p.default_model)
+                    crate::i18n::tf!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;120;120;125mDefault: \x1b[38;2;170;170;175m{}\x1b[0m", prefix, mark_str, crate::i18n::tr(p.name), p.default_model)
                 };
-                let line1_vis = 2 + mark_vis + 1 + str_width(p.name) + 5 + 9 + str_width(p.default_model);
+                let line1_vis = 2 + mark_vis + 1 + str_width(crate::i18n::tr(p.name)) + 5 + 9 + str_width(p.default_model);
                 draw_bottom_box_line(&mut out, cur_row, &name_styled, line1_vis, box_w, b_color)?;
                 cur_row += 1;
 
                 let desc_max = inner_w.saturating_sub(6);
-                let desc_truncated = truncate_visible(p.description, desc_max);
+                let desc_truncated = truncate_visible(crate::i18n::tr(p.description), desc_max);
                 let line2 = format!("      \x1b[38;2;130;130;135m{}\x1b[0m", desc_truncated);
                 let line2_vis = 6 + str_width(&desc_truncated);
                 draw_bottom_box_line(&mut out, cur_row, &line2, line2_vis, box_w, b_color)?;
                 cur_row += 1;
             } else {
-                let fixed_w = 2 + mark_vis + 1 + str_width(p.name) + 5 + str_width(p.default_model);
+                let fixed_w = 2 + mark_vis + 1 + str_width(crate::i18n::tr(p.name)) + 5 + str_width(p.default_model);
                 let desc_avail = inner_w.saturating_sub(fixed_w + 3);
                 let desc_part = if desc_avail >= 12 {
-                    let desc_trunc = truncate_visible(p.description, desc_avail.saturating_sub(2));
+                    let desc_trunc = truncate_visible(crate::i18n::tr(p.description), desc_avail.saturating_sub(2));
                     let vis = 3 + str_width(&desc_trunc);
                     (format!("  \x1b[38;2;110;110;115m({})\x1b[0m", desc_trunc), vis)
                 } else {
@@ -724,9 +782,9 @@ fn select_provider_inner(ctx: &ScreenContext, current_base_url: &str) -> std::io
                 };
 
                 let name_styled = if is_sel {
-                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;200;200;205m{}\x1b[0m{}", prefix, mark_str, p_ansi, p.name, p.default_model, desc_part.0)
+                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;200;200;205m{}\x1b[0m{}", prefix, mark_str, p_ansi, crate::i18n::tr(p.name), p.default_model, desc_part.0)
                 } else {
-                    format!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;160;160;165m{}\x1b[0m{}", prefix, mark_str, p.name, p.default_model, desc_part.0)
+                    format!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;160;160;165m{}\x1b[0m{}", prefix, mark_str, crate::i18n::tr(p.name), p.default_model, desc_part.0)
                 };
                 let line_vis = fixed_w + desc_part.1;
                 draw_bottom_box_line(&mut out, cur_row, &name_styled, line_vis, box_w, b_color)?;
@@ -742,32 +800,32 @@ fn select_provider_inner(ctx: &ScreenContext, current_base_url: &str) -> std::io
 
         if two_lines {
             let custom_title = if is_custom_sel {
-                format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1mCustom Provider Endpoint...\x1b[0m", prefix, mark_str, p_ansi)
+                crate::i18n::tf!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1mCustom Provider Endpoint...\x1b[0m", prefix, mark_str, p_ansi)
             } else {
-                format!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225mCustom Provider Endpoint...\x1b[0m", prefix, mark_str)
+                crate::i18n::tf!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225mCustom Provider Endpoint...\x1b[0m", prefix, mark_str)
             };
             let custom_vis = 2 + mark_vis + 1 + 28;
             draw_bottom_box_line(&mut out, cur_row, &custom_title, custom_vis, box_w, b_color)?;
             cur_row += 1;
 
-            let custom_desc = "      \x1b[38;2;130;130;135mEnter custom Base URL and Model manually\x1b[0m";
+            let custom_desc = crate::i18n::tr("      \x1b[38;2;130;130;135mEnter custom Base URL and Model manually\x1b[0m");
             draw_bottom_box_line(&mut out, cur_row, custom_desc, 6 + 40, box_w, b_color)?;
             cur_row += 1;
         } else {
             let custom_line = if is_custom_sel {
-                format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1mCustom Provider Endpoint...\x1b[0m  \x1b[38;2;110;110;115m(Specify custom URL and Model)\x1b[0m", prefix, mark_str, p_ansi)
+                crate::i18n::tf!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1mCustom Provider Endpoint...\x1b[0m  \x1b[38;2;110;110;115m(Specify custom URL and Model)\x1b[0m", prefix, mark_str, p_ansi)
             } else {
-                format!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225mCustom Provider Endpoint...\x1b[0m  \x1b[38;2;110;110;115m(Specify custom URL and Model)\x1b[0m", prefix, mark_str)
+                crate::i18n::tf!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225mCustom Provider Endpoint...\x1b[0m  \x1b[38;2;110;110;115m(Specify custom URL and Model)\x1b[0m", prefix, mark_str)
             };
             let custom_vis = 2 + mark_vis + 1 + 28 + 2 + 30;
             draw_bottom_box_line(&mut out, cur_row, &custom_line, custom_vis, box_w, b_color)?;
             cur_row += 1;
         }
 
-        draw_bottom_box_bottom(&mut out, cur_row, "↑/↓: Navigate  Enter: Select  Esc: Cancel", box_w, b_color)?;
+        draw_bottom_box_bottom(&mut out, cur_row, crate::i18n::tr("↑/↓: Navigate  Enter: Select  Esc: Cancel"), box_w, b_color)?;
         out.flush()?;
 
-        match event::read()? {
+        match crate::cli_ui::read_event_with_background()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -796,8 +854,8 @@ fn select_provider_inner(ctx: &ScreenContext, current_base_url: &str) -> std::io
                             // Check if API key is required
                             let mut api_key = None;
                             if !p.env_key_name.is_empty() && std::env::var(p.env_key_name).is_err() {
-                                let key_prompt = format!("Enter API Key for {} (or press Enter to skip):", p.name);
-                                if let Some(entered) = prompt_string_input(ctx, &format!("API Key for {}", p.name), &key_prompt, "")? {
+                                let key_prompt = crate::i18n::tf!("Enter API Key for {} (or press Enter to skip):", p.name);
+                                if let Some(entered) = prompt_string_input(ctx, &crate::i18n::tf!("API Key for {}", p.name), &key_prompt, "")? {
                                     if !entered.is_empty() {
                                         api_key = Some(entered);
                                     }
@@ -866,7 +924,7 @@ fn select_model_inner(ctx: &ScreenContext, current_base_url: &str, current_model
         let p_color = th.primary_crossterm();
         let p_ansi = th.primary_ansi();
 
-        let mut out = stdout();
+        let mut out = MenuFrame::default();
         if needs_clear {
             queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
             needs_clear = false;
@@ -879,8 +937,8 @@ fn select_model_inner(ctx: &ScreenContext, current_base_url: &str, current_model
         let start_row = term_rows.saturating_sub(total_box_height as u16);
 
         let title_base = match preset {
-            Some(p) => format!("Select AI Model ({})", p.name),
-            None => "Select AI Model".to_string(),
+            Some(p) => crate::i18n::tf!("Select AI Model ({})", p.name),
+            None => crate::i18n::tr("Select AI Model").to_string(),
         };
         let title = if ctx.branch_tag.is_empty() {
             title_base
@@ -916,17 +974,17 @@ fn select_model_inner(ctx: &ScreenContext, current_base_url: &str, current_model
         let mark_str = "\x1b[38;2;100;100;105m[ ]\x1b[0m";
         let mark_vis = 3;
         let custom_line = if is_custom_sel {
-            format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1mCustom Model (type manually)...\x1b[0m", prefix, mark_str, p_ansi)
+            crate::i18n::tf!("\x1b[1;38;2;255;255;255m{}\x1b[0m{} {}\x1b[1mCustom Model (type manually)...\x1b[0m", prefix, mark_str, p_ansi)
         } else {
-            format!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225mCustom Model (type manually)...\x1b[0m", prefix, mark_str)
+            crate::i18n::tf!("\x1b[38;2;160;160;165m{}\x1b[0m{} \x1b[38;2;220;220;225mCustom Model (type manually)...\x1b[0m", prefix, mark_str)
         };
         draw_bottom_box_line(&mut out, cur_row, &custom_line, 2 + mark_vis + 1 + 32, box_w, b_color)?;
         cur_row += 1;
 
-        draw_bottom_box_bottom(&mut out, cur_row, "↑/↓: Navigate  Enter: Select  Esc: Cancel", box_w, b_color)?;
+        draw_bottom_box_bottom(&mut out, cur_row, crate::i18n::tr("↑/↓: Navigate  Enter: Select  Esc: Cancel"), box_w, b_color)?;
         out.flush()?;
 
-        match event::read()? {
+        match crate::cli_ui::read_event_with_background()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -954,7 +1012,7 @@ fn select_model_inner(ctx: &ScreenContext, current_base_url: &str, current_model
                             return Ok(Some(models_list[selected_idx].clone()));
                         } else {
                             // Prompt for custom model string
-                            if let Some(custom) = prompt_string_input(ctx, "Custom AI Model", "Enter Model Name/ID:", "")? {
+                            if let Some(custom) = prompt_string_input(ctx, crate::i18n::tr("Custom AI Model"), crate::i18n::tr("Enter Model Name/ID:"), "")? {
                                 if !custom.is_empty() {
                                     return Ok(Some(custom));
                                 }
@@ -989,7 +1047,7 @@ pub fn select_theme_interactive(ctx: &ScreenContext, initial: Theme) -> std::io:
         let b_color = current_theme.border_crossterm();
         let p_color = current_theme.primary_crossterm();
 
-        let mut out = stdout();
+        let mut out = MenuFrame::default();
         if needs_clear {
             queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
             needs_clear = false;
@@ -998,24 +1056,26 @@ pub fn select_theme_interactive(ctx: &ScreenContext, initial: Theme) -> std::io:
         }
         let _ = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
 
-        let total_box_height = 1 + themes.len() + 1;
+        let visible_count = (term_rows as usize).saturating_sub(8).clamp(1, 6).min(themes.len());
+        let scroll_offset = selected_idx.saturating_sub(visible_count.saturating_sub(1));
+        let total_box_height = 1 + visible_count + 1;
         let start_row = term_rows.saturating_sub(total_box_height as u16);
 
         let title = if ctx.branch_tag.is_empty() {
-            "Select Visual Theme".to_string()
+            crate::i18n::tr("Select Visual Theme").to_string()
         } else {
-            format!("Select Visual Theme [{}]", ctx.branch_tag.trim())
+            crate::i18n::tf!("Select Visual Theme [{}]", ctx.branch_tag.trim())
         };
         draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
 
         let mut cur_row = start_row + 1;
-        for (i, &t) in themes.iter().enumerate() {
+        for (i, &t) in themes.iter().enumerate().skip(scroll_offset).take(visible_count) {
             let is_sel = i == selected_idx;
             let is_init = t == initial;
 
             let prefix = if is_sel { "> " } else { "  " };
             let (mark_str, mark_vis) = if is_init {
-                ("\x1b[1;38;2;40;220;120m[active]\x1b[0m", 8)
+                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), 8)
             } else {
                 ("        ", 8)
             };
@@ -1029,10 +1089,11 @@ pub fn select_theme_interactive(ctx: &ScreenContext, initial: Theme) -> std::io:
             cur_row += 1;
         }
 
-        draw_bottom_box_bottom(&mut out, cur_row, "Live Preview  •  Enter: Confirm  Esc: Cancel", box_w, b_color)?;
+        let hint = crate::i18n::tf!("↑/↓: {}/{}  •  Live Preview  •  Enter: Confirm  Esc: Cancel", selected_idx + 1, themes.len());
+        draw_bottom_box_bottom(&mut out, cur_row, &hint, box_w, b_color)?;
         out.flush()?;
 
-        match event::read()? {
+        match crate::cli_ui::read_event_with_background()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -1172,7 +1233,7 @@ pub fn select_mode_interactive(ctx: &ScreenContext, current_mode: AppMode) -> st
         let p_color = th.primary_crossterm();
         let p_ansi = th.primary_ansi();
 
-        let mut out = stdout();
+        let mut out = MenuFrame::default();
         if needs_clear {
             queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
             needs_clear = false;
@@ -1188,9 +1249,9 @@ pub fn select_mode_interactive(ctx: &ScreenContext, current_mode: AppMode) -> st
         let start_row = term_rows.saturating_sub(total_box_height as u16);
 
         let title = if ctx.branch_tag.is_empty() {
-            "Select Execution Mode".to_string()
+            crate::i18n::tr("Select Execution Mode").to_string()
         } else {
-            format!("Select Execution Mode [{}]", ctx.branch_tag.trim())
+            crate::i18n::tf!("Select Execution Mode [{}]", ctx.branch_tag.trim())
         };
         draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
 
@@ -1201,13 +1262,13 @@ pub fn select_mode_interactive(ctx: &ScreenContext, current_mode: AppMode) -> st
 
             let prefix = if is_sel { "> " } else { "  " };
             let (mark_str, mark_vis) = if is_curr {
-                ("\x1b[1;38;2;40;220;120m[active]\x1b[0m", 8)
+                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), 8)
             } else {
                 ("        ", 8)
             };
 
             let (badge_str, badge_vis) = match m {
-                AppMode::MoA => (" \x1b[1;38;2;40;220;120m[⚡ ~45% Cheaper]\x1b[0m", str_width(" [⚡ ~45% Cheaper]")),
+                AppMode::MoA => (crate::i18n::tr(" \x1b[1;38;2;40;220;120m[⚡ ~45% Cheaper]\x1b[0m"), str_width(crate::i18n::tr(" [⚡ ~45% Cheaper]"))),
                 AppMode::Manual => ("", 0),
             };
 
@@ -1251,10 +1312,10 @@ pub fn select_mode_interactive(ctx: &ScreenContext, current_mode: AppMode) -> st
             }
         }
 
-        draw_bottom_box_bottom(&mut out, cur_row, "Enter: Select  •  Esc: Cancel", box_w, b_color)?;
+        draw_bottom_box_bottom(&mut out, cur_row, crate::i18n::tr("Enter: Select  •  Esc: Cancel"), box_w, b_color)?;
         out.flush()?;
 
-        match event::read()? {
+        match crate::cli_ui::read_event_with_background()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -1296,9 +1357,9 @@ pub fn select_mode_interactive(ctx: &ScreenContext, current_mode: AppMode) -> st
 pub fn select_effort_interactive(ctx: &ScreenContext, current_effort: &str) -> std::io::Result<Option<String>> {
     enable_raw_mode()?;
     let efforts = [
-        ("low", "Low", "Fast response, minimal reasoning tokens"),
-        ("medium", "Medium", "Balanced reasoning depth (default)"),
-        ("high", "High", "Deep analysis, exhaustive reasoning"),
+        ("low", crate::i18n::tr("Low"), crate::i18n::tr("Fast response, minimal reasoning tokens")),
+        ("medium", crate::i18n::tr("Medium"), crate::i18n::tr("Balanced reasoning depth (default)")),
+        ("high", crate::i18n::tr("High"), crate::i18n::tr("Deep analysis, exhaustive reasoning")),
     ];
     let cur = current_effort.to_lowercase();
     let mut selected_idx = efforts.iter().position(|&(id, _, _)| id == cur).unwrap_or(1);
@@ -1313,7 +1374,7 @@ pub fn select_effort_interactive(ctx: &ScreenContext, current_effort: &str) -> s
         let p_color = th.primary_crossterm();
         let p_ansi = th.primary_ansi();
 
-        let mut out = stdout();
+        let mut out = MenuFrame::default();
         if needs_clear {
             queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
             needs_clear = false;
@@ -1329,9 +1390,9 @@ pub fn select_effort_interactive(ctx: &ScreenContext, current_effort: &str) -> s
         let start_row = term_rows.saturating_sub(total_box_height as u16);
 
         let title = if ctx.branch_tag.is_empty() {
-            "Select Reasoning Effort".to_string()
+            crate::i18n::tr("Select Reasoning Effort").to_string()
         } else {
-            format!("Select Reasoning Effort [{}]", ctx.branch_tag.trim())
+            crate::i18n::tf!("Select Reasoning Effort [{}]", ctx.branch_tag.trim())
         };
         draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
 
@@ -1342,7 +1403,7 @@ pub fn select_effort_interactive(ctx: &ScreenContext, current_effort: &str) -> s
 
             let prefix = if is_sel { "> " } else { "  " };
             let (mark_str, mark_vis) = if is_curr {
-                ("\x1b[1;38;2;40;220;120m[active]\x1b[0m", 8)
+                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), 8)
             } else {
                 ("        ", 8)
             };
@@ -1384,10 +1445,10 @@ pub fn select_effort_interactive(ctx: &ScreenContext, current_effort: &str) -> s
             }
         }
 
-        draw_bottom_box_bottom(&mut out, cur_row, "Enter: Select  •  Esc: Cancel", box_w, b_color)?;
+        draw_bottom_box_bottom(&mut out, cur_row, crate::i18n::tr("Enter: Select  •  Esc: Cancel"), box_w, b_color)?;
         out.flush()?;
 
-        match event::read()? {
+        match crate::cli_ui::read_event_with_background()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -1443,7 +1504,7 @@ pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str
         let p_color = th.primary_crossterm();
         let p_ansi = th.primary_ansi();
 
-        let mut out = stdout();
+        let mut out = MenuFrame::default();
         if needs_clear {
             queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
             needs_clear = false;
@@ -1459,9 +1520,9 @@ pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str
         let start_row = term_rows.saturating_sub(total_box_height as u16);
 
         let title = if ctx.branch_tag.is_empty() {
-            "Takiza Manual - Select Model".to_string()
+            crate::i18n::tr("Takiza Manual - Select Model").to_string()
         } else {
-            format!("Takiza Manual - Select Model [{}]", ctx.branch_tag.trim())
+            crate::i18n::tf!("Takiza Manual - Select Model [{}]", ctx.branch_tag.trim())
         };
         draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
 
@@ -1472,7 +1533,7 @@ pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str
 
             let prefix = if is_sel { "> " } else { "  " };
             let (mark_str, mark_vis) = if is_curr {
-                ("\x1b[1;38;2;40;220;120m[active]\x1b[0m", 8)
+                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), 8)
             } else {
                 ("        ", 8)
             };
@@ -1482,7 +1543,7 @@ pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str
                 "Anthropic" => "\x1b[38;2;217;119;87m[Anthropic]\x1b[0m",
                 "Google" => "\x1b[38;2;66;133;244m[Google]\x1b[0m",
                 "Moonshot AI" => "\x1b[38;2;147;112;219m[Moonshot]\x1b[0m",
-                _ => "\x1b[38;2;160;160;165m[Model]\x1b[0m",
+                _ => crate::i18n::tr("\x1b[38;2;160;160;165m[Model]\x1b[0m"),
             };
             let prov_vis = match m.provider {
                 "OpenAI" => 8,
@@ -1493,7 +1554,7 @@ pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str
             };
 
             let (cost_tag, cost_vis) = if m.is_expensive {
-                (" \x1b[1;38;2;255;95;80m[⚠ $$$ / High Cost]\x1b[0m", str_width(" [⚠ $$$ / High Cost]"))
+                (crate::i18n::tr(" \x1b[1;38;2;255;95;80m[⚠ $$$ / High Cost]\x1b[0m"), str_width(crate::i18n::tr(" [⚠ $$$ / High Cost]")))
             } else {
                 ("", 0)
             };
@@ -1510,9 +1571,9 @@ pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str
 
                 let desc_max = inner_w.saturating_sub(6);
                 let desc_text = if m.is_expensive {
-                    format!("⚠ High Cost ($10/1M in, $50/1M out)! {}", m.description)
+                    crate::i18n::tf!("⚠ High Cost ($10/1M in, $50/1M out)! {}", crate::i18n::tr(m.description))
                 } else {
-                    m.description.to_string()
+                    crate::i18n::tr(m.description).to_string()
                 };
                 let desc_trunc = truncate_visible(&desc_text, desc_max);
                 let line2 = if m.is_expensive {
@@ -1527,7 +1588,7 @@ pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str
                 let fixed_vis = 2 + prov_vis + 1 + str_width(m.name) + cost_vis + 2 + mark_vis;
                 let desc_avail = inner_w.saturating_sub(fixed_vis + 3);
                 let desc_part = if desc_avail >= 12 {
-                    let desc_trunc = truncate_visible(m.description, desc_avail);
+                    let desc_trunc = truncate_visible(crate::i18n::tr(m.description), desc_avail);
                     (format!("  \x1b[38;2;120;120;125m• {}\x1b[0m", desc_trunc), 4 + str_width(&desc_trunc))
                 } else {
                     (String::new(), 0)
@@ -1544,10 +1605,10 @@ pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str
             }
         }
 
-        draw_bottom_box_bottom(&mut out, cur_row, "Enter: Select Model  •  Esc: Cancel", box_w, b_color)?;
+        draw_bottom_box_bottom(&mut out, cur_row, crate::i18n::tr("Enter: Select Model  •  Esc: Cancel"), box_w, b_color)?;
         out.flush()?;
 
-        match event::read()? {
+        match crate::cli_ui::read_event_with_background()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -1620,7 +1681,7 @@ fn select_session_inner(ctx: &ScreenContext, workspace: &Path) -> std::io::Resul
         let p_color = th.primary_crossterm();
         let p_ansi = th.primary_ansi();
 
-        let mut out = stdout();
+        let mut out = MenuFrame::default();
         if needs_clear {
             queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
             needs_clear = false;
@@ -1644,9 +1705,9 @@ fn select_session_inner(ctx: &ScreenContext, workspace: &Path) -> std::io::Resul
         let start_row = term_rows.saturating_sub(total_box_height as u16);
 
         let title = if ctx.branch_tag.is_empty() {
-            "Resume Saved Chat".to_string()
+            crate::i18n::tr("Resume Saved Chat").to_string()
         } else {
-            format!("Resume Saved Chat [{}]", ctx.branch_tag.trim())
+            crate::i18n::tf!("Resume Saved Chat [{}]", ctx.branch_tag.trim())
         };
 
         draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
@@ -1674,10 +1735,10 @@ fn select_session_inner(ctx: &ScreenContext, workspace: &Path) -> std::io::Resul
 
             if two_lines {
                 let id_styled = if is_sel {
-                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{}\x1b[1m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;210;210;215m{:2} msgs\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;160;160;165m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;120;120;125m{}\x1b[0m",
+                    crate::i18n::tf!("\x1b[1;38;2;255;255;255m{}\x1b[0m{}\x1b[1m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;210;210;215m{:2} msgs\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;160;160;165m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;120;120;125m{}\x1b[0m",
                         prefix, p_ansi, id, msgs_count, created, model_name)
                 } else {
-                    format!("\x1b[38;2;160;160;165m{}\x1b[0m\x1b[38;2;220;220;225m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;140;140;145m{:2} msgs\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;100;100;105m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;90;90;95m{}\x1b[0m",
+                    crate::i18n::tf!("\x1b[38;2;160;160;165m{}\x1b[0m\x1b[38;2;220;220;225m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;140;140;145m{:2} msgs\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;100;100;105m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;90;90;95m{}\x1b[0m",
                         prefix, id, msgs_count, created, model_name)
                 };
                 let id_vis = 2 + str_width(id) + 5 + 7 + 5 + str_width(&created) + 5 + str_width(&model_name);
@@ -1692,10 +1753,10 @@ fn select_session_inner(ctx: &ScreenContext, workspace: &Path) -> std::io::Resul
             } else {
                 let preview_trunc = truncate_visible(&first_msg, inner_w.saturating_sub(42));
                 let line_styled = if is_sel {
-                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{}\x1b[1m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;210;210;215m{:2} msgs\x1b[0m  \x1b[38;2;130;130;135m(\"{}\")\x1b[0m",
+                    crate::i18n::tf!("\x1b[1;38;2;255;255;255m{}\x1b[0m{}\x1b[1m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;210;210;215m{:2} msgs\x1b[0m  \x1b[38;2;130;130;135m(\"{}\")\x1b[0m",
                         prefix, p_ansi, id, msgs_count, preview_trunc)
                 } else {
-                    format!("\x1b[38;2;160;160;165m{}\x1b[0m\x1b[38;2;220;220;225m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;140;140;145m{:2} msgs\x1b[0m  \x1b[38;2;100;100;105m(\"{}\")\x1b[0m",
+                    crate::i18n::tf!("\x1b[38;2;160;160;165m{}\x1b[0m\x1b[38;2;220;220;225m{}\x1b[0m  \x1b[38;2;70;70;75m•\x1b[0m  \x1b[38;2;140;140;145m{:2} msgs\x1b[0m  \x1b[38;2;100;100;105m(\"{}\")\x1b[0m",
                         prefix, id, msgs_count, preview_trunc)
                 };
                 let line_vis = 2 + str_width(id) + 5 + 7 + 4 + str_width(&preview_trunc);
@@ -1705,14 +1766,14 @@ fn select_session_inner(ctx: &ScreenContext, workspace: &Path) -> std::io::Resul
         }
 
         let hint = if sessions.len() > visible_count {
-            format!("↑/↓: navigate ({}/{})  •  Enter: resume  •  d: delete  •  Esc: cancel", selected_idx + 1, sessions.len())
+            crate::i18n::tf!("↑/↓: navigate ({}/{})  •  Enter: resume  •  d: delete  •  Esc: cancel", selected_idx + 1, sessions.len())
         } else {
-            "Enter: resume  •  d: delete  •  Esc: cancel".to_string()
+            crate::i18n::tr("Enter: resume  •  d: delete  •  Esc: cancel").to_string()
         };
         draw_bottom_box_bottom(&mut out, cur_row, &hint, box_w, b_color)?;
         out.flush()?;
 
-        match event::read()? {
+        match crate::cli_ui::read_event_with_background()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -1760,64 +1821,42 @@ fn select_session_inner(ctx: &ScreenContext, workspace: &Path) -> std::io::Resul
     }
 }
 
-/// Interactive scrollable Git Diff viewer with Commit and Revert actions.
+/// Scrollable workspace diff in the shared bottom panel.
 pub fn show_interactive_diff(ctx: &ScreenContext, diff: &str, workspace: &Path) -> std::io::Result<()> {
     enable_raw_mode()?;
     let lines: Vec<&str> = diff.lines().collect();
-    let mut scroll_offset = 0;
-    let mut needs_clear = true;
+    let mut scroll_offset = 0usize;
+    let mut panel = BottomSelectionPanel::default();
 
     loop {
-        let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let box_w = (term_cols as usize).saturating_sub(4).min(90);
-        let inner_w = box_w.saturating_sub(4);
-        let view_h = (term_rows as usize).saturating_sub(18).max(5);
+        let (_, term_rows) = crate::cli_ui::terminal_size();
+        let view_h = (term_rows as usize / 3).clamp(3, 12)
+            .min(term_rows.saturating_sub(4).max(1) as usize);
+        scroll_offset = scroll_offset.min(lines.len().saturating_sub(view_h));
         let th = theme::current();
-        let b_color = th.border_crossterm();
-        let p_color = th.primary_crossterm();
-
-        let mut out = stdout();
-        if needs_clear {
-            queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-            needs_clear = false;
-        } else {
-            queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
-        }
-        let mut row = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
-
-        draw_picker_top(&mut out, &mut row, "Git Workspace Diff", box_w, p_color, b_color)?;
-        let status_line = format!("Lines: {} • [↑/↓, PgUp/PgDn] scroll • [c] commit • [r] revert • [Esc] back", lines.len());
-        draw_picker_line(&mut out, &mut row, &format!("\x1b[38;2;160;160;165m{}\x1b[0m", status_line), str_width(&status_line), box_w, b_color)?;
-        draw_picker_divider(&mut out, &mut row, box_w, b_color)?;
-
         let end_idx = (scroll_offset + view_h).min(lines.len());
+        let mut content = vec![(crate::i18n::tf!("Lines {}–{} of {}", if lines.is_empty() { 0 } else { scroll_offset + 1 }, end_idx, lines.len()), Color::DarkGrey)];
         for i in scroll_offset..end_idx {
             let line = lines[i];
-            let trunc = truncate_visible(line, inner_w);
-            let trunc_w = str_width(&trunc);
-            let colored = if line.starts_with('+') && !line.starts_with("+++") {
-                format!("\x1b[38;2;80;230;120m{}\x1b[0m", trunc)
+            let color = if line.starts_with('+') && !line.starts_with("+++") {
+                Color::Rgb { r: 80, g: 230, b: 120 }
             } else if line.starts_with('-') && !line.starts_with("---") {
-                format!("\x1b[38;2;255;90;90m{}\x1b[0m", trunc)
+                Color::Rgb { r: 255, g: 90, b: 90 }
             } else if line.starts_with("@@") {
-                format!("\x1b[1;38;2;0;220;255m{}\x1b[0m", trunc)
+                th.primary_crossterm()
             } else if line.starts_with("diff --git") {
-                format!("\x1b[1;38;2;255;255;255m{}\x1b[0m", trunc)
+                Color::White
             } else {
-                format!("\x1b[38;2;180;180;185m{}\x1b[0m", trunc)
+                Color::Grey
             };
-            draw_picker_line(&mut out, &mut row, &colored, trunc_w, box_w, b_color)?;
+            content.push((line.to_string(), color));
         }
-
         for _ in (end_idx - scroll_offset)..view_h {
-            draw_picker_line(&mut out, &mut row, "", 0, box_w, b_color)?;
+            content.push((String::new(), Color::Grey));
         }
+        panel.draw(ctx, crate::i18n::tr("Git Workspace Diff"), &content, crate::i18n::tr("↑/↓ PgUp/PgDn: scroll • c: commit • r: revert • Esc: back"))?;
 
-        let hint = format!("[Scroll: {:>2}%]  •  c: commit  •  r: revert  •  Esc: back", if lines.len() <= view_h { 100 } else { (scroll_offset * 100) / (lines.len() - view_h) });
-        draw_picker_bottom(&mut out, &mut row, &hint, box_w, b_color)?;
-        out.flush()?;
-
-        match event::read()? {
+        match crate::cli_ui::read_event_with_background()? {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -1841,7 +1880,7 @@ pub fn show_interactive_diff(ctx: &ScreenContext, diff: &str, workspace: &Path) 
                     }
                     KeyCode::Char('c') => {
                         // Commit action
-                        if let Some(msg) = prompt_string_input(ctx, "Git Commit", "Commit message:", "")? {
+                        if let Some(msg) = prompt_string_input(ctx, crate::i18n::tr("Git Commit"), crate::i18n::tr("Commit message:"), "")? {
                             if !msg.trim().is_empty() {
                                 let _ = crate::git::create_git_command()
                                     .args(["add", "-A"])
@@ -1853,7 +1892,7 @@ pub fn show_interactive_diff(ctx: &ScreenContext, diff: &str, workspace: &Path) 
                                     .output();
                                 disable_raw_mode()?;
                                 if let Ok(out) = res {
-                                    println!("\nGit commit result:\n{}", String::from_utf8_lossy(&out.stdout));
+                                    println!("{}", crate::i18n::tf!("\nGit commit result:\n{}", String::from_utf8_lossy(&out.stdout)));
                                 }
                                 return Ok(());
                             }
@@ -1861,14 +1900,14 @@ pub fn show_interactive_diff(ctx: &ScreenContext, diff: &str, workspace: &Path) 
                     }
                     KeyCode::Char('r') => {
                         // Revert action
-                        if let Some(confirm) = prompt_string_input(ctx, "Revert Workspace Changes", "Revert all unstaged files? (yes/no):", "no")? {
+                        if let Some(confirm) = prompt_string_input(ctx, crate::i18n::tr("Revert Workspace Changes"), crate::i18n::tr("Revert all unstaged files? (yes/no):"), "no")? {
                             if confirm.eq_ignore_ascii_case("yes") || confirm.eq_ignore_ascii_case("y") {
                                 let _ = crate::git::create_git_command()
                                     .args(["checkout", "--", "."])
                                     .current_dir(workspace)
                                     .output();
                                 disable_raw_mode()?;
-                                println!("\nReverted all modifications back to git HEAD.\n");
+                                println!("{}", crate::i18n::tf!("\nReverted all modifications back to git HEAD.\n"));
                                 return Ok(());
                             }
                         }
@@ -1880,9 +1919,7 @@ pub fn show_interactive_diff(ctx: &ScreenContext, diff: &str, workspace: &Path) 
                     _ => {}
                 }
             }
-            Event::Resize(_, _) => {
-                needs_clear = true;
-            }
+            Event::Resize(_, _) => {}
             _ => {}
         }
     }
@@ -1913,7 +1950,7 @@ pub fn show_interactive_status(
     let b_color = th.border_crossterm();
     let p_color = th.primary_crossterm();
 
-    let mut out = stdout();
+    let mut out = MenuFrame::default();
     queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
     let _ = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
 
@@ -1922,35 +1959,35 @@ pub fn show_interactive_status(
     } else if !config.api_key.is_empty() {
         "(configured)".to_string()
     } else {
-        "(not set)".to_string()
+        crate::i18n::tr("(not set)").to_string()
     };
 
     let approval_str = if config.auto_approve {
-        "Auto-approve (skip permissions)"
+        crate::i18n::tr("Auto-approve (skip permissions)")
     } else {
-        "Ask on command (default)"
+        crate::i18n::tr("Ask on command (default)")
     };
 
     let items = [
-        ("AI Model", config.model.as_str()),
-        ("Mode", config.mode.name()),
-        ("Endpoint", config.base_url.as_str()),
-        ("API Key", masked_key.as_str()),
-        ("Approval", approval_str),
-        ("Visual Theme", th.name()),
-        ("Workspace", config.workspace_dir.to_str().unwrap_or(".")),
-        ("Git Branch", if branch.is_empty() { "(no git)" } else { branch }),
-        ("Session ID", session.id.as_str()),
-        ("Messages", &msg_count.to_string()),
+        (crate::i18n::tr("AI Model"), config.model.as_str()),
+        (crate::i18n::tr("Mode"), config.mode.name()),
+        (crate::i18n::tr("Endpoint"), config.base_url.as_str()),
+        (crate::i18n::tr("API Key"), masked_key.as_str()),
+        (crate::i18n::tr("Approval"), approval_str),
+        (crate::i18n::tr("Visual Theme"), th.name()),
+        (crate::i18n::tr("Workspace"), config.workspace_dir.to_str().unwrap_or(".")),
+        (crate::i18n::tr("Git Branch"), if branch.is_empty() { crate::i18n::tr("(no git)") } else { branch }),
+        (crate::i18n::tr("Session ID"), session.id.as_str()),
+        (crate::i18n::tr("Messages"), &msg_count.to_string()),
     ];
 
     let total_box_height = 1 + items.len() + 1 + 1 + 1; // 13 lines
     let start_row = term_rows.saturating_sub(total_box_height as u16);
 
     let title = if branch.is_empty() {
-        "Takiza Code Session & System Status".to_string()
+        crate::i18n::tr("Takiza Code Session & System Status").to_string()
     } else {
-        format!("Takiza Code Session & System Status [{}]", branch.trim())
+        crate::i18n::tf!("Takiza Code Session & System Status [{}]", branch.trim())
     };
 
     draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
@@ -1959,7 +1996,9 @@ pub fn show_interactive_status(
     for (k, v) in items {
         let max_v_w = inner_w.saturating_sub(16);
         let v_trunc = truncate_visible(v, max_v_w);
-        let line = format!("\x1b[1;38;2;0;220;255m{:<14}\x1b[0m \x1b[38;2;220;220;225m{}\x1b[0m", k, v_trunc);
+        let label = truncate_visible(k, 14);
+        let padding = " ".repeat(14usize.saturating_sub(str_width(&label)));
+        let line = format!("\x1b[1;38;2;0;220;255m{label}{padding}\x1b[0m \x1b[38;2;220;220;225m{v_trunc}\x1b[0m");
         let vis_len = 14 + 1 + str_width(&v_trunc);
         draw_bottom_box_line(&mut out, cur_row, &line, vis_len, box_w, b_color)?;
         cur_row += 1;
@@ -1968,17 +2007,17 @@ pub fn show_interactive_status(
     draw_bottom_box_divider(&mut out, cur_row, box_w, b_color)?;
     cur_row += 1;
 
-    let actions_hint = "Actions: [p] Provider  •  [m] Model  •  [o] Mode  •  [u] Usage  •  [t] Theme  •  [r] Reset  •  [Esc] Back";
+    let actions_hint = crate::i18n::tr("Actions: [p] Provider  •  [m] Model  •  [o] Mode  •  [u] Usage  •  [t] Theme  •  [r] Reset  •  [Esc] Back");
     let actions_trunc = truncate_visible(actions_hint, inner_w);
     let actions_vis = str_width(&actions_trunc);
     draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[1;38;2;255;255;255m{}\x1b[0m", actions_trunc), actions_vis, box_w, b_color)?;
     cur_row += 1;
 
-    draw_bottom_box_bottom(&mut out, cur_row, "Press shortcut key or Esc to exit", box_w, b_color)?;
+    draw_bottom_box_bottom(&mut out, cur_row, crate::i18n::tr("Press shortcut key or Esc to exit"), box_w, b_color)?;
     out.flush()?;
 
     loop {
-        if let Event::Key(key) = event::read()? {
+        if let Event::Key(key) = crate::cli_ui::read_event_with_background()? {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
@@ -2064,26 +2103,26 @@ pub fn show_interactive_skills(ctx: &ScreenContext, workspace: &Path) -> std::io
                 let local = skills.iter().filter(|skill| skill.is_workspace).count();
                 let slots = BottomSelectionPanel::visible_items(rows);
                 let start = selected.saturating_sub(slots - 1);
-                let mut lines = vec![(format!("Search: {}", query), theme.primary_crossterm())];
+                let mut lines = vec![(crate::i18n::tf!("Search: {}", query), theme.primary_crossterm())];
                 for slot in 0..slots {
                     let index = start + slot;
                     if let Some(skill) = matching.get(index) {
                         lines.push((format!("{} {:<6} {}", if index == selected { ">" } else { " " },
-                            if skill.is_workspace { "local" } else { "global" }, skill.name),
+                            if skill.is_workspace { crate::i18n::tr("local") } else { crate::i18n::tr("global") }, skill.name),
                             if index == selected { theme.primary_crossterm() } else { theme.secondary_crossterm() }));
                     } else {
-                        lines.push((if slot == 0 { "No skills found.".into() } else { String::new() }, Color::DarkGrey));
+                        lines.push((if slot == 0 { crate::i18n::tr("No skills found.").into() } else { String::new() }, Color::DarkGrey));
                     }
                 }
                 let current = matching.get(selected);
                 lines.push((current.map(|skill| skill.description.clone()).unwrap_or_else(||
-                    "Place SKILL.md inside a skill folder under .takiza/skills or .agents/skills.".into()), Color::DarkGrey));
+                    crate::i18n::tr("Place SKILL.md inside a skill folder under .takiza/skills or .agents/skills.").into()), Color::DarkGrey));
                 lines.push((current.map(|skill| skill.path.clone()).unwrap_or_default(), theme.secondary_crossterm()));
-                let title = format!("Skills · {} local · {} global", local, skills.len() - local);
-                let hint = format!("{}/{} · ↑↓ · Enter Insert · F5 Rescan · Esc Back", if matching.is_empty() { 0 } else { selected + 1 }, matching.len());
+                let title = crate::i18n::tf!("Skills · {} local · {} global", local, skills.len() - local);
+                let hint = crate::i18n::tf!("{}/{} · ↑↓ · Enter Insert · F5 Rescan · Esc Back", if matching.is_empty() { 0 } else { selected + 1 }, matching.len());
                 panel.draw(ctx, &title, &lines, &hint)?;
             }
-            match pending_event.take().map(Ok).unwrap_or_else(event::read)? {
+            match pending_event.take().map(Ok).unwrap_or_else(crate::cli_ui::read_event_with_background)? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Esc => return Ok(None),
                     KeyCode::Enter => {
@@ -2125,33 +2164,33 @@ pub fn show_interactive_tools(ctx: &ScreenContext) -> std::io::Result<()> {
     let b_color = th.border_crossterm();
     let p_color = th.primary_crossterm();
 
-    let mut out = stdout();
+    let mut out = MenuFrame::default();
     queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
     let _ = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
 
     let tools = [
-        ("read_file", "(path, start, end)", "Reads workspace file with 1-indexed lines"),
-        ("write_file", "(path, content)", "Creates or overwrites files in workspace"),
-        ("edit_file", "(path, target, repl)", "Replaces exact substring chunk in file"),
-        ("list_dir", "(path)", "Lists directory entries with file sizes"),
-        ("find_files", "(pattern, path)", "Recursively searches files by glob/pattern"),
-        ("grep_search", "(query, path)", "Recursively searches text contents inside files"),
-        ("run_command", "(command)", "Executes bash shell commands in workspace sandbox"),
+        ("read_file", "(path, start, end)", crate::i18n::tr("Reads workspace file with 1-indexed lines")),
+        ("write_file", "(path, content)", crate::i18n::tr("Creates or overwrites files in workspace")),
+        ("edit_file", "(path, target, repl)", crate::i18n::tr("Replaces exact substring chunk in file")),
+        ("list_dir", "(path)", crate::i18n::tr("Lists directory entries with file sizes")),
+        ("find_files", "(pattern, path)", crate::i18n::tr("Recursively searches files by glob/pattern")),
+        ("grep_search", "(query, path)", crate::i18n::tr("Recursively searches text contents inside files")),
+        ("run_command", "(command)", crate::i18n::tr("Executes bash shell commands in workspace sandbox")),
     ];
 
     let total_box_height = 1 + 1 + 1 + tools.len() + 1; // 11 lines
     let start_row = term_rows.saturating_sub(total_box_height as u16);
 
     let title = if ctx.branch_tag.is_empty() {
-        "Autonomous Agent Tools & Capabilities".to_string()
+        crate::i18n::tr("Autonomous Agent Tools & Capabilities").to_string()
     } else {
-        format!("Autonomous Agent Tools & Capabilities [{}]", ctx.branch_tag.trim())
+        crate::i18n::tf!("Autonomous Agent Tools & Capabilities [{}]", ctx.branch_tag.trim())
     };
 
     draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
 
     let mut cur_row = start_row + 1;
-    let header_desc = "Takiza Harness provides 7 autonomous tools to inspect and modify code:";
+    let header_desc = crate::i18n::tr("Takiza Harness provides 7 autonomous tools to inspect and modify code:");
     draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[38;2;160;160;165m{}\x1b[0m", header_desc), str_width(header_desc), box_w, b_color)?;
     cur_row += 1;
 
@@ -2165,11 +2204,11 @@ pub fn show_interactive_tools(ctx: &ScreenContext) -> std::io::Result<()> {
         cur_row += 1;
     }
 
-    draw_bottom_box_bottom(&mut out, cur_row, "Press [Enter] or [Esc] to return to chat", box_w, b_color)?;
+    draw_bottom_box_bottom(&mut out, cur_row, crate::i18n::tr("Press [Enter] or [Esc] to return to chat"), box_w, b_color)?;
     out.flush()?;
 
     loop {
-        if let Event::Key(key) = event::read()? {
+        if let Event::Key(key) = crate::cli_ui::read_event_with_background()? {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
@@ -2189,7 +2228,7 @@ pub fn show_interactive_usage(ctx: &ScreenContext, config: &Config) -> std::io::
     let b_color = th.border_crossterm();
     let p_color = th.primary_crossterm();
 
-    let mut out = stdout();
+    let mut out = MenuFrame::default();
     queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
     let _ = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
 
@@ -2197,16 +2236,16 @@ pub fn show_interactive_usage(ctx: &ScreenContext, config: &Config) -> std::io::
     let start_row = term_rows.saturating_sub(total_box_height as u16);
 
     let title = if ctx.branch_tag.is_empty() {
-        "Token & Quota Usage [Mock]".to_string()
+        crate::i18n::tr("Token & Quota Usage [Mock]").to_string()
     } else {
-        format!("Token & Quota Usage [Mock] [{}]", ctx.branch_tag.trim())
+        crate::i18n::tf!("Token & Quota Usage [Mock] [{}]", ctx.branch_tag.trim())
     };
     draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
 
     let mut cur_row = start_row + 1;
 
     // Header intro
-    let intro = "Daily API quotas and token limits breakdown for active modes:";
+    let intro = crate::i18n::tr("Daily API quotas and token limits breakdown for active modes:");
     let intro_trunc = truncate_visible(intro, inner_w);
     let intro_vis = str_width(&intro_trunc);
     draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[38;2;160;160;165m{}\x1b[0m", intro_trunc), intro_vis, box_w, b_color)?;
@@ -2216,18 +2255,18 @@ pub fn show_interactive_usage(ctx: &ScreenContext, config: &Config) -> std::io::
     cur_row += 1;
 
     // 1. Takiza Manual Quota
-    let m_active = if config.mode == crate::theme::AppMode::Manual { " \x1b[1;38;2;40;220;120m[active]\x1b[0m" } else { "" };
-    let m_header_plain = if config.mode == crate::theme::AppMode::Manual { "• Takiza Manual Quota [active]" } else { "• Takiza Manual Quota" };
-    let m_header = format!("\x1b[1;38;2;0;220;255m• Takiza Manual Quota\x1b[0m{}", m_active);
+    let m_active = if config.mode == crate::theme::AppMode::Manual { crate::i18n::tr(" \x1b[1;38;2;40;220;120m[active]\x1b[0m") } else { "" };
+    let m_header_plain = if config.mode == crate::theme::AppMode::Manual { crate::i18n::tr("• Takiza Manual Quota [active]") } else { crate::i18n::tr("• Takiza Manual Quota") };
+    let m_header = crate::i18n::tf!("\x1b[1;38;2;0;220;255m• Takiza Manual Quota\x1b[0m{}", m_active);
     draw_bottom_box_line(&mut out, cur_row, &m_header, str_width(m_header_plain), box_w, b_color)?;
     cur_row += 1;
 
-    let m_bar_plain = "    [██████████░░░░░░░░░░]  520,000 / 1,000,000 tokens (52% used)";
-    let m_bar = format!("    \x1b[38;2;255;195;0m[██████████░░░░░░░░░░]\x1b[0m  \x1b[1;38;2;240;240;245m520,000\x1b[0m \x1b[38;2;140;140;145m/ 1,000,000 tokens (52% used)\x1b[0m");
+    let m_bar_plain = crate::i18n::tr("    [██████████░░░░░░░░░░]  520,000 / 1,000,000 tokens (52% used)");
+    let m_bar = crate::i18n::tf!("    \x1b[38;2;255;195;0m[██████████░░░░░░░░░░]\x1b[0m  \x1b[1;38;2;240;240;245m520,000\x1b[0m \x1b[38;2;140;140;145m/ 1,000,000 tokens (52% used)\x1b[0m");
     draw_bottom_box_line(&mut out, cur_row, &m_bar, str_width(m_bar_plain), box_w, b_color)?;
     cur_row += 1;
 
-    let m_det = "    Limit: 1.0M tokens/day  •  Remaining: 480k (48%)  •  Resets in: 4h 18m";
+    let m_det = crate::i18n::tr("    Limit: 1.0M tokens/day  •  Remaining: 480k (48%)  •  Resets in: 4h 18m");
     let m_det_trunc = truncate_visible(m_det, inner_w);
     let m_det_vis = str_width(&m_det_trunc);
     draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[38;2;130;130;135m{}\x1b[0m", m_det_trunc), m_det_vis, box_w, b_color)?;
@@ -2237,22 +2276,22 @@ pub fn show_interactive_usage(ctx: &ScreenContext, config: &Config) -> std::io::
     cur_row += 1;
 
     // 2. Takiza MoA Quota
-    let moa_active = if config.mode == crate::theme::AppMode::MoA { " \x1b[1;38;2;40;220;120m[active]\x1b[0m" } else { "" };
+    let moa_active = if config.mode == crate::theme::AppMode::MoA { crate::i18n::tr(" \x1b[1;38;2;40;220;120m[active]\x1b[0m") } else { "" };
     let moa_header_plain = if config.mode == crate::theme::AppMode::MoA {
-        "• Takiza MoA Quota [⚡ ~45% Cheaper] [active]"
+        crate::i18n::tr("• Takiza MoA Quota [⚡ ~45% Cheaper] [active]")
     } else {
-        "• Takiza MoA Quota [⚡ ~45% Cheaper]"
+        crate::i18n::tr("• Takiza MoA Quota [⚡ ~45% Cheaper]")
     };
-    let moa_header = format!("\x1b[1;38;2;40;220;120m• Takiza MoA Quota\x1b[0m \x1b[1;38;2;40;220;120m[⚡ ~45% Cheaper]\x1b[0m{}", moa_active);
+    let moa_header = crate::i18n::tf!("\x1b[1;38;2;40;220;120m• Takiza MoA Quota\x1b[0m \x1b[1;38;2;40;220;120m[⚡ ~45% Cheaper]\x1b[0m{}", moa_active);
     draw_bottom_box_line(&mut out, cur_row, &moa_header, str_width(moa_header_plain), box_w, b_color)?;
     cur_row += 1;
 
-    let moa_bar_plain = "    [████░░░░░░░░░░░░░░░░]  210,000 / 1,000,000 tokens (21% used)";
-    let moa_bar = format!("    \x1b[38;2;40;220;120m[████░░░░░░░░░░░░░░░░]\x1b[0m  \x1b[1;38;2;240;240;245m210,000\x1b[0m \x1b[38;2;140;140;145m/ 1,000,000 tokens (21% used)\x1b[0m");
+    let moa_bar_plain = crate::i18n::tr("    [████░░░░░░░░░░░░░░░░]  210,000 / 1,000,000 tokens (21% used)");
+    let moa_bar = crate::i18n::tf!("    \x1b[38;2;40;220;120m[████░░░░░░░░░░░░░░░░]\x1b[0m  \x1b[1;38;2;240;240;245m210,000\x1b[0m \x1b[38;2;140;140;145m/ 1,000,000 tokens (21% used)\x1b[0m");
     draw_bottom_box_line(&mut out, cur_row, &moa_bar, str_width(moa_bar_plain), box_w, b_color)?;
     cur_row += 1;
 
-    let moa_det = "    Limit: 1.0M tokens/day  •  Remaining: 790k (79%)  •  Saved via MoA: ~172k tokens";
+    let moa_det = crate::i18n::tr("    Limit: 1.0M tokens/day  •  Remaining: 790k (79%)  •  Saved via MoA: ~172k tokens");
     let moa_det_trunc = truncate_visible(moa_det, inner_w);
     let moa_det_vis = str_width(&moa_det_trunc);
     draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[38;2;130;130;135m{}\x1b[0m", moa_det_trunc), moa_det_vis, box_w, b_color)?;
@@ -2261,17 +2300,17 @@ pub fn show_interactive_usage(ctx: &ScreenContext, config: &Config) -> std::io::
     draw_bottom_box_divider(&mut out, cur_row, box_w, b_color)?;
     cur_row += 1;
 
-    let footer = format!("  Active mode: {}  •  Daily quotas reset at 00:00 UTC (mock data)", config.mode.name());
+    let footer = crate::i18n::tf!("  Active mode: {}  •  Daily quotas reset at 00:00 UTC (mock data)", config.mode.name());
     let footer_trunc = truncate_visible(&footer, inner_w);
     let footer_vis = str_width(&footer_trunc);
     draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[38;2;160;160;165m{}\x1b[0m", footer_trunc), footer_vis, box_w, b_color)?;
     cur_row += 1;
 
-    draw_bottom_box_bottom(&mut out, cur_row, "Press [Enter] or [Esc] to return to chat", box_w, b_color)?;
+    draw_bottom_box_bottom(&mut out, cur_row, crate::i18n::tr("Press [Enter] or [Esc] to return to chat"), box_w, b_color)?;
     out.flush()?;
 
     loop {
-        if let Event::Key(key) = event::read()? {
+        if let Event::Key(key) = crate::cli_ui::read_event_with_background()? {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
@@ -2349,12 +2388,12 @@ pub fn rewind_menu(ctx: &ScreenContext, title: &str, details: &[String], choices
             }
             if crate::cli_ui::terminal_is_small() { crate::cli_ui::render_small_terminal(); }
             else {
-                let hint = if choices.is_empty() { "Esc Back".to_string() }
-                    else if details.is_empty() { format!("{}/{} · ↑↓ · Enter Review · Esc Back", selected + 1, choices.len()) }
-                    else { "↑↓ · Enter Confirm · PgUp/PgDn Files · Esc Back".to_string() };
+                let hint = if choices.is_empty() { crate::i18n::tr("Esc Back").to_string() }
+                    else if details.is_empty() { crate::i18n::tf!("{}/{} · ↑↓ · Enter Review · Esc Back", selected + 1, choices.len()) }
+                    else { crate::i18n::tr("↑↓ · Enter Confirm · PgUp/PgDn Files · Esc Back").to_string() };
                 panel.draw(ctx, title, &lines, &hint)?;
             }
-            match event::read()? {
+            match crate::cli_ui::read_event_with_background()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Esc => return Ok(None),
                     KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => return Ok(None),

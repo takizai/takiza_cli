@@ -41,9 +41,40 @@
 - `/resume <id>`: продолжение ранее сохраненной сессии.
 - `/reset`: сброс истории и начало новой чистой сессии.
 
+### Язык интерфейса и настройки
+
+TUI поддерживает **English**, **Русский** и **简体中文** (китайский, упрощённое письмо).
+На первом запуске онбординг предлагает выбрать язык, затем тему и принять соглашение.
+Команда `/config` открывает общее меню настроек: язык, тема, провайдер, модель,
+режим работы, глубина рассуждений и подтверждение команд. Язык применяется сразу
+и сохраняется между запусками; для старых конфигураций по умолчанию используется English.
+
+Настройки сохраняются в `.takiza/config.json`, если такой файл уже есть в рабочем
+каталоге, иначе — в `~/.config/takiza/config.json`. Поле `language` принимает `en`,
+`ru` или `zh`. Переписка, исходный код и вывод команд сохраняют исходный язык.
+Переводы интерфейса находятся в `src/locales/ui.json`.
+
+**English:** Select your interface language during onboarding or via `/config`.
+The same menu includes theme, provider, model, mode, reasoning effort, and command
+approval. Your language is saved and applied immediately; conversation content
+and tool output keep their original text.
+
+**简体中文：** 可在首次设置或 `/config` 中选择界面语言。同一菜单还可设置主题、
+服务商、模型、运行模式、推理强度和命令权限。语言设置立即生效并自动保存；
+会话内容、源代码和命令输出保留原文。
+
 ### ⌨️ Слэш-команды и горячие клавиши
 
-| `/theme` | Интерактивный выбор и предпросмотр визуальной темы оформления |
+После успешных `write_file` и `edit_file` чат показывает короткое превью изменений с цветами выбранной темы. `Ctrl+O` раскрывает полный diff; изменения через `run_command` не создают такое превью.
+
+В теме `evening-irkutsk` на свободных участках фона идёт мягкий снегопад.
+Анимация не перекрывает текст и ввод, замирает при выделении текста и не попадает
+в буфер обмена. Она работает в чате, меню настроек и онбординге.
+Кадры обновляются примерно 60 раз в секунду; снежинки двигаются с разной скоростью,
+заметным диагональным сносом и широким покачиванием. Используются снежинки
+`❄︎`, `❅`, `❆`; плавное изменение яркости смягчает переходы между соседними ячейками.
+
+| `/theme` | Выбор с предпросмотром: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk. Можно указать имя напрямую: `/theme ocean` |
 | `/mode` | Переключение режима работы (`Takiza Manual` или `Takiza MoA`) |
 | `/help` | Справка по всем командам |
 | `/clear` | Начать новый чат, сбросить контекст, историю и название |
@@ -155,3 +186,33 @@ GitHub Actions автоматически соберет релизные арх
 
 Release workflow получает полную историю и собирает выбранный тег, в том числе
 при ручном запуске через `workflow_dispatch`.
+
+
+### Web search
+
+The agent has a `web_search` tool in its normal tool loop. It searches when asked
+explicitly or when information is unfamiliar, uncertain or likely outdated.
+Arguments: `query` (required) and `num_results` (optional, 1–10, default 5).
+Results contain titles, source URLs and short snippets, not full page contents.
+The model is instructed to cite source URLs and report failed verification honestly.
+
+Search appears as ordinary command/tool execution, with compact output and the
+usual expansion control. Stop cancels in-flight requests. Requests have a 20-second
+outer deadline, a 15-second HTTP timeout and a 1 MiB response limit. Search uses
+the configured proxy and never sends the model API key to a search provider.
+
+Set `TAVILY_API_KEY` in the environment or loaded `.env` to use Tavily Search:
+
+```dotenv
+TAVILY_API_KEY=tvly-your-key
+```
+
+Create a key at https://app.tavily.com/ and restart Takiza after configuring it.
+Tavily uses `search_depth=basic` and disables automatic parameter selection,
+so each search consumes one API credit. Results include titles, URLs and snippets;
+Takiza does not request generated answers, images or raw page contents.
+
+Provider priority is Tavily, then `BRAVE_SEARCH_API_KEY` (Brave Search API), then
+Bing RSS when neither key is configured. Failed authenticated searches are reported
+without silently switching providers. Provider availability, limits and applicable usage terms
+still apply; provider errors appear as ordinary tool failures.

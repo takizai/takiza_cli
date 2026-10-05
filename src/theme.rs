@@ -14,6 +14,18 @@ pub enum Theme {
     Nord,       // Frost Arctic Blue/Cyan
     #[serde(alias = "monochrome")]
     Monochrome, // Clean Silver/White
+    #[serde(alias = "dracula")]
+    Dracula,
+    #[serde(alias = "rose")]
+    Rose,
+    #[serde(alias = "ocean")]
+    Ocean,
+    #[serde(alias = "sakura")]
+    Sakura,
+    #[serde(alias = "solarized")]
+    Solarized,
+    #[serde(alias = "evening-irkutsk", alias = "evening_irkutsk", alias = "irkutsk")]
+    EveningIrkutsk,
 }
 
 impl Default for Theme {
@@ -30,26 +42,44 @@ impl Theme {
             Theme::Emerald,
             Theme::Nord,
             Theme::Monochrome,
+            Theme::Dracula,
+            Theme::Rose,
+            Theme::Ocean,
+            Theme::Sakura,
+            Theme::Solarized,
+            Theme::EveningIrkutsk,
         ]
     }
 
     pub fn name(&self) -> &'static str {
         match self {
-            Theme::Amber => "Amber (Takiza Gold)",
-            Theme::Cyberpunk => "Cyberpunk (Neon Pink & Cyan)",
-            Theme::Emerald => "Emerald (Matrix Green)",
-            Theme::Nord => "Nord (Frost Arctic Blue)",
-            Theme::Monochrome => "Monochrome (Minimalist White)",
+            Theme::Amber => crate::i18n::tr("Amber (Takiza Gold)"),
+            Theme::Cyberpunk => crate::i18n::tr("Cyberpunk (Neon Pink & Cyan)"),
+            Theme::Emerald => crate::i18n::tr("Emerald (Matrix Green)"),
+            Theme::Nord => crate::i18n::tr("Nord (Frost Arctic Blue)"),
+            Theme::Monochrome => crate::i18n::tr("Monochrome (Minimalist White)"),
+            Theme::Dracula => crate::i18n::tr("Dracula (Violet & Mint)"),
+            Theme::Rose => crate::i18n::tr("Rose (Warm Coral)"),
+            Theme::Ocean => crate::i18n::tr("Ocean (Deep Sea Blue)"),
+            Theme::Sakura => crate::i18n::tr("Sakura (Soft Blossom)"),
+            Theme::Solarized => crate::i18n::tr("Solarized (Golden Teal)"),
+            Theme::EveningIrkutsk => crate::i18n::tr("Evening Irkutsk (Angara Lights)"),
         }
     }
 
     pub fn description(&self) -> &'static str {
         match self {
-            Theme::Amber => "Warm golden yellow accents with deep charcoal contrast",
-            Theme::Cyberpunk => "Vibrant neon magenta and electric cyan aesthetic",
-            Theme::Emerald => "Classic high-contrast terminal phosphor green",
-            Theme::Nord => "Calm Scandinavian winter palette with cool arctic cyan",
-            Theme::Monochrome => "Clean, distraction-free greyscale minimalism",
+            Theme::Amber => crate::i18n::tr("Warm golden yellow accents with deep charcoal contrast"),
+            Theme::Cyberpunk => crate::i18n::tr("Vibrant neon magenta and electric cyan aesthetic"),
+            Theme::Emerald => crate::i18n::tr("Classic high-contrast terminal phosphor green"),
+            Theme::Nord => crate::i18n::tr("Calm Scandinavian winter palette with cool arctic cyan"),
+            Theme::Monochrome => crate::i18n::tr("Clean, distraction-free greyscale minimalism"),
+            Theme::Dracula => crate::i18n::tr("Violet accents with soft mint borders"),
+            Theme::Rose => crate::i18n::tr("Warm coral accents with muted rose borders"),
+            Theme::Ocean => crate::i18n::tr("Bright ocean blue with turquoise borders"),
+            Theme::Sakura => crate::i18n::tr("Soft blossom pink with lavender borders"),
+            Theme::Solarized => crate::i18n::tr("Golden accents with balanced teal borders"),
+            Theme::EveningIrkutsk => crate::i18n::tr("Warm amber streetlights, muted lilac activity and icy blue Angara borders"),
         }
     }
 
@@ -61,6 +91,12 @@ impl Theme {
             Theme::Emerald => "\x1b[38;2;0;255;128m",
             Theme::Nord => "\x1b[38;2;136;192;208m",
             Theme::Monochrome => "\x1b[38;2;240;240;245m",
+            Theme::Dracula => "\x1b[38;2;189;147;249m",
+            Theme::Rose => "\x1b[38;2;255;128;145m",
+            Theme::Ocean => "\x1b[38;2;80;180;255m",
+            Theme::Sakura => "\x1b[38;2;245;170;215m",
+            Theme::Solarized => "\x1b[38;2;220;185;75m",
+            Theme::EveningIrkutsk => "\x1b[38;2;240;183;105m",
         }
     }
 
@@ -71,6 +107,12 @@ impl Theme {
             Theme::Emerald => "\x1b[38;2;40;180;100m",
             Theme::Nord => "\x1b[38;2;94;129;172m",
             Theme::Monochrome => "\x1b[38;2;160;160;165m",
+            Theme::Dracula => "\x1b[38;2;80;200;160m",
+            Theme::Rose => "\x1b[38;2;205;145;155m",
+            Theme::Ocean => "\x1b[38;2;60;190;195m",
+            Theme::Sakura => "\x1b[38;2;180;150;215m",
+            Theme::Solarized => "\x1b[38;2;90;175;170m",
+            Theme::EveningIrkutsk => "\x1b[38;2;169;151;193m",
         }
     }
 
@@ -81,6 +123,12 @@ impl Theme {
             Theme::Emerald => "\x1b[48;2;16;32;24m",
             Theme::Nord => "\x1b[48;2;46;52;64m",
             Theme::Monochrome => "\x1b[48;2;32;32;34m",
+            Theme::Dracula => "\x1b[48;2;40;35;55m",
+            Theme::Rose => "\x1b[48;2;45;28;34m",
+            Theme::Ocean => "\x1b[48;2;20;32;45m",
+            Theme::Sakura => "\x1b[48;2;40;30;43m",
+            Theme::Solarized => "\x1b[48;2;28;38;38m",
+            Theme::EveningIrkutsk => "\x1b[48;2;27;35;48m",
         }
     }
 
@@ -91,6 +139,12 @@ impl Theme {
             Theme::Emerald => crossterm::style::Color::Rgb { r: 0, g: 255, b: 128 },
             Theme::Nord => crossterm::style::Color::Rgb { r: 136, g: 192, b: 208 },
             Theme::Monochrome => crossterm::style::Color::Rgb { r: 240, g: 240, b: 245 },
+            Theme::Dracula => crossterm::style::Color::Rgb { r: 189, g: 147, b: 249 },
+            Theme::Rose => crossterm::style::Color::Rgb { r: 255, g: 128, b: 145 },
+            Theme::Ocean => crossterm::style::Color::Rgb { r: 80, g: 180, b: 255 },
+            Theme::Sakura => crossterm::style::Color::Rgb { r: 245, g: 170, b: 215 },
+            Theme::Solarized => crossterm::style::Color::Rgb { r: 220, g: 185, b: 75 },
+            Theme::EveningIrkutsk => crossterm::style::Color::Rgb { r: 240, g: 183, b: 105 },
         }
     }
 
@@ -102,6 +156,12 @@ impl Theme {
             Theme::Emerald => crossterm::style::Color::Rgb { r: 40, g: 180, b: 100 },
             Theme::Nord => crossterm::style::Color::Rgb { r: 94, g: 129, b: 172 },
             Theme::Monochrome => crossterm::style::Color::Rgb { r: 160, g: 160, b: 165 },
+            Theme::Dracula => crossterm::style::Color::Rgb { r: 80, g: 200, b: 160 },
+            Theme::Rose => crossterm::style::Color::Rgb { r: 205, g: 145, b: 155 },
+            Theme::Ocean => crossterm::style::Color::Rgb { r: 60, g: 190, b: 195 },
+            Theme::Sakura => crossterm::style::Color::Rgb { r: 180, g: 150, b: 215 },
+            Theme::Solarized => crossterm::style::Color::Rgb { r: 90, g: 175, b: 170 },
+            Theme::EveningIrkutsk => crossterm::style::Color::Rgb { r: 169, g: 151, b: 193 },
         }
     }
 
@@ -112,6 +172,44 @@ impl Theme {
             Theme::Emerald => crossterm::style::Color::Rgb { r: 40, g: 180, b: 100 },
             Theme::Nord => crossterm::style::Color::Rgb { r: 94, g: 129, b: 172 },
             Theme::Monochrome => crossterm::style::Color::Rgb { r: 140, g: 140, b: 145 },
+            Theme::Dracula => crossterm::style::Color::Rgb { r: 80, g: 200, b: 160 },
+            Theme::Rose => crossterm::style::Color::Rgb { r: 205, g: 145, b: 155 },
+            Theme::Ocean => crossterm::style::Color::Rgb { r: 60, g: 190, b: 195 },
+            Theme::Sakura => crossterm::style::Color::Rgb { r: 180, g: 150, b: 215 },
+            Theme::Solarized => crossterm::style::Color::Rgb { r: 90, g: 175, b: 170 },
+            Theme::EveningIrkutsk => crossterm::style::Color::Rgb { r: 133, g: 183, b: 205 },
+        }
+    }
+
+    pub fn diff_colors_ansi(&self) -> (&'static str, &'static str) {
+        match self {
+            Theme::Amber => ("\x1b[38;2;140;215;120m", "\x1b[38;2;245;135;105m"),
+            Theme::Cyberpunk => ("\x1b[38;2;0;240;200m", "\x1b[38;2;255;100;175m"),
+            Theme::Emerald => ("\x1b[38;2;100;255;155m", "\x1b[38;2;245;130;115m"),
+            Theme::Nord => ("\x1b[38;2;163;190;140m", "\x1b[38;2;191;97;106m"),
+            Theme::Monochrome => ("\x1b[38;2;225;225;230m", "\x1b[38;2;155;155;165m"),
+            Theme::Dracula => ("\x1b[38;2;80;250;123m", "\x1b[38;2;255;85;85m"),
+            Theme::Rose => ("\x1b[38;2;150;215;170m", "\x1b[38;2;255;128;145m"),
+            Theme::Ocean => ("\x1b[38;2;90;220;190m", "\x1b[38;2;250;145;120m"),
+            Theme::Sakura => ("\x1b[38;2;170;220;180m", "\x1b[38;2;245;145;190m"),
+            Theme::Solarized => ("\x1b[38;2;160;190;70m", "\x1b[38;2;235;115;100m"),
+            Theme::EveningIrkutsk => ("\x1b[38;2;119;201;184m", "\x1b[38;2;220;139;119m"),
+        }
+    }
+
+    pub fn diff_backgrounds_ansi(&self) -> (&'static str, &'static str) {
+        match self {
+            Theme::Amber => ("\x1b[48;2;32;52;30m", "\x1b[48;2;60;32;25m"),
+            Theme::Cyberpunk => ("\x1b[48;2;14;50;45m", "\x1b[48;2;60;23;43m"),
+            Theme::Emerald => ("\x1b[48;2;20;55;32m", "\x1b[48;2;55;29;25m"),
+            Theme::Nord => ("\x1b[48;2;45;56;42m", "\x1b[48;2;60;36;42m"),
+            Theme::Monochrome => ("\x1b[48;2;52;52;57m", "\x1b[48;2;36;36;41m"),
+            Theme::Dracula => ("\x1b[48;2;23;55;36m", "\x1b[48;2;63;28;35m"),
+            Theme::Rose => ("\x1b[48;2;32;51;40m", "\x1b[48;2;63;32;40m"),
+            Theme::Ocean => ("\x1b[48;2;21;50;46m", "\x1b[48;2;60;34;29m"),
+            Theme::Sakura => ("\x1b[48;2;38;52;42m", "\x1b[48;2;59;33;47m"),
+            Theme::Solarized => ("\x1b[48;2;41;50;26m", "\x1b[48;2;58;32;26m"),
+            Theme::EveningIrkutsk => ("\x1b[48;2;27;49;49m", "\x1b[48;2;57;35;38m"),
         }
     }
 
@@ -123,6 +221,12 @@ impl Theme {
             "emerald" | "green" | "matrix" | "3" => Some(Theme::Emerald),
             "nord" | "blue" | "arctic" | "frost" | "4" => Some(Theme::Nord),
             "monochrome" | "mono" | "white" | "silver" | "gray" | "grey" | "5" => Some(Theme::Monochrome),
+            "dracula" | "6" => Some(Theme::Dracula),
+            "rose" | "7" => Some(Theme::Rose),
+            "ocean" | "8" => Some(Theme::Ocean),
+            "sakura" | "9" => Some(Theme::Sakura),
+            "solarized" | "10" => Some(Theme::Solarized),
+            "evening-irkutsk" | "evening_irkutsk" | "evening irkutsk" | "irkutsk" | "11" => Some(Theme::EveningIrkutsk),
             _ => None,
         }
     }
@@ -162,8 +266,8 @@ impl AppMode {
 
     pub fn description(&self) -> &'static str {
         match self {
-            AppMode::Manual => "Manual model selection from frontier LLM catalog",
-            AppMode::MoA => "Mixture of Agents: smart auto-routing (~45% lower token costs)",
+            AppMode::Manual => crate::i18n::tr("Manual model selection from frontier LLM catalog"),
+            AppMode::MoA => crate::i18n::tr("Mixture of Agents: smart auto-routing (~45% lower token costs)"),
         }
     }
 
@@ -190,6 +294,8 @@ pub struct UserPreferences {
     pub agreed_to_terms: bool,
     pub terms_version: String,
     pub theme: Theme,
+    #[serde(default)]
+    pub language: crate::i18n::Language,
     pub accepted_at: Option<String>,
     #[serde(default)]
     pub provider: Option<String>,
@@ -203,6 +309,8 @@ pub struct UserPreferences {
     pub mode: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default)]
+    pub auto_approve: Option<bool>,
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
@@ -213,6 +321,7 @@ impl Default for UserPreferences {
             agreed_to_terms: false,
             terms_version: "1.0.0".to_string(),
             theme: Theme::Amber,
+            language: crate::i18n::Language::English,
             accepted_at: None,
             provider: None,
             model: None,
@@ -220,6 +329,7 @@ impl Default for UserPreferences {
             api_key: None,
             mode: None,
             effort: None,
+            auto_approve: None,
             extra: Default::default(),
         }
     }

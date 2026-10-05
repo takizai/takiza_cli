@@ -20,11 +20,55 @@ pub struct ToolCall {
 pub enum ToolOutputEvent {
     Started { name: String, args: String },
     Log(String),
+    FileDiff(String),
     Finished { name: String, result: String, is_error: bool },
+}
+
+fn file_change_diff(path: &str, before: &str, after: &str) -> Option<String> {
+    if before == after { return None; }
+    let old: Vec<_> = before.split_inclusive('\n').collect();
+    let new: Vec<_> = after.split_inclusive('\n').collect();
+    let prefix = old.iter().zip(&new).take_while(|(left, right)| left == right).count();
+    let suffix = old[prefix..].iter().rev().zip(new[prefix..].iter().rev())
+        .take_while(|(left, right)| left == right).count();
+    let start = prefix.saturating_sub(3);
+    let old_end = old.len() - suffix;
+    let new_end = new.len() - suffix;
+    let context = suffix.min(3);
+    let old_count = old_end + context - start;
+    let new_count = new_end + context - start;
+    let mut diff = format!("--- {path}\n+++ {path}\n@@ -{},{} +{},{} @@\n",
+        if old_count == 0 { start } else { start + 1 }, old_count,
+        if new_count == 0 { start } else { start + 1 }, new_count);
+    let mut push_line = |prefix: char, line: &str| {
+        diff.push(prefix);
+        diff.push_str(line);
+        if !line.ends_with('\n') { diff.push_str("\n\\ No newline at end of file\n"); }
+    };
+    for line in &old[start..prefix] { push_line(' ', line); }
+    for line in &old[prefix..old_end] { push_line('-', line); }
+    for line in &new[prefix..new_end] { push_line('+', line); }
+    for line in &old[old_end..old_end + context] { push_line(' ', line); }
+    Some(diff)
 }
 
 pub fn get_tool_definitions() -> Value {
     json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the internet for current or unfamiliar information. Use when the user asks to search/browse online, or your knowledge is insufficient or may be outdated. Returns source titles, URLs and snippets, not full pages.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Search terms, optionally with site:domain filters." },
+                        "num_results": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Results to return; default 5." }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
         {
             "type": "function",
             "function": {
@@ -192,7 +236,7 @@ pub fn get_tool_definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "ask_question",
-                "description": "Presents an interactive questionnaire or clarifying question to the user in terminal/UI. Use this when you need design feedback, user preferences (visual tone, tech stack, architectures, language), or need to resolve multiple valid approaches before proceeding. Supports single choice, multiple choice, custom user input, or open-ended questions.",
+                "description": "Presents an interactive questionnaire in terminal/UI. Use when missing information materially changes the intended result or an action requires authorization beyond the user's request. Reuse prior answers and resolve routine design, stack, and implementation choices yourself; several valid approaches alone do not require a question. Ask concise questions together and continue independent work while waiting. Supports single choice, multiple choice, custom input, and open-ended questions.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -241,11 +285,17 @@ pub fn get_tool_definitions() -> Value {
 
 pub struct ToolExecutor {
     pub workspace_root: PathBuf,
+    web_proxy: Option<String>,
 }
 
 impl ToolExecutor {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        Self { workspace_root, web_proxy: None }
+    }
+
+    pub fn with_web_proxy(mut self, proxy: Option<String>) -> Self {
+        self.web_proxy = proxy;
+        self
     }
 
     pub fn resolve_path(&self, p: &str) -> PathBuf {
@@ -276,7 +326,18 @@ impl ToolExecutor {
                 .await;
         }
 
+        let previous_text = if matches!(name, "write_file" | "edit_file") {
+            args["path"].as_str().and_then(|path| {
+                match fs::read_to_string(self.resolve_path(path)) {
+                    Ok(text) => Some(text),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(String::new()),
+                    Err(_) => None,
+                }
+            })
+        } else { None };
+
         let result = match name {
+            "web_search" => crate::web_search::search(&args, self.web_proxy.as_deref(), cancel_token).await,
             "read_file" => self.exec_read_file(&args),
             "write_file" => self.exec_write_file(&args),
             "edit_file" => self.exec_edit_file(&args),
@@ -299,6 +360,15 @@ impl ToolExecutor {
                 Ok(msg) => (false, msg.clone()),
                 Err(err) => (true, err.clone()),
             };
+            if !is_err {
+                if let (Some(before), Some(path)) = (previous_text, args["path"].as_str()) {
+                    if let Ok(after) = fs::read_to_string(self.resolve_path(path)) {
+                        if let Some(diff) = file_change_diff(path, &before, &after) {
+                            let _ = tx.send(ToolOutputEvent::FileDiff(diff)).await;
+                        }
+                    }
+                }
+            }
             let _ = tx
                 .send(ToolOutputEvent::Finished {
                     name: name.to_string(),
@@ -812,6 +882,18 @@ impl ToolExecutor {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn web_search_is_registered_and_uses_normal_tool_events() {
+        let definitions = get_tool_definitions();
+        let search = definitions.as_array().unwrap().iter().find(|tool| tool["function"]["name"] == "web_search").unwrap();
+        assert_eq!(search["function"]["parameters"]["required"], json!(["query"]));
+        let executor = ToolExecutor::new(std::env::temp_dir());
+        let (tx, mut rx) = mpsc::channel(10);
+        assert!(executor.execute("web_search", r#"{"query":" "}"#, Some(tx), None).await.is_err());
+        assert!(matches!(rx.recv().await, Some(ToolOutputEvent::Started { name, .. }) if name == "web_search"));
+        assert!(matches!(rx.recv().await, Some(ToolOutputEvent::Finished { name, is_error: true, .. }) if name == "web_search"));
+    }
+
     #[test]
     fn test_find_files_and_grep() {
         let root = PathBuf::from(".");
@@ -832,4 +914,3 @@ mod tests {
         assert!(grep_out.contains("Cargo.toml"));
     }
 }
-
