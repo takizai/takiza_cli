@@ -29,6 +29,9 @@ jobs:
       - name: Run unit tests
         run: cargo test --verbose
 
+      - name: Test npm launcher
+        run: node --test npm/tests/launcher.cjs
+
       - name: Check TUI activity and rendering
         run: |
           cargo build
@@ -38,3 +41,4 @@ jobs:
           python3 tests/tui_input_pty.py target/debug/takiza
           python3 tests/tui_images_pty.py target/debug/takiza
           python3 tests/tui_questions_pty.py target/debug/takiza
+          python3 tests/tui_npm_pty.py target/debug/takiza

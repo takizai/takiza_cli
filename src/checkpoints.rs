@@ -3,6 +3,25 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, io::{Read, Write}, path::{Component, Path, PathBuf}};
 
+struct CaptureControl {
+    cancel: tokio_util::sync::CancellationToken,
+    deadline: std::time::Instant,
+}
+
+impl CaptureControl {
+    fn check(&self) -> Result<()> {
+        anyhow::ensure!(!self.cancel.is_cancelled(), "Checkpoint cancelled");
+        anyhow::ensure!(std::time::Instant::now() < self.deadline,
+            "Automatic checkpoint exceeded 10 seconds; continuing without a restore point");
+        Ok(())
+    }
+}
+
+fn check_capture(control: Option<&CaptureControl>) -> Result<()> {
+    if let Some(control) = control { control.check()?; }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Entry {
     Directory,
@@ -45,10 +64,16 @@ fn validate(point: &Checkpoint) -> Result<()> {
     Ok(())
 }
 fn scan(workspace: &Path) -> Result<BTreeMap<PathBuf, Entry>> {
+    scan_controlled(workspace, None)
+}
+
+fn scan_controlled(workspace: &Path, control: Option<&CaptureControl>) -> Result<BTreeMap<PathBuf, Entry>> {
     let mut entries = BTreeMap::new();
     let mut pending = vec![PathBuf::new()];
     while let Some(parent) = pending.pop() {
+        check_capture(control)?;
         for item in fs::read_dir(workspace.join(&parent)).with_context(|| format!("Cannot read {}", parent.display()))? {
+            check_capture(control)?;
             let item = item?;
             let path = parent.join(item.file_name());
             if excluded(&path) { continue; }
@@ -70,12 +95,17 @@ fn scan(workspace: &Path) -> Result<BTreeMap<PathBuf, Entry>> {
     Ok(entries)
 }
 fn same_contents(a: &Path, b: &Path) -> Result<bool> {
+    same_contents_controlled(a, b, None)
+}
+
+fn same_contents_controlled(a: &Path, b: &Path, control: Option<&CaptureControl>) -> Result<bool> {
     if fs::metadata(a)?.len() != fs::metadata(b)?.len() { return Ok(false); }
     let mut a = fs::File::open(a)?;
     let mut b = fs::File::open(b)?;
     let mut left = [0u8; 65536];
     let mut right = [0u8; 65536];
     loop {
+        check_capture(control)?;
         let count = a.read(&mut left)?;
         if count == 0 { return Ok(true); }
         b.read_exact(&mut right[..count])?;
@@ -88,8 +118,32 @@ fn capture(workspace: &Path, session_id: &str, label: &str) -> Result<Checkpoint
     capture_conversation(workspace, session_id, label, None)
 }
 
+#[cfg(test)]
 pub fn capture_session(workspace: &Path, session: &crate::session::Session, label: &str) -> Result<Checkpoint> {
     capture_conversation(workspace, &session.id, label, Some(session.clone()))
+}
+
+pub fn capture_session_cancellable(workspace: &Path, session: &crate::session::Session, label: &str,
+    cancel: tokio_util::sync::CancellationToken) -> Result<Checkpoint> {
+    let control = CaptureControl { cancel,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(10) };
+    capture_controlled(workspace, &session.id, label, Some(session.clone()), Some(&control))
+}
+
+fn copy_controlled(source: &Path, destination: &Path, control: Option<&CaptureControl>) -> Result<()> {
+    if control.is_none() { fs::copy(source, destination)?; return Ok(()); }
+    let mut input = fs::File::open(source)?;
+    let permissions = input.metadata()?.permissions();
+    let mut output = fs::File::create(destination)?;
+    let mut bytes = [0u8; 65536];
+    loop {
+        check_capture(control)?;
+        let count = input.read(&mut bytes)?;
+        if count == 0 { break; }
+        output.write_all(&bytes[..count])?;
+    }
+    output.set_permissions(permissions)?;
+    Ok(())
 }
 
 pub fn conversation_at(point: &Checkpoint, current: &crate::session::Session) -> Result<crate::session::Session> {
@@ -114,12 +168,17 @@ pub fn conversation_at(point: &Checkpoint, current: &crate::session::Session) ->
 }
 
 fn capture_conversation(workspace: &Path, session_id: &str, label: &str, conversation: Option<crate::session::Session>) -> Result<Checkpoint> {
+    capture_controlled(workspace, session_id, label, conversation, None)
+}
+
+fn capture_controlled(workspace: &Path, session_id: &str, label: &str, conversation: Option<crate::session::Session>,
+    control: Option<&CaptureControl>) -> Result<Checkpoint> {
     let conversation = conversation.map(|mut session| {
         session.history.retain(|item| !matches!(item, crate::cli_ui::HistoryItem::ToolLog(text) if text.starts_with("⏳ Queued #")));
         session
     });
     let workspace = workspace.canonicalize()?;
-    let entries = scan(&workspace)?;
+    let entries = scan_controlled(&workspace, control)?;
     let now = chrono::Local::now();
     let point = Checkpoint { format_version: 1, id: now.format("%Y%m%d_%H%M%S_%9f").to_string(),
         created_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -130,6 +189,7 @@ fn capture_conversation(workspace: &Path, session_id: &str, label: &str, convers
     fs::create_dir_all(&snapshot)?;
     let result = (|| -> Result<()> {
         for (path, entry) in &point.entries {
+            check_capture(control)?;
             if matches!(entry, Entry::File { .. }) {
                 let destination = snapshot.join(path);
                 fs::create_dir_all(destination.parent().context("Missing snapshot parent")?)?;
@@ -138,11 +198,12 @@ fn capture_conversation(workspace: &Path, session_id: &str, label: &str, convers
                     let old = files(&workspace, previous).join(path);
                     matches!(previous.entries.get(path), Some(Entry::File { .. }))
                         && fs::symlink_metadata(&old).is_ok_and(|metadata| metadata.is_file())
-                        && same_contents(&workspace.join(path), &old).unwrap_or(false) && fs::hard_link(&old, &destination).is_ok()
+                        && same_contents_controlled(&workspace.join(path), &old, control)? && fs::hard_link(&old, &destination).is_ok()
                 } else { false };
-                if !linked { fs::copy(workspace.join(path), &destination)?; }
+                if !linked { copy_controlled(&workspace.join(path), &destination, control)?; }
             }
         }
+        check_capture(control)?;
         let metadata = directory(&workspace).join(format!("{}.json", point.id));
         let temporary = metadata.with_extension("tmp");
         fs::File::create(&temporary)?.write_all(&serde_json::to_vec_pretty(&point)?)?;
@@ -151,6 +212,7 @@ fn capture_conversation(workspace: &Path, session_id: &str, label: &str, convers
     })();
     if let Err(error) = result {
         let _ = fs::remove_dir_all(directory(&workspace).join(&point.id));
+        let _ = fs::remove_file(directory(&workspace).join(format!("{}.tmp", point.id)));
         return Err(error);
     }
     Ok(point)
@@ -291,6 +353,37 @@ fn restore_entries(workspace: &Path, point: &Checkpoint, current: &BTreeMap<Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_or_expired_capture_never_publishes_a_restore_point() {
+        let workspace = Workspace::new();
+        workspace.write("file", b"must stay unchanged");
+        let session = crate::session::Session::new("test-model".into());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        assert!(capture_session_cancellable(&workspace.0, &session, "prompt", cancel).is_err());
+        let control = CaptureControl { cancel: tokio_util::sync::CancellationToken::new(),
+            deadline: std::time::Instant::now() };
+        assert!(capture_controlled(&workspace.0, &session.id, "prompt", Some(session.clone()), Some(&control)).is_err());
+        assert!(list(&workspace.0, &session.id).unwrap().is_empty());
+        assert!(!directory(&workspace.0).exists());
+        assert_eq!(fs::read(workspace.0.join("file")).unwrap(), b"must stay unchanged");
+    }
+
+    #[test]
+    fn cancellable_capture_preserves_files_and_can_be_restored() {
+        let workspace = Workspace::new();
+        workspace.write("file", b"before");
+        let session = crate::session::Session::new("test-model".into());
+        let point = capture_session_cancellable(&workspace.0, &session, "prompt",
+            tokio_util::sync::CancellationToken::new()).unwrap();
+        let next = capture_session_cancellable(&workspace.0, &session, "next prompt",
+            tokio_util::sync::CancellationToken::new()).unwrap();
+        workspace.write("file", b"after");
+        assert_eq!(fs::read(files(&workspace.0, &next).join("file")).unwrap(), b"before");
+        restore_session(&workspace.0, &point, &session).unwrap();
+        assert_eq!(fs::read(workspace.0.join("file")).unwrap(), b"before");
+    }
     use crate::{cli_ui::HistoryItem, llm::ChatMessage, session::Session};
     struct Workspace(PathBuf);
     impl Workspace {

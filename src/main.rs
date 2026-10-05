@@ -1130,11 +1130,6 @@ async fn main() -> anyhow::Result<()> {
         conversation.messages = agent.lock().await.get_messages().to_vec();
         conversation.history = history.lock().unwrap().clone();
         let label = line.clone();
-        let capture = tokio::task::spawn_blocking(move || checkpoints::capture_session(&workspace, &conversation, &label)).await;
-        let error = match capture { Ok(Ok(_)) => None, Ok(Err(error)) => Some(format!("{error:#}")), Err(error) => Some(error.to_string()) };
-        if let Some(error) = error {
-            history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(format!("Checkpoint unavailable: {error}")));
-        }
 
         cli_ui::scroll_history(i32::MIN);
         // Autonomous AI Agent Execution
@@ -1188,6 +1183,20 @@ async fn main() -> anyhow::Result<()> {
             })));
         }
         let agent_task = tokio::spawn(async move {
+            // Keep the editor, spinner and cancellation alive while scanning and
+            // copying the workspace. Previously Enter blocked the UI here.
+            let checkpoint_cancel = cancel_token_clone.clone();
+            let capture = tokio::task::spawn_blocking(move ||
+                checkpoints::capture_session_cancellable(&workspace, &conversation, &label, checkpoint_cancel)).await;
+            if cancel_token_clone.is_cancelled() {
+                let _ = event_tx.send(AgentEvent::Interrupted).await;
+                let _ = event_tx.send(AgentEvent::Finished).await;
+                return;
+            }
+            let error = match capture { Ok(Ok(_)) => None, Ok(Err(error)) => Some(format!("{error:#}")), Err(error) => Some(error.to_string()) };
+            if let Some(error) = error {
+                let _ = event_tx.send(AgentEvent::ToolLog(format!("Checkpoint unavailable: {error}"))).await;
+            }
             let mut locked = agent_clone.lock().await;
             locked
                 .handle_user_input(line_clone, event_tx, cancel_token_clone)

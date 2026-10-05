@@ -1,0 +1,48 @@
+{
+  "name": "takiza",
+  "version": "0.1.3",
+  "description": "Takiza Code — AI coding agent for your terminal",
+  "license": "MIT",
+  "homepage": "https://github.com/takizai/takiza_cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/takizai/takiza_cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/takizai/takiza_cli/issues"
+  },
+  "bin": {
+    "takiza": "bin/takiza.cjs"
+  },
+  "files": [
+    "bin/",
+    "vendor/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "terminal",
+    "cli",
+    "takiza"
+  ],
+  "scripts": {
+    "test": "node --test tests/launcher.cjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
