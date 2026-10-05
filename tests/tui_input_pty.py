@@ -46,7 +46,9 @@ def run(binary):
             'base_url': f'http://127.0.0.1:{server.server_port}/v1',
         }))
         terminal = Terminal(binary, workspace, 80, 26)
-        text = ''.join(f'L{i:02d}' + 'x' * 71 for i in range(9))
+        # Explicit rows keep viewport assertions independent of continuation
+        # width: only the first visual row now reserves space for the prompt.
+        text = '\n'.join(f'L{i:02d}' + 'x' * 71 for i in range(9))
         def screen():
             return Screen(terminal.output, 80, 26).text
         def paste(value):
