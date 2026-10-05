@@ -156,7 +156,8 @@ def run(binary):
             assert len(requests) == 1
             terminal.send('\x15/exit\r')
             terminal.wait(lambda: terminal.process.poll() is not None, 'exit failed')
-            assert terminal.output.count(b'\x1b[?2004h') == 1 and terminal.output.count(b'\x1b[?2004l') == 1
+            assert terminal.output.count(b'\x1b[?2004h') == 1, 'bracketed paste enabled more than once'
+            assert terminal.output.rfind(b'\x1b[?2004l') > terminal.output.rfind(b'\x1b[?2004h'), 'bracketed paste left enabled'
             print('PASS clipboard: selection copies, stream anchor, Unicode/reverse drag, right-click at caret, multiline and bracketed paste, busy/idle')
         finally:
             finish.set()
