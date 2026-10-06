@@ -3,6 +3,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CliArgs {
     pub continue_session: bool,
+    pub session_id: Option<String>,
     pub auto_approve: bool,
     pub show_help: bool,
     pub show_version: bool,
@@ -21,16 +22,21 @@ impl CliArgs {
     {
         let args: Vec<String> = args.into_iter().map(|s| s.into()).collect();
         let mut continue_session = false;
+        let mut session_id = None;
         let mut auto_approve = false;
         let mut show_help = false;
         let mut show_version = false;
         let mut prompt_parts = Vec::new();
 
-        for arg in &args {
+        let mut args = args.iter().peekable();
+        while let Some(arg) = args.next() {
             if arg == "--help" || arg == "-h" {
                 show_help = true;
             } else if arg == "--version" || arg == "-V" || arg == "-v" {
                 show_version = true;
+            } else if arg == "--session" {
+                session_id = Some(args.next().cloned().unwrap_or_default());
+                continue_session = true;
             } else if arg == "--continue" || arg == "--resume" || arg == "-c" {
                 continue_session = true;
             } else if arg == "--yes"
@@ -64,6 +70,7 @@ impl CliArgs {
 
         Self {
             continue_session,
+            session_id,
             auto_approve,
             show_help,
             show_version,
@@ -215,6 +222,11 @@ mod tests {
 
     #[test]
     fn test_cli_args_parsing() {
+        let args = CliArgs::parse_from(["--session", "20261006_123456", "continue work"]);
+        assert!(args.continue_session);
+        assert_eq!(args.session_id.as_deref(), Some("20261006_123456"));
+        assert_eq!(args.prompt.as_deref(), Some("continue work"));
+        assert_eq!(CliArgs::parse_from(["--session"]).session_id.as_deref(), Some(""));
         let args = CliArgs::parse_from(vec!["-c", "-y"]);
         assert!(args.continue_session);
         assert!(args.auto_approve);

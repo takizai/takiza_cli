@@ -269,6 +269,19 @@ impl Agent {
         self.messages = messages;
     }
 
+    pub async fn compact_context(&mut self, tx: &mpsc::Sender<AgentEvent>, cancel: &CancellationToken) -> anyhow::Result<bool> {
+        let _ = tx.send(AgentEvent::StatusUpdate(crate::i18n::tr("Compacting context...").into())).await;
+        let before = serde_json::to_vec(&self.messages)?.len();
+        let Some(messages) = crate::context::compact(&self.llm, &self.messages, tx, cancel).await? else {
+            let _ = tx.send(AgentEvent::ToolLog(crate::i18n::tr("Context is already compact.").into())).await;
+            return Ok(false);
+        };
+        let after = serde_json::to_vec(&messages)?.len();
+        self.messages = messages;
+        let _ = tx.send(AgentEvent::ToolLog(crate::i18n::tf!("Context compacted: {before} → {after} bytes.", before = before, after = after))).await;
+        Ok(true)
+    }
+
     pub async fn handle_user_input(
         &mut self,
         input: String,
@@ -304,6 +317,7 @@ impl Agent {
         let max_steps = self.config.max_steps;
         let mut step = 0;
         let mut empty_attempts = 0;
+        let mut compacted_for_step = false;
 
         loop {
             if cancel_token.is_cancelled() {
@@ -333,6 +347,20 @@ impl Agent {
                     match res {
                         Ok(r) => r,
                         Err(e) => {
+                            if e.is::<crate::llm::ContextOverflow>() && !compacted_for_step {
+                                compacted_for_step = true;
+                                let _ = event_tx.send(AgentEvent::ToolLog(crate::i18n::tr("Context window exceeded; compacting automatically...").into())).await;
+                                match self.compact_context(&event_tx, &cancel_token).await {
+                                    Ok(true) => { step = step.saturating_sub(1); continue; }
+                                    Ok(false) => {}
+                                    Err(error) => {
+                                        if !cancel_token.is_cancelled() {
+                                            let _ = event_tx.send(AgentEvent::Error(crate::i18n::tf!("Context compaction failed: {error}", error = error))).await;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
                             if !cancel_token.is_cancelled() {
                                 let _ = event_tx.send(AgentEvent::Error(format!("LLM error: {e:#}"))).await;
                             }
@@ -341,6 +369,7 @@ impl Agent {
                     }
                 }
             };
+            compacted_for_step = false;
 
             match response {
                 LlmResponse::Empty { finish_reason } => {

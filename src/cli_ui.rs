@@ -559,6 +559,7 @@ pub fn print_help() {
     println!("{}", crate::i18n::tf!("  /model <name>       - Switch model (e.g. /model gpt-4o, /model claude-3-5-sonnet)"));
     println!("{}", crate::i18n::tf!("  /provider <name>    - Switch preset provider (openai, openrouter, deepseek, ollama, groq)"));
     println!("{}", crate::i18n::tf!("  /rewind, /restore   - Restore files and chat from a pre-prompt checkpoint"));
+    println!("  /compact            - {}", crate::i18n::tr("Compress model context while keeping the visible conversation"));
     println!("{}", crate::i18n::tf!("  /diff               - View git diff of changes made in the workspace"));
     println!("{}", crate::i18n::tf!("  /status             - View current session info, git status, and token usage"));
     println!("{}", crate::i18n::tf!("  /usage              - View daily quotas and token usage breakdown (Manual / MoA)"));
@@ -1342,7 +1343,8 @@ fn extract_compact_arg(name: &str, args: &str) -> String {
 
 fn get_tool_icon(name: &str) -> &'static str {
     match name {
-        "run_command" | "web_search" => crate::i18n::tr("command"),
+        "run_command" => crate::i18n::tr("command"),
+        "web_search" => "websearch",
         "write_file" => crate::i18n::tr("write"),
         "edit_file" => crate::i18n::tr("edit"),
         "read_file" => crate::i18n::tr("read"),
@@ -2584,18 +2586,26 @@ pub enum HistoryItem {
     Error(String),
 }
 
-pub fn response_stats_text(elapsed_ms: u64, tokens: Option<u64>, usage_complete: bool) -> String {
+pub fn duration_text(elapsed_ms: u64) -> String {
     let seconds = elapsed_ms / 1000;
-    let duration = if seconds >= 3600 {
+    if seconds >= 3600 {
         crate::i18n::tf!("{}h {:02}m {:02}s", seconds / 3600, seconds / 60 % 60, seconds % 60)
     } else if seconds >= 60 {
         crate::i18n::tf!("{}m {:02}s", seconds / 60, seconds % 60)
-    } else { crate::i18n::tf!("{:.1}s", elapsed_ms as f64 / 1000.0) };
-    let usage = match tokens {
+    } else { crate::i18n::tf!("{:.1}s", elapsed_ms as f64 / 1000.0) }
+}
+
+pub fn token_usage_text(tokens: Option<u64>, usage_complete: bool) -> String {
+    match tokens {
         Some(tokens) if usage_complete => crate::i18n::tf!("{tokens} tokens", tokens = tokens),
         Some(tokens) => crate::i18n::tf!("≥ {tokens} tokens", tokens = tokens),
         None => crate::i18n::tr("tokens unavailable").to_string(),
-    };
+    }
+}
+
+pub fn response_stats_text(elapsed_ms: u64, tokens: Option<u64>, usage_complete: bool) -> String {
+    let duration = duration_text(elapsed_ms);
+    let usage = token_usage_text(tokens, usage_complete);
     crate::i18n::tf!("Completed in {duration} · {usage}", duration = duration, usage = usage)
 }
 
@@ -2945,9 +2955,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn web_search_renders_as_an_ordinary_command() {
+    fn web_search_renders_with_its_own_label() {
         let (label, target, detail) = tool_header_parts("web_search", r#"{"query":"Rust documentation"}"#, "", 80);
-        assert!(label.contains("command"));
+        assert!(label.contains("websearch"));
         assert!(target.contains("Rust documentation"));
         assert!(detail.is_empty());
     }

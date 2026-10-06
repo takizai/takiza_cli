@@ -112,6 +112,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand { name: "/rewind", description: "Restore files and chat to a checkpoint before a prompt", has_args: false },
     SlashCommand { name: "/restore", description: "Restore files and chat (alias of /rewind)", has_args: false },
+    SlashCommand { name: "/compact", description: "Compress model context while keeping the visible conversation", has_args: false },
     SlashCommand {
         name: "/diff",
         description: "Show git diff of workspace modifications",

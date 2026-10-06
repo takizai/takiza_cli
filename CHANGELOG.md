@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.6
+
+- Context overflow triggers automatic context compaction; `/compact` summarizes model memory manually while preserving the visible chat. Compaction supports cancellation and English, Russian and Chinese interface messages.
+- Web searches display `websearch` instead of `command`.
+- Opening or exiting an unused chat no longer saves an empty conversation; the first submitted prompt starts the session.
+- Exiting a session prints persistent usage statistics and an exact resume command; `--session <id>` resumes a saved chat.
+- Automatic checkpoints no longer expire after 10 seconds; they remain cancellable.
+- Rewind restores the checkpoint's full original prompt to the input field for editing and resubmission.
+
 ## 0.1.5
 
 - Fixed Windows startup failing with `Initial console modes not set` by resetting mouse capture only after its console mode has been initialized.

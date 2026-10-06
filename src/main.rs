@@ -1,6 +1,7 @@
 mod agent;
 mod attachments;
 mod checkpoints;
+mod context;
 mod clipboard;
 mod cli_ui;
 mod config;
@@ -265,7 +266,7 @@ impl PromptQueue {
 }
 
 #[derive(PartialEq)]
-enum CommandResult { Handled, Exit, InsertSkill(skills::Skill) }
+enum CommandResult { Handled, Exit, InsertSkill(skills::Skill), RestorePrompt(String) }
 
 struct ActiveAgent {
     cancel: CancellationToken,
@@ -274,7 +275,7 @@ struct ActiveAgent {
 }
 
 impl ActiveAgent {
-    async fn stop(&mut self, history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>) {
+    async fn stop(&mut self, history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>, usage: &mut Option<session::TokenUsage>) {
         self.cancel.cancel();
         if let Some(mut task) = self.task.take() {
             // Drain bounded output while cancellation releases the agent lock.
@@ -283,10 +284,20 @@ impl ActiveAgent {
                     _ = &mut task => break,
                     event = self.events.recv() => match event {
                         Some(AgentEvent::AssistantMessage(message)) => history.lock().unwrap().push(cli_ui::HistoryItem::AssistantMessage(message)),
+                        Some(AgentEvent::TokenUsage(tokens)) => session::record_tokens(usage, tokens),
+                        Some(AgentEvent::Interrupted) => session::record_tokens(usage, None),
                         Some(_) => {}, // Dropping modal responders unblocks tool requests.
                         None => { let _ = task.await; break; }
                     }
                 }
+            }
+        }
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                AgentEvent::AssistantMessage(message) => history.lock().unwrap().push(cli_ui::HistoryItem::AssistantMessage(message)),
+                AgentEvent::TokenUsage(tokens) => session::record_tokens(usage, tokens),
+                AgentEvent::Interrupted => session::record_tokens(usage, None),
+                _ => {}
             }
         }
     }
@@ -298,7 +309,7 @@ async fn command_agent<'a>(
 ) -> tokio::sync::MutexGuard<'a, Agent> {
     if let Some(running) = active.as_mut() {
         if running.task.is_some() {
-            running.stop(history).await;
+            running.stop(history, &mut session.token_usage).await;
             let locked = agent.lock().await;
             session.messages = locked.get_messages().to_vec();
             session.history = history.lock().unwrap().clone();
@@ -348,7 +359,6 @@ async fn handle_tui_command(
     }
         // Handle slash commands
         if line == "/exit" || line == "/quit" {
-            println!("{}", crate::i18n::tf!("Goodbye!"));
             return Ok(CommandResult::Exit);
         }
 
@@ -357,7 +367,7 @@ async fn handle_tui_command(
             let mut locked = command_agent(agent, active, current_session, history, config).await;
             current_session.messages = locked.get_messages().to_vec();
             current_session.history = history.lock().unwrap().clone();
-            let result = (|| -> anyhow::Result<Option<Session>> {
+            let result = (|| -> anyhow::Result<Option<(Session, Option<String>)>> {
                 let points = checkpoints::list(&config.workspace_dir, &current_session.id)?;
                 let ctx = interactive::ScreenContext::from_config(config);
                 let choices = points.iter().map(|point| format!("{}  {}", point.created_at, point.label)).collect::<Vec<_>>();
@@ -365,33 +375,86 @@ async fn handle_tui_command(
                 let point = &points[selected];
                 let changes = checkpoints::preview(&config.workspace_dir, point)?;
                 let conversation = checkpoints::conversation_at(point, current_session)?;
+                let prompt = checkpoints::prompt_at(point, current_session);
                 let mut changes = changes;
                 changes.push(crate::i18n::tr("Restore chat to this checkpoint; later prompts, answers and tool results will be removed").into());
                 let options = vec![crate::i18n::tr("Cancel").to_string(), crate::i18n::tr("Restore files and chat").to_string()];
                 if interactive::rewind_menu(&ctx, crate::i18n::tr("Review restore · a safety checkpoint will be saved"), &changes, &options)? != Some(1) { return Ok(None); }
                 checkpoints::restore_session(&config.workspace_dir, point, current_session)?;
-                Ok(Some(conversation))
+                Ok(Some((conversation, prompt)))
             })();
+            let mut outcome = CommandResult::Handled;
             match result {
-                Ok(Some(conversation)) => {
+                Ok(Some((conversation, prompt))) => {
                     current_session.history = conversation.build_history_from_messages();
                     current_session.messages = conversation.messages;
                     locked.set_messages(current_session.messages.clone());
                     *history.lock().unwrap() = current_session.history.clone();
                     cli_ui::scroll_history(i32::MIN);
                     current_session.save(&config.workspace_dir)?;
+                    if let Some(prompt) = prompt { outcome = CommandResult::RestorePrompt(prompt); }
                 }
                 Ok(None) => {}
                 Err(error) => history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(crate::i18n::tf!("Restore unavailable: {error:#}", error = error))),
             }
             *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
-            return Ok(CommandResult::Handled);
+            return Ok(outcome);
         }
 
         if line == "/help" {
             clear_screen_and_banner(&config);
             cli_ui::print_user_cmd(&line);
             cli_ui::print_help();
+            return Ok(CommandResult::Handled);
+        }
+
+        if line == "/compact" {
+            let mut locked = command_agent(agent, active, current_session, history, config).await;
+            let cancel = CancellationToken::new();
+            let (tx, mut rx) = mpsc::channel(100);
+            let (terminal_tx, mut terminal_rx) = mpsc::unbounded_channel();
+            crossterm::terminal::enable_raw_mode().ok();
+            let mut reader = spawn_sig_listener(terminal_tx);
+            let spinner = cli_ui::Spinner::start_with_box(crate::i18n::tr("Compacting context..."), "", branch_tag, output_row.clone());
+            let result = {
+                let task = locked.compact_context(&tx, &cancel);
+                tokio::pin!(task);
+                loop {
+                    tokio::select! {
+                        result = &mut task => break result,
+                        Some(event) = rx.recv() => match event {
+                            AgentEvent::TokenUsage(tokens) => session::record_tokens(&mut current_session.token_usage, tokens),
+                            AgentEvent::ToolLog(text) => history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(text)),
+                            _ => {}
+                        },
+                        Some(event) = terminal_rx.recv() => match event {
+                            TerminalEvent::Key(key) if key.code == crossterm::event::KeyCode::Esc
+                                || key.code == crossterm::event::KeyCode::Char('c') && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => cancel.cancel(),
+                            TerminalEvent::Resize => { *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap()); },
+                            _ => {}
+                        }
+                    }
+                }
+            };
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    AgentEvent::TokenUsage(tokens) => session::record_tokens(&mut current_session.token_usage, tokens),
+                    AgentEvent::ToolLog(text) => history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(text)),
+                    _ => {}
+                }
+            }
+            reader.stop().await;
+            spinner.stop().await;
+            crossterm::terminal::disable_raw_mode().ok();
+            if let Err(error) = result {
+                let text = if cancel.is_cancelled() { crate::i18n::tr("Context compaction cancelled.").into() }
+                    else { crate::i18n::tf!("Context compaction failed: {error}", error = error) };
+                history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(text));
+            }
+            current_session.messages = locked.get_messages().to_vec();
+            current_session.history = history.lock().unwrap().clone();
+            current_session.save(&config.workspace_dir)?;
+            *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
             return Ok(CommandResult::Handled);
         }
 
@@ -924,6 +987,8 @@ async fn main() -> anyhow::Result<()> {
         println!("{}", crate::i18n::tf!("            Print help information\n"));
         println!("    -v, -V, --version");
         println!("{}", crate::i18n::tf!("            Print version information\n"));
+        println!("    --session <id>");
+        println!("{}", crate::i18n::tr("            Resume a specific session from this directory"));
         println!("{}", crate::i18n::tf!("ARGS:"));
         println!("    [PROMPT]");
         println!("{}", crate::i18n::tf!("            Optional initial prompt to send to the agent\n"));
@@ -935,6 +1000,12 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Some(id) = &cli_args.session_id {
+        anyhow::ensure!(!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit() || byte == b'_'),
+            "--session requires a valid session ID");
+    }
+
+    let run_started = std::time::Instant::now();
     let _terminal_screen = cli_ui::TerminalScreen::enter()?;
 
     // 1. Run onboarding wizard if user has not yet accepted terms
@@ -969,7 +1040,12 @@ async fn main() -> anyhow::Result<()> {
     let output_row = Arc::new(StdMutex::new(0));
 
     if config.continue_session {
-        if let Some(loaded) = Session::latest(&config.workspace_dir) {
+        let resumed = match cli_args.session_id.as_deref() {
+            Some(id) => Session::load(&config.workspace_dir, id),
+            None => Session::latest(&config.workspace_dir),
+        };
+        anyhow::ensure!(cli_args.session_id.is_none() || resumed.is_some(), "Requested session was not found in this directory");
+        if let Some(loaded) = resumed {
             let mut locked = agent.lock().await;
             locked.set_messages(loaded.messages.clone());
             let restored_history = loaded.build_history_from_messages();
@@ -1046,7 +1122,6 @@ async fn main() -> anyhow::Result<()> {
 
             match input_res {
                 PromptResult::Exit => {
-                    println!("{}", crate::i18n::tf!("Goodbye!"));
                     break;
                 }
                 PromptResult::Interrupted => {
@@ -1070,6 +1145,11 @@ async fn main() -> anyhow::Result<()> {
             match outcome {
                 CommandResult::Exit => break,
                 CommandResult::InsertSkill(skill) => line_editor.draft.insert_text(&skill.prompt_reference()),
+                CommandResult::RestorePrompt(text) => {
+                    line_editor.draft = prompt::Draft::default();
+                    line_editor.draft.text = text;
+                    line_editor.draft.cursor = line_editor.draft.text.chars().count();
+                }
                 CommandResult::Handled => {}
             }
             continue;
@@ -1157,6 +1237,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Model prompts create checkpoints for this chat; commands do not.
+        current_session.started = true;
         let workspace = config.workspace_dir.clone();
         let mut conversation = current_session.clone();
         conversation.messages = agent.lock().await.get_messages().to_vec();
@@ -1169,6 +1250,8 @@ async fn main() -> anyhow::Result<()> {
         let mut response_tokens: Option<u64> = None;
         let mut usage_complete = true;
         history.lock().unwrap().push(cli_ui::HistoryItem::UserPrompt(line.clone()));
+        current_session.history = history.lock().unwrap().clone();
+        let _ = current_session.save(&config.workspace_dir);
         {
             *output_row.lock().unwrap() = redraw_full_screen(&config, &history.lock().unwrap());
         }
@@ -1364,12 +1447,18 @@ async fn main() -> anyhow::Result<()> {
                                         &agent, &mut current_session, &history, &output_row, &branch_tag, &mut active).await?;
                                     crossterm::terminal::enable_raw_mode().ok();
                                     exit_requested = outcome == CommandResult::Exit;
-                                    if let CommandResult::InsertSkill(skill) = outcome {
-                                        line_editor.draft.insert_text(&skill.prompt_reference());
+                                    match outcome {
+                                        CommandResult::InsertSkill(skill) => line_editor.draft.insert_text(&skill.prompt_reference()),
+                                        CommandResult::RestorePrompt(text) => {
+                                            line_editor.draft = prompt::Draft::default();
+                                            line_editor.draft.text = text;
+                                            line_editor.draft.cursor = line_editor.draft.text.chars().count();
+                                        }
+                                        _ => {}
                                     }
                                     interrupted_by_command = active.as_ref().is_some_and(|a| a.task.is_none());
                                     if exit_requested || interrupted_by_command {
-                                        if exit_requested { active.as_mut().unwrap().stop(&history).await; }
+                                        if exit_requested { active.as_mut().unwrap().stop(&history, &mut current_session.token_usage).await; }
                                         // Partial output belongs to the previous session, never replay it into a new one.
                                         stream_writer = None;
                                         if current_session.id != turn_session_id || exit_requested || matches!(submitted.split_whitespace().next(), Some("/rewind" | "/restore")) {
@@ -1573,6 +1662,7 @@ async fn main() -> anyhow::Result<()> {
                     *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
                 }
                 AgentEvent::TokenUsage(tokens) => {
+                    session::record_tokens(&mut current_session.token_usage, tokens);
                     if let Some(tokens) = tokens {
                         response_tokens = Some(response_tokens.unwrap_or(0).saturating_add(tokens));
                     } else { usage_complete = false; }
@@ -1676,6 +1766,7 @@ async fn main() -> anyhow::Result<()> {
                     *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
                 }
                 AgentEvent::Interrupted => {
+                    session::record_tokens(&mut current_session.token_usage, None);
                     if let Some(s) = spinner.take() { s.stop().await; }
                     if let Some(sw) = stream_writer.take() {
                         let partial = sw;
@@ -1689,6 +1780,7 @@ async fn main() -> anyhow::Result<()> {
                     *output_row.lock().unwrap() = redraw_full_screen(&config, &snapshot);
                 }
                 AgentEvent::Error(err) => {
+                    session::record_tokens(&mut current_session.token_usage, None);
                     crate::logger::log_error("Agent", &err);
                     if let Some(s) = spinner.take() {
                         s.stop().await;
@@ -1752,7 +1844,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some((_, task)) = pending_title.take() { task.abort(); }
         }
         if interrupted_by_command || exit_requested {
-            if exit_requested { println!("{}", crate::i18n::tf!("Goodbye!")); break 'chat; }
+            if exit_requested { break 'chat; }
             continue;
         }
 
@@ -1765,6 +1857,32 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Some((_, task)) = pending_title.take() { task.abort(); }
+    current_session.messages = agent.lock().await.get_messages().to_vec();
+    current_session.history = history.lock().unwrap().clone();
+    let saved = current_session.is_started().then(|| current_session.save(&config.workspace_dir));
+    drop(_terminal_screen);
+    println!("\n{}", crate::i18n::tr("Goodbye!"));
+    let prompts = current_session.history.iter().filter(|item| matches!(item, cli_ui::HistoryItem::UserPrompt(_))).count();
+    let tools = current_session.messages.iter().filter_map(|message| message.tool_calls.as_ref()).map(Vec::len).sum::<usize>();
+    let elapsed = cli_ui::duration_text(run_started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+    let tokens = match &current_session.token_usage {
+        Some(usage) => cli_ui::token_usage_text(usage.total, usage.complete),
+        None if prompts == 0 => cli_ui::token_usage_text(Some(0), true),
+        None => cli_ui::token_usage_text(None, false),
+    };
+    if current_session.is_started() {
+        println!("{}", crate::i18n::tf!("Session: {id} · {model}", id = current_session.id, model = current_session.model));
+    }
+    println!("{}", crate::i18n::tf!("{prompts} prompts · {tools} tool calls · {elapsed} in this run", prompts = prompts, tools = tools, elapsed = elapsed));
+    println!("{}", crate::i18n::tf!("Reported model usage: {tokens}", tokens = tokens));
+    match saved {
+        Some(Ok(())) => {
+            println!("{}", crate::i18n::tr("Resume this session from this directory:"));
+            println!("  takiza --session {}", current_session.id);
+        }
+        Some(Err(error)) => println!("{}", crate::i18n::tf!("Session could not be saved: {error}", error = error)),
+        None => {}
+    }
     Ok(())
 }
 
@@ -1804,7 +1922,7 @@ mod active_input_tests {
         });
         let cancel = CancellationToken::new();
         let mut active = ActiveAgent { task: Some(task), events, cancel: cancel.clone() };
-        tokio::time::timeout(std::time::Duration::from_secs(2), active.stop(&Arc::new(StdMutex::new(Vec::new())))).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), active.stop(&Arc::new(StdMutex::new(Vec::new())), &mut None)).await.unwrap();
         assert!(cancel.is_cancelled());
         assert!(active.task.is_none());
     }

@@ -6,6 +6,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TokenUsage {
+    pub total: Option<u64>,
+    pub complete: bool,
+}
+
+pub fn record_tokens(usage: &mut Option<TokenUsage>, tokens: Option<u64>) {
+    let usage = usage.get_or_insert(TokenUsage { total: None, complete: true });
+    match tokens {
+        Some(tokens) => usage.total = Some(usage.total.unwrap_or(0).saturating_add(tokens)),
+        None => usage.complete = false,
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Session {
     pub id: String,
     pub created_at: String,
@@ -15,6 +29,10 @@ pub struct Session {
     pub messages: Vec<ChatMessage>,
     #[serde(default)]
     pub history: Vec<HistoryItem>,
+    #[serde(default)]
+    pub token_usage: Option<TokenUsage>,
+    #[serde(default)]
+    pub started: bool,
 }
 
 impl Session {
@@ -30,6 +48,8 @@ impl Session {
             title: None,
             messages: Vec::new(),
             history: Vec::new(),
+            token_usage: None,
+            started: false,
         }
     }
 
@@ -62,11 +82,17 @@ impl Session {
         self.messages.iter().filter(|m| m.role != "system").count()
     }
 
+    pub fn is_started(&self) -> bool {
+        self.started || self.messages.iter().any(|message| message.role == "user")
+            || self.history.iter().any(|item| matches!(item, HistoryItem::UserPrompt(_)))
+    }
+
     pub fn sessions_dir(workspace: &Path) -> PathBuf {
         workspace.join(".takiza").join("sessions")
     }
 
     pub fn save(&self, workspace: &Path) -> std::io::Result<()> {
+        if !self.is_started() { return Ok(()); }
         let dir = Self::sessions_dir(workspace);
         fs::create_dir_all(&dir)?;
         let file_path = dir.join(format!("{}.json", self.id));
@@ -79,8 +105,9 @@ impl Session {
         let md_content = self.generate_markdown(workspace);
         let _ = fs::write(md_path, md_content);
 
-        // Update latest_session pointer if session has conversation messages
-        if !self.messages.is_empty() {
+        // A submitted prompt starts the chat, including preparation before the
+        // model request and an existing chat rewound to its first prompt.
+        if self.is_started() {
             let takiza_dir = workspace.join(".takiza");
             let _ = fs::create_dir_all(&takiza_dir);
             let latest_file = takiza_dir.join("latest_session");
@@ -96,7 +123,7 @@ impl Session {
         for id in Self::list_by_activity(workspace) {
             if let Some(session) = Self::load(workspace, &id) {
                 // Must have actual activity (non-empty messages)
-                if !session.messages.is_empty() {
+                if session.is_started() {
                     return Some(session);
                 }
             }
@@ -108,7 +135,7 @@ impl Session {
             let id = id.trim();
             if !id.is_empty() {
                 if let Some(session) = Self::load(workspace, id) {
-                    if !session.messages.is_empty() {
+                    if session.is_started() {
                         return Some(session);
                     }
                 }
@@ -147,7 +174,20 @@ impl Session {
         let dir = Self::sessions_dir(workspace);
         let file_path = dir.join(format!("{}.json", id));
         let content = fs::read_to_string(file_path).ok()?;
-        serde_json::from_str(&content).ok()
+        let mut session: Self = serde_json::from_str(&content).ok()?;
+        session.started = session.is_started();
+        if session.token_usage.is_none() {
+            for item in &session.history {
+                if let HistoryItem::ResponseStats { tokens, usage_complete, .. } = item {
+                    record_tokens(&mut session.token_usage, *tokens);
+                    if !usage_complete { session.token_usage.as_mut().unwrap().complete = false; }
+                }
+            }
+            if session.token_usage.is_none() && session.messages.iter().any(|message| message.role == "user") {
+                record_tokens(&mut session.token_usage, None);
+            }
+        }
+        Some(session)
     }
 
     pub fn delete(workspace: &Path, id: &str) -> std::io::Result<()> {
@@ -291,6 +331,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unused_chat_is_not_saved_and_started_chat_survives_rewind_to_empty_history() {
+        let workspace = std::env::temp_dir().join(format!("takiza-unused-chat-{}-{}",
+            std::process::id(), Local::now().timestamp_nanos_opt().unwrap()));
+        let mut session = Session::new("test-model".into());
+        session.messages.push(ChatMessage {
+            role: "system".into(), content: Some("instructions".into()), image_urls: Vec::new(),
+            tool_calls: None, tool_call_id: None, name: None,
+        });
+        session.history.push(HistoryItem::ToolLog("Configuration opened".into()));
+        session.save(&workspace).unwrap();
+        assert!(!workspace.exists());
+        assert!(Session::latest(&workspace).is_none());
+
+        session.history.push(HistoryItem::UserPrompt("first submitted prompt".into()));
+        session.save(&workspace).unwrap();
+        let mut loaded = Session::latest(&workspace).unwrap();
+        assert_eq!(loaded.id, session.id);
+        assert!(loaded.started);
+        loaded.history.clear();
+        loaded.messages.clear();
+        loaded.save(&workspace).unwrap();
+        assert_eq!(Session::latest(&workspace).unwrap().id, session.id);
+        assert_eq!(fs::read_to_string(workspace.join(".takiza/latest_session")).unwrap(), session.id);
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
     fn new_chats_have_distinct_ids_even_within_one_second() {
         let first = Session::new("test".into());
         let second = Session::new("test".into());
@@ -331,6 +398,9 @@ mod tests {
         s1.title = Some("AI Generated Title".to_string());
         assert_eq!(s1.title(), "AI Generated Title");
 
+        record_tokens(&mut s1.token_usage, Some(120));
+        record_tokens(&mut s1.token_usage, None);
+        record_tokens(&mut s1.token_usage, Some(30));
         s1.save(ws).unwrap();
 
         // Check file existence
@@ -343,6 +413,8 @@ mod tests {
         assert_eq!(latest.id, s1.id);
         assert_eq!(latest.title, Some("AI Generated Title".to_string()));
         assert_eq!(latest.title(), "AI Generated Title");
+        assert_eq!(latest.token_usage.as_ref().unwrap().total, Some(150));
+        assert!(!latest.token_usage.as_ref().unwrap().complete);
         assert_eq!(latest.messages.len(), 2);
         assert_eq!(latest.history.len(), 2);
 

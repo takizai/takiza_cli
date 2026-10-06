@@ -1,6 +1,6 @@
 [package]
 name = "takiza-harness"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Autonomous AI Software Engineering Agent CLI"
 readme = "README.md"

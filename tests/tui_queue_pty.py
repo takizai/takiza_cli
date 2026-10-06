@@ -117,7 +117,7 @@ class Screen:
 
 
 class Terminal:
-    def __init__(self, binary, workspace, cols, rows, env_overrides=None, initial_prompt='first', controlling_tty=False):
+    def __init__(self, binary, workspace, cols, rows, env_overrides=None, initial_prompt='first', controlling_tty=False, cli_args=None):
         self.fd, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
         env = os.environ.copy()
@@ -125,7 +125,7 @@ class Terminal:
             env.pop(name, None)
         env['TAKIZA_AUTO_APPROVE'] = 'false'
         env.update(env_overrides or {})
-        args = [str(binary)] + ([initial_prompt] if initial_prompt is not None else [])
+        args = [str(binary)] + (cli_args or []) + ([initial_prompt] if initial_prompt is not None else [])
         self.process = subprocess.Popen(args, cwd=workspace, stdin=slave, stdout=slave, stderr=slave, env=env,
             start_new_session=True, preexec_fn=(lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0)) if controlling_tty else None)
         os.close(slave)

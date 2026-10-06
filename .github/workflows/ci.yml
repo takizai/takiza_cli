@@ -42,3 +42,6 @@ jobs:
           python3 tests/tui_images_pty.py target/debug/takiza
           python3 tests/tui_questions_pty.py target/debug/takiza
           python3 tests/tui_npm_pty.py target/debug/takiza
+          python3 tests/tui_rewind_pty.py target/debug/takiza
+          python3 tests/tui_exit_pty.py target/debug/takiza
+          python3 tests/tui_compact_pty.py target/debug/takiza

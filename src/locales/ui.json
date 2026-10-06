@@ -99,6 +99,66 @@
     "До встречи!",
     "再见！"
   ],
+  "Compress model context while keeping the visible conversation": [
+    "Сжать контекст модели, сохранив видимую переписку",
+    "压缩模型上下文，同时保留可见对话"
+  ],
+  "Compacting context...": [
+    "Сжимаю контекст...",
+    "正在压缩上下文..."
+  ],
+  "Context is already compact.": [
+    "Контекст уже достаточно короткий.",
+    "上下文已经足够精简。"
+  ],
+  "Context compacted: {before} → {after} bytes.": [
+    "Контекст сжат: {before} → {after} байт.",
+    "上下文已压缩：{before} → {after} 字节。"
+  ],
+  "Context window exceeded; compacting automatically...": [
+    "Контекст переполнен; запускаю автоматическое сжатие...",
+    "上下文超出限制；正在自动压缩..."
+  ],
+  "Context compaction failed: {error}": [
+    "Не удалось сжать контекст: {error}",
+    "上下文压缩失败：{error}"
+  ],
+  "Context compaction cancelled.": [
+    "Сжатие контекста отменено.",
+    "上下文压缩已取消。"
+  ],
+  "The model context window is full.": [
+    "Контекстное окно модели переполнено.",
+    "模型上下文窗口已满。"
+  ],
+  "The model returned an empty context summary.": [
+    "Модель вернула пустую сводку контекста.",
+    "模型返回了空的上下文摘要。"
+  ],
+  "Session: {id} · {model}": [
+    "Сессия: {id} · {model}",
+    "会话：{id} · {model}"
+  ],
+  "{prompts} prompts · {tools} tool calls · {elapsed} in this run": [
+    "{prompts} запросов · {tools} вызовов инструментов · {elapsed} за этот запуск",
+    "{prompts} 条提示 · {tools} 次工具调用 · 本次运行 {elapsed}"
+  ],
+  "Reported model usage: {tokens}": [
+    "По данным модели: {tokens}",
+    "模型报告用量：{tokens}"
+  ],
+  "Resume this session from this directory:": [
+    "Продолжить эту сессию из текущего каталога:",
+    "从当前目录继续此会话："
+  ],
+  "            Resume a specific session from this directory": [
+    "            Продолжить указанную сессию из текущего каталога",
+    "            从当前目录恢复指定会话"
+  ],
+  "Session could not be saved: {error}": [
+    "Не удалось сохранить сессию: {error}",
+    "无法保存会话：{error}"
+  ],
   "User agreement was not accepted": [
     "Пользовательское соглашение не принято",
     "未接受用户协议"

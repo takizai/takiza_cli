@@ -382,10 +382,11 @@ def run_rewind(binary, with_git=True):
             restored_session = json.loads(session_path.read_text())
             assert all(not any(key in item for key in ['AssistantMessage', 'Thought', 'ToolStart', 'ToolEnd']) for item in restored_session['history']), 'rewind did not save truncated history'
             assert all(message['role'] == 'system' for message in restored_session['messages']), 'rewind kept obsolete model context'
+            assert '> first' in restored_screen, 'rewind did not put original prompt in the editor'
             if with_git:
                 assert git('show', ':example.txt').stdout == b'user staged'
             # The newest point is the automatic backup; restoring it undoes the rewind.
-            terminal.send('/rewind\r')
+            terminal.send('\x15/rewind\r')
             terminal.wait(lambda: 'Before restore' in '\n'.join(Screen(terminal.output, 100, 26).text), 'safety checkpoint missing')
             terminal.send('\r')
             terminal.wait(lambda: 'Review restore' in '\n'.join(Screen(terminal.output, 100, 26).text), 'undo preview missing')

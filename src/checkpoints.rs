@@ -5,14 +5,11 @@ use std::{collections::BTreeMap, fs, io::{Read, Write}, path::{Component, Path, 
 
 struct CaptureControl {
     cancel: tokio_util::sync::CancellationToken,
-    deadline: std::time::Instant,
 }
 
 impl CaptureControl {
     fn check(&self) -> Result<()> {
         anyhow::ensure!(!self.cancel.is_cancelled(), "Checkpoint cancelled");
-        anyhow::ensure!(std::time::Instant::now() < self.deadline,
-            "Automatic checkpoint exceeded 10 seconds; continuing without a restore point");
         Ok(())
     }
 }
@@ -34,6 +31,8 @@ pub struct Checkpoint {
     pub id: String,
     pub created_at: String,
     pub label: String,
+    #[serde(default)]
+    pub prompt: Option<String>,
     pub session_id: String,
     #[serde(default)]
     pub conversation: Option<crate::session::Session>,
@@ -120,14 +119,13 @@ fn capture(workspace: &Path, session_id: &str, label: &str) -> Result<Checkpoint
 
 #[cfg(test)]
 pub fn capture_session(workspace: &Path, session: &crate::session::Session, label: &str) -> Result<Checkpoint> {
-    capture_conversation(workspace, &session.id, label, Some(session.clone()))
+    capture_controlled(workspace, &session.id, label, Some(session.clone()), Some(label.into()), None)
 }
 
 pub fn capture_session_cancellable(workspace: &Path, session: &crate::session::Session, label: &str,
     cancel: tokio_util::sync::CancellationToken) -> Result<Checkpoint> {
-    let control = CaptureControl { cancel,
-        deadline: std::time::Instant::now() + std::time::Duration::from_secs(10) };
-    capture_controlled(workspace, &session.id, label, Some(session.clone()), Some(&control))
+    let control = CaptureControl { cancel };
+    capture_controlled(workspace, &session.id, label, Some(session.clone()), Some(label.into()), Some(&control))
 }
 
 fn copy_controlled(source: &Path, destination: &Path, control: Option<&CaptureControl>) -> Result<()> {
@@ -167,12 +165,36 @@ pub fn conversation_at(point: &Checkpoint, current: &crate::session::Session) ->
     Ok(session)
 }
 
+/// Older snapshots store only a shortened label. Use their chat boundary when
+/// available, and recover a full prompt only when it can be identified safely.
+pub fn prompt_at(point: &Checkpoint, current: &crate::session::Session) -> Option<String> {
+    if let Some(prompt) = &point.prompt { return Some(prompt.clone()); }
+    let matches_label = |text: &str| text.lines().next().unwrap_or("").chars().take(100).collect::<String>() == point.label;
+    let history = current.build_history_from_messages();
+    if let Some(saved) = &point.conversation {
+        let boundary = saved.build_history_from_messages().len();
+        if serde_json::to_value(history.get(..boundary)?).ok()? != serde_json::to_value(saved.build_history_from_messages()).ok()? {
+            return None;
+        }
+        return match history.get(boundary) {
+            Some(crate::cli_ui::HistoryItem::UserPrompt(text)) if matches_label(text) => Some(text.clone()),
+            _ => None,
+        };
+    }
+    let mut prompts = history.iter().filter_map(|item| match item {
+        crate::cli_ui::HistoryItem::UserPrompt(text) if matches_label(text) => Some(text.clone()),
+        _ => None,
+    });
+    let prompt = prompts.next()?;
+    prompts.next().is_none().then_some(prompt)
+}
+
 fn capture_conversation(workspace: &Path, session_id: &str, label: &str, conversation: Option<crate::session::Session>) -> Result<Checkpoint> {
-    capture_controlled(workspace, session_id, label, conversation, None)
+    capture_controlled(workspace, session_id, label, conversation, None, None)
 }
 
 fn capture_controlled(workspace: &Path, session_id: &str, label: &str, conversation: Option<crate::session::Session>,
-    control: Option<&CaptureControl>) -> Result<Checkpoint> {
+    prompt: Option<String>, control: Option<&CaptureControl>) -> Result<Checkpoint> {
     let conversation = conversation.map(|mut session| {
         session.history.retain(|item| !matches!(item, crate::cli_ui::HistoryItem::ToolLog(text) if text.starts_with("⏳ Queued #")));
         session
@@ -182,7 +204,7 @@ fn capture_controlled(workspace: &Path, session_id: &str, label: &str, conversat
     let now = chrono::Local::now();
     let point = Checkpoint { format_version: 1, id: now.format("%Y%m%d_%H%M%S_%9f").to_string(),
         created_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
-        label: label.lines().next().unwrap_or("").chars().take(100).collect(), session_id: session_id.into(), conversation, entries };
+        label: label.lines().next().unwrap_or("").chars().take(100).collect(), prompt, session_id: session_id.into(), conversation, entries };
     validate(&point)?;
     let previous = list(&workspace, session_id)?.into_iter().next();
     let snapshot = files(&workspace, &point);
@@ -355,16 +377,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cancelled_or_expired_capture_never_publishes_a_restore_point() {
+    fn capture_continues_after_ten_seconds_and_can_still_be_cancelled() {
+        let workspace = Workspace::new();
+        workspace.write("file", b"before");
+        let session = crate::session::Session::new("test-model".into());
+        let control = CaptureControl { cancel: tokio_util::sync::CancellationToken::new() };
+        std::thread::sleep(std::time::Duration::from_millis(10_050));
+        let point = capture_controlled(&workspace.0, &session.id, "prompt", Some(session.clone()),
+            Some("prompt".into()), Some(&control)).unwrap();
+        assert_eq!(fs::read(files(&workspace.0, &point).join("file")).unwrap(), b"before");
+        control.cancel.cancel();
+        assert!(capture_controlled(&workspace.0, &session.id, "next", Some(session.clone()),
+            Some("next".into()), Some(&control)).is_err());
+        assert_eq!(list(&workspace.0, &session.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rewind_recovers_full_prompts_and_keeps_safety_snapshots_without_a_prompt() {
+        let workspace = Workspace::new();
+        let mut session = crate::session::Session::new("test-model".into());
+        let prompt = format!("{}\nвторая строка 🦀", "длинный запрос ".repeat(12));
+        capture_session(&workspace.0, &session, &prompt).unwrap();
+        let point = list(&workspace.0, &session.id).unwrap().remove(0);
+        assert_eq!(prompt_at(&point, &session).as_deref(), Some(prompt.as_str()));
+        assert_eq!(point.label.chars().count(), 100);
+        session.history = vec![crate::cli_ui::HistoryItem::UserPrompt(prompt.clone())];
+        let mut old_json = serde_json::to_value(&point).unwrap();
+        old_json.as_object_mut().unwrap().remove("prompt");
+        let mut old: Checkpoint = serde_json::from_value(old_json).unwrap();
+        assert_eq!(prompt_at(&old, &session).as_deref(), Some(prompt.as_str()));
+        old.conversation = None;
+        assert_eq!(prompt_at(&old, &session).as_deref(), Some(prompt.as_str()));
+        session.history.push(crate::cli_ui::HistoryItem::UserPrompt(prompt.clone()));
+        assert!(prompt_at(&old, &session).is_none());
+        assert_eq!(prompt_at(&point, &session).as_deref(), Some(prompt.as_str()));
+        let backup = restore_session(&workspace.0, &point, &session).unwrap();
+        assert!(prompt_at(&backup, &session).is_none());
+    }
+
+    #[test]
+    fn cancelled_capture_never_publishes_a_restore_point() {
         let workspace = Workspace::new();
         workspace.write("file", b"must stay unchanged");
         let session = crate::session::Session::new("test-model".into());
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
         assert!(capture_session_cancellable(&workspace.0, &session, "prompt", cancel).is_err());
-        let control = CaptureControl { cancel: tokio_util::sync::CancellationToken::new(),
-            deadline: std::time::Instant::now() };
-        assert!(capture_controlled(&workspace.0, &session.id, "prompt", Some(session.clone()), Some(&control)).is_err());
         assert!(list(&workspace.0, &session.id).unwrap().is_empty());
         assert!(!directory(&workspace.0).exists());
         assert_eq!(fs::read(workspace.0.join("file")).unwrap(), b"must stay unchanged");
