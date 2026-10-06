@@ -19,8 +19,13 @@ impl TerminalScreen {
         let active = stdout().is_terminal();
         let screen = Self { active };
         if active {
-            execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate,
-                crossterm::event::DisableMouseCapture, crossterm::event::DisableBracketedPaste,
+            execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate)?;
+            // Windows can restore mouse modes only after EnableMouseCapture has
+            // saved the original console mode. ANSI terminals can reset stale
+            // mouse capture immediately, including after an interrupted session.
+            #[cfg(not(windows))]
+            execute!(stdout(), crossterm::event::DisableMouseCapture)?;
+            execute!(stdout(), crossterm::event::DisableBracketedPaste,
                 ResetColor, crossterm::terminal::EnterAlternateScreen,
                 crossterm::event::EnableMouseCapture, crossterm::event::EnableBracketedPaste)?;
         }

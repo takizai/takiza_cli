@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- Fixed Windows startup failing with `Initial console modes not set` by resetting mouse capture only after its console mode has been initialized.
+
 ## 0.1.4
 
 - English, Russian and Simplified Chinese interface, with language selection in onboarding and `/config`.
