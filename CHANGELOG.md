@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.7
+
+- Configurable MCP services and language-server tools share the agent runtime, with interactive connection management, cancellation, approval for external actions, and diagnostics for the current document version.
+
+- Terminal tabs show `Chat title — Takiza Code`, updating when a title arrives or a chat is opened; empty chats show `Takiza Code`.
+
+- Shell commands use closed stdin so interactive programs cannot consume TUI keys. Cancellation covers output draining and kills the Unix process group (Windows uses taskkill /T), preventing npm/npx descendants from keeping the agent stuck on inherited pipes. Direct `!` commands also accept Esc to stop.
+
+- Active responses save the visible transcript once per second, including streamed text and tool activity, so restarting during a turn preserves recent output. Session JSON replacement is atomic; unexpected agent-task failures become visible errors instead of silently returning to the prompt.
+
+- User messages have a blank line above them in live output and restored chat history.
+
+- Built-in file writes unwrap a single duplicated argument object only when both paths match exactly and its inner content is already a string. Ambiguous objects, extra fields and custom schemas remain rejected; type errors describe known nested field types without exposing values.
+
+- File-write descriptions and repair requests explain how to encode JSON documents as string content, with a valid escaped example. Object/array content remains rejected rather than being silently converted into a file.
+
+- Tool validation reports the failing JSON field and its expected/actual type without exposing argument values. Repair requests explicitly state that field order is irrelevant, preventing retries that merely reorder valid field names.
+
+- Context compaction processes larger provider-aware chunks with visible percent/part progress, 45-second request timeouts and a three-minute overall deadline. Overflow reduces chunk size; cancelled, timed-out and output-truncated summaries preserve the original context. NVIDIA GLM-5.3-Flash summaries use low reasoning with an 8K output allowance.
+
+- Output-limited reasoning and truncated tool calls receive one retry requesting concise reasoning and smaller actions. Truncated calls are never executed or schema-repaired; repeated exhaustion reports the output limit instead of repeating the same request.
+
+- Terminal shutdown keeps raw mode enabled while delayed mouse reports drain, preventing escape sequences from being echoed or passed to the shell after exit.
+
+- The context footer shows approximate percent headroom until compaction, reserving the same 8K output allowance as agent requests. Unknown usage or limits omit the percentage; narrow terminals use a shorter label.
+
+- Explicit context caps in provider overflow errors update the footer and persist for seven days, scoped to endpoint, model, credentials and proxy. Larger metadata cannot overwrite a learned cap; ambiguous errors do not invent one.
+
+- Context limits use only the selected provider's model and deployment metadata. If several caps are reported, the smallest applies; unsupported metadata leaves the maximum unknown. No model catalog or trained-window fallback is used.
+- The prompt footer shows current/maximum context (e.g. `32K/128K`) before the chat title, with a continuous green/yellow/red fill gradient. The latest request's usage is persisted separately from cumulative billing; model limits are fetched in the background and cached. Unknown values show `?`, and compaction invalidates the old context size.
+
+- Tool schemas with an explicit object/property schema send root `anyOf`, `oneOf` and `allOf` constraints as description instructions for compatibility with Claude gateways. Full schemas still validate calls locally, including the file/project alternatives in `lsp_symbols`.
+
+- Long chats cache rendered messages and tool groups, reuse unchanged Markdown layout, and copy only visible rows when scrolling or repainting. Menu backgrounds reuse the same layout.
+
+- Streamed assistant text survives tool calls and tool dialogs; separate reasoning steps remain in history, and closing `/tools` restores the conversation.
+
+- Invalid tool calls are repaired using explicit rejected call results and parameter schemas; repeated malformed streamed calls fall back to a cancellable non-streaming request. No missing required arguments are fabricated.
+
 ## 0.1.6
 
 - Context overflow triggers automatic context compaction; `/compact` summarizes model memory manually while preserving the visible chat. Compaction supports cancellation and English, Russian and Chinese interface messages.

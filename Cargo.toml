@@ -1,6 +1,6 @@
 [package]
 name = "takiza-harness"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "Autonomous AI Software Engineering Agent CLI"
 readme = "README.md"
@@ -20,6 +20,7 @@ futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 dotenvy = "0.15"
 anyhow = "1.0"
 base64 = "0.22"
@@ -27,6 +28,14 @@ chrono = "0.4"
 tokio-util = "0.7"
 
 quick-xml = { version = "0.42", features = ["serialize"] }
+rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
+keyring = { version = "3", features = ["linux-native", "apple-native", "windows-native"] }
+jsonschema = { version = "0.33", default-features = false }
+async-trait = "0.1"
+mcp-reqwest = { version = "0.13", package = "reqwest", default-features = false, features = ["json", "rustls"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [build-dependencies]
 serde_json = "1.0"

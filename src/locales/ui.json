@@ -1,4 +1,36 @@
 {
+  "Agent task failed unexpectedly: {error}": [
+    "Задача агента аварийно завершилась: {error}",
+    "代理任务意外失败：{error}"
+  ],
+  "Context summary request timed out; the original history was preserved.": [
+    "Истекло время ожидания сводки контекста; исходная история сохранена.",
+    "上下文摘要请求超时；原始历史记录已保留。"
+  ],
+  "Context compaction exceeded 3 minutes; the original history was preserved.": [
+    "Сжатие контекста превысило 3 минуты; исходная история сохранена.",
+    "上下文压缩超过了 3 分钟；原始历史记录已保留。"
+  ],
+  "The model exhausted its output allowance while summarizing; the original history was preserved.": [
+    "Модель исчерпала лимит ответа при создании сводки; исходная история сохранена.",
+    "生成摘要时模型耗尽了输出额度；原始历史记录已保留。"
+  ],
+  "The model used its output allowance without an answer; retrying once with concise reasoning and concrete actions.": [
+    "Модель исчерпала лимит ответа без ответа пользователю; повторяю один раз с краткими рассуждениями и переходом к действиям.",
+    "模型耗尽了输出额度却没有作答；将要求简短推理并执行具体操作，重试一次。"
+  ],
+  "The model exhausted its {tokens}-token output allowance without an answer or tool call (finish_reason: length). A larger context window does not increase this allowance. Try a smaller task or a model with a larger output allowance.": [
+    "Модель исчерпала лимит ответа в {tokens} токенов без ответа или вызова инструмента (finish_reason: length). Большое окно контекста не увеличивает этот лимит. Попробуйте меньшую задачу или модель с большим лимитом ответа.",
+    "模型耗尽了 {tokens} 个 token 的输出额度，却没有作答或调用工具（finish_reason: length）。更大的上下文窗口不会增加此额度。请尝试较小的任务或输出额度更大的模型。"
+  ],
+  "~{percent}% to compact": [
+    "~{percent}% до сжатия",
+    "距自动压缩约 {percent}%"
+  ],
+  "Retrying tool call without streaming...": [
+    "Повторяю вызов инструмента без стриминга...",
+    "正在以非流式方式重试工具调用..."
+  ],
   "Language": [
     "Язык",
     "语言"
@@ -1750,5 +1782,212 @@
   "Unknown theme: '{}'. Available themes: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n": [
     "Неизвестная тема: '{}'. Доступные темы: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n",
     "未知主题： '{}'. 可用主题： amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n"
-  ]
+  ],
+  "No servers configured. Edit config.json.": [
+    "Серверы не настроены. Измените config.json.",
+    "未配置服务器。请编辑 config.json。"
+  ],
+  "Waiting for browser login": [
+    "Ожидание входа через браузер",
+    "等待浏览器登录"
+  ],
+  "Disconnected": [
+    "Отключён",
+    "已断开"
+  ],
+  "Connected": [
+    "Подключён",
+    "已连接"
+  ],
+  "Not started": [
+    "Не запущен",
+    "未启动"
+  ],
+  "OAuth login failed or timed out": [
+    "Вход OAuth не завершён или истекло время ожидания",
+    "OAuth 登录失败或超时"
+  ],
+  "Connection failed. Check configuration or run login.": [
+    "Не удалось подключиться. Проверьте настройки или выполните login.",
+    "连接失败。请检查配置或登录。"
+  ],
+  "Tool discovery failed": [
+    "Не удалось получить список инструментов",
+    "工具发现失败"
+  ],
+  "Open this link to log in:": [
+    "Откройте ссылку для входа:",
+    "打开此链接登录："
+  ],
+  "Trust this server for this run": [
+    "Доверять этому серверу до конца запуска",
+    "在本次运行中信任此服务器"
+  ],
+  "MCP tool permission": [
+    "Разрешение на вызов MCP",
+    "MCP 工具权限"
+  ],
+  "Manage MCP servers: status, connect, disconnect, restart, login, logout": [
+    "Управление MCP: status, connect, disconnect, restart, login, logout",
+    "管理 MCP 服务器：status、connect、disconnect、restart、login、logout"
+  ],
+  "Manage language servers: status, connect, disconnect, restart": [
+    "Управление LSP: status, connect, disconnect, restart",
+    "管理语言服务器：status、connect、disconnect、restart"
+  ],
+  "Arguments · {}–{} / {}": [
+    "Аргументы · {}–{} / {}",
+    "参数 · {}–{} / {}"
+  ],
+  "↑↓ Select · Enter · PgUp/PgDn Arguments · Esc Deny": [
+    "↑↓ Выбор · Enter · PgUp/PgDn Аргументы · Esc Отказ",
+    "↑↓ 选择 · Enter · PgUp/PgDn 参数 · Esc 拒绝"
+  ],
+  "Server supplied invalid tool schemas; those tools were omitted": [
+    "Сервер передал некорректные схемы; эти инструменты исключены",
+    "服务器提供了无效的工具架构；已省略这些工具"
+  ],
+  "Manage MCP servers and OAuth login": [
+    "Управление MCP-серверами и вход через OAuth",
+    "管理 MCP 服务器和 OAuth 登录"
+  ],
+  "Manage language servers": [
+    "Управление языковыми серверами",
+    "管理语言服务器"
+  ],
+  "Managing integration...": [
+    "Управление интеграцией…",
+    "正在管理集成…"
+  ],
+  "Integration management timed out.": [
+    "Истекло время управления интеграцией.",
+    "集成管理已超时。"
+  ],
+  "Integration management cancelled.": [
+    "Управление интеграцией отменено.",
+    "集成管理已取消。"
+  ],
+  "Read": [
+    "Чтение",
+    "读取"
+  ],
+  "Write": [
+    "Запись",
+    "写入"
+  ],
+  "Edit": [
+    "Правка",
+    "编辑"
+  ],
+  "List": [
+    "Каталог",
+    "目录"
+  ],
+  "Glob": [
+    "Поиск файлов",
+    "查找文件"
+  ],
+  "Search": [
+    "Поиск",
+    "搜索"
+  ],
+  "Web search": [
+    "Поиск в интернете",
+    "网页搜索"
+  ],
+  "Ask": [
+    "Вопрос",
+    "提问"
+  ],
+  "Skill": [
+    "Навык",
+    "技能"
+  ],
+  "LSP · Hover": [
+    "LSP · Тип и документация",
+    "LSP · 类型与文档"
+  ],
+  "LSP · Definition": [
+    "LSP · Определение",
+    "LSP · 定义"
+  ],
+  "LSP · References": [
+    "LSP · Использования",
+    "LSP · 引用"
+  ],
+  "LSP · Symbols": [
+    "LSP · Символы",
+    "LSP · 符号"
+  ],
+  "LSP · Diagnostics": [
+    "LSP · Диагностика",
+    "LSP · 诊断"
+  ],
+  "denied": [
+    "отклонено",
+    "已拒绝"
+  ],
+  "cancelled": [
+    "отменено",
+    "已取消"
+  ],
+  "done": [
+    "готово",
+    "完成"
+  ],
+  "Declined by you. Nothing was executed.": [
+    "Вы отклонили действие. Ничего не выполнено.",
+    "你已拒绝此操作，未执行任何操作。"
+  ],
+  "Stopped by you.": [
+    "Вы остановили выполнение.",
+    "你已停止执行。"
+  ],
+  "Cancelled. The server may have executed this action; check before retrying.": [
+    "Вызов отменён. Сервер мог выполнить действие; проверьте перед повтором.",
+    "调用已取消。服务器可能已执行操作，请在重试前确认。"
+  ],
+  "Image attached": [
+    "Изображение прикреплено",
+    "已附加图像"
+  ],
+  "Unsupported content: {}": [
+    "Неподдерживаемый формат: {}",
+    "不支持的内容：{}"
+  ],
+  "{} questions": [
+    "{} вопросов",
+    "{} 个问题"
+  ],
+  "Ctrl+O to view full call": [
+    "Ctrl+O: показать вызов целиком",
+    "Ctrl+O 查看完整调用"
+  ],
+  "+{} lines  · Ctrl+O to expand": [
+    "+{} строк · Ctrl+O: раскрыть",
+    "+{} 行 · Ctrl+O 展开"
+  ],
+  "+{} lines · Ctrl+O": [
+    "+{} строк · Ctrl+O",
+    "+{} 行 · Ctrl+O"
+  ],
+  "  Ctrl+O              - Expand or collapse responses and output (3-line preview)": [
+    "  Ctrl+O              - Раскрыть или свернуть ответы и вывод (3 строки)",
+    "  Ctrl+O              - 展开或收起回复和输出（预览 3 行）"
+  ],
+  "  Ctrl+O              - Expand or collapse tool and command output (3-line preview)": [
+    "  Ctrl+O              - Раскрыть или свернуть вывод инструментов и команд (3 строки)",
+    "  Ctrl+O              - 展开或收起工具和命令输出（预览 3 行）"
+  ],
+  "Write outside workspace": ["Запись вне workspace", "写入工作区之外"],
+  "Requested path": ["Запрошенный путь", "请求路径"],
+  "Resolved path": ["Фактический путь", "解析后的路径"],
+  "No content changes.": ["Содержимое не меняется.", "内容没有变化。"],
+  "File write permission": ["Разрешение на запись файла", "文件写入权限"],
+  "Changes · {}–{} / {}": ["Изменения · {}–{} / {}", "更改 · {}–{} / {}"],
+  "↑↓ Select · Enter · PgUp/PgDn Changes · Esc Deny": ["↑↓ Выбрать · Enter · PgUp/PgDn Изменения · Esc Отказать", "↑↓ 选择 · Enter · PgUp/PgDn 更改 · Esc 拒绝"],
+  "Approval: AUTO-APPROVE (commands, external file writes and MCP calls)\n": ["Подтверждения: АВТО (команды, запись вне workspace и MCP-вызовы)\n", "审批：自动批准（命令、工作区外写入和 MCP 调用）\n"],
+  "Approval: ASK (commands, external file writes and untrusted MCP calls)\n": ["Подтверждения: СПРАШИВАТЬ (команды, запись вне workspace и MCP без доверия)\n", "审批：询问（命令、工作区外写入和未信任的 MCP 调用）\n"],
+  "            Skip permission prompts for commands, external file writes and MCP calls": ["            Не спрашивать подтверждения команд, записи вне workspace и MCP-вызовов", "            跳过命令、工作区外写入和 MCP 调用的审批"],
+  "            (Default: confirm commands, external file writes and untrusted MCP calls)\n": ["            (По умолчанию: подтверждать команды, запись вне workspace и MCP без доверия)\n", "            （默认：确认命令、工作区外写入和未信任的 MCP 调用）\n"]
 }

@@ -31,6 +31,9 @@ pub struct Session {
     pub history: Vec<HistoryItem>,
     #[serde(default)]
     pub token_usage: Option<TokenUsage>,
+    /// Latest model-reported request context, separate from cumulative billing.
+    #[serde(default)]
+    pub context_tokens: Option<u64>,
     #[serde(default)]
     pub started: bool,
 }
@@ -49,6 +52,7 @@ impl Session {
             messages: Vec::new(),
             history: Vec::new(),
             token_usage: None,
+            context_tokens: Some(0),
             started: false,
         }
     }
@@ -98,7 +102,11 @@ impl Session {
         let file_path = dir.join(format!("{}.json", self.id));
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::other(e))?;
-        fs::write(&file_path, json)?;
+        // Readers must see either the previous or the complete new transcript,
+        // including while an active response is being saved periodically.
+        let temporary = file_path.with_extension(format!("json.{}.tmp", std::process::id()));
+        fs::write(&temporary, json)?;
+        fs::rename(&temporary, &file_path)?;
 
         // Also save readable markdown transcript in .takiza/sessions/{id}.md
         let md_path = dir.join(format!("{}.md", self.id));
@@ -401,6 +409,7 @@ mod tests {
         record_tokens(&mut s1.token_usage, Some(120));
         record_tokens(&mut s1.token_usage, None);
         record_tokens(&mut s1.token_usage, Some(30));
+        s1.context_tokens = Some(64_000);
         s1.save(ws).unwrap();
 
         // Check file existence
@@ -415,6 +424,7 @@ mod tests {
         assert_eq!(latest.title(), "AI Generated Title");
         assert_eq!(latest.token_usage.as_ref().unwrap().total, Some(150));
         assert!(!latest.token_usage.as_ref().unwrap().complete);
+        assert_eq!(latest.context_tokens, Some(64_000));
         assert_eq!(latest.messages.len(), 2);
         assert_eq!(latest.history.len(), 2);
 

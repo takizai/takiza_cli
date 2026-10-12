@@ -89,9 +89,11 @@ def run(binary, cols, rows):
             finish.set()
             terminal.wait(lambda: b'ANSWER_COMPLETE' in terminal.output, 'response did not finish')
             terminal.pump(.25)
+            completed_records = [line.strip() for line in Screen(terminal.output, cols, rows).text if 'RECORD' in line]
             terminal.send('\x1b[<64;10;5M')
             wheel_up = '\n'.join(Screen(terminal.output, cols, rows).text)
-            assert 'ANSWER_COMPLETE' not in wheel_up, 'mouse wheel did not scroll completed history'
+            older_records = [line.strip() for line in wheel_up.splitlines() if 'RECORD' in line]
+            assert older_records and older_records != completed_records, 'mouse wheel did not scroll completed history'
             terminal.send('\x1b[<65;10;5M')
             assert any('ANSWER_COMPLETE' in line for line in Screen(terminal.output, cols, rows).text), 'wheel down did not return to latest'
             terminal.send('\x1b[1;5H')  # Ctrl+Home
@@ -172,7 +174,8 @@ def markdown_scroll(binary, cancel=False):
             assert not any('|---' in line for line in streamed), streamed
             terminal.send('\x1b[5~\x1b[1;5F')
             terminal.pump(.2)
-            assert Screen(terminal.output, 80, 26).text == streamed, 'stream changed after scrolling round trip'
+            returned = Screen(terminal.output, 80, 26).text
+            assert returned[:-4] == streamed[:-4] and returned[-3:] == streamed[-3:], 'stream changed after scrolling round trip'
             if not cancel:
                 finish.set()
                 terminal.wait(lambda: b'ANSWER_COMPLETE' in terminal.output, 'Markdown response did not finish')

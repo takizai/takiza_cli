@@ -8,6 +8,25 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(unix)]
+struct CommandProcessGroup(Option<u32>);
+
+#[cfg(unix)]
+impl CommandProcessGroup {
+    fn kill(&self) {
+        if let Some(pid) = self.0 {
+            // The shell gets its own group; descendants inherit it. Never signal
+            // the TUI's group or wait for inherited pipes after killing the shell.
+            unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for CommandProcessGroup {
+    fn drop(&mut self) { self.kill(); }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -98,7 +117,7 @@ pub fn get_tool_definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Creates a new file or overwrites an existing file with the provided content.",
+                "description": "Creates or overwrites one file. Pass its complete text as the content string. For JSON files, serialize the JSON document into that string; do not pass a JSON object or array as content.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -108,7 +127,7 @@ pub fn get_tool_definitions() -> Value {
                         },
                         "content": {
                             "type": "string",
-                            "description": "The full text content to write into the file."
+                            "description": "Complete file text as a JSON string, with quotes and newlines escaped in the tool arguments. Always a string, including for package.json and other JSON files; never an object, array, or collection of files."
                         }
                     },
                     "required": ["path", "content"]
@@ -285,12 +304,65 @@ pub fn get_tool_definitions() -> Value {
 
 pub struct ToolExecutor {
     pub workspace_root: PathBuf,
+    pub runtime: std::sync::Arc<crate::runtime::Runtime>,
     web_proxy: Option<String>,
+}
+
+/// A single reviewed write, bound to the resolved destination and its contents.
+pub struct ExternalWrite {
+    tool: String,
+    path: PathBuf,
+    before: Option<String>,
+    arguments: Value,
+    pub preview: String,
+}
+
+/// Resolve existing symlinks before processing `..`, including for files whose
+/// parent directories have not been created yet. Broken links fail closed.
+fn resolved_destination(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() { path.to_path_buf() } else {
+        std::env::current_dir().map_err(|e| e.to_string())?.join(path)
+    };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => resolved.push(component.as_os_str()),
+            std::path::Component::CurDir => {},
+            std::path::Component::ParentDir => { resolved.pop(); },
+            component => {
+                resolved.push(component.as_os_str());
+                match fs::symlink_metadata(&resolved) {
+                    Ok(_) => resolved = fs::canonicalize(&resolved)
+                        .map_err(|e| format!("Cannot resolve '{}': {e}", resolved.display()))?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                    Err(e) => return Err(format!("Cannot inspect '{}': {e}", resolved.display())),
+                }
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+fn read_write_destination(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("Cannot read '{}' for write approval: {e}", path.display())),
+    }
+}
+
+fn edited_content(args: &Value, content: &str, path: &Path) -> Result<String, String> {
+    let target = args["target_content"].as_str().ok_or("Missing 'target_content' argument")?;
+    let replacement = args["replacement_content"].as_str().ok_or("Missing 'replacement_content' argument")?;
+    let count = content.matches(target).count();
+    if count == 0 { return Err(format!("Target content not found in '{}'. Ensure whitespace matches exactly.", path.display())); }
+    if count > 1 { return Err(format!("Target content matched {} times in '{}'. Provide a larger unique context block.", count, path.display())); }
+    Ok(content.replacen(target, replacement, 1))
 }
 
 impl ToolExecutor {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root, web_proxy: None }
+        Self { runtime: crate::runtime::Runtime::new(workspace_root.clone()), workspace_root, web_proxy: None }
     }
 
     pub fn with_web_proxy(mut self, proxy: Option<String>) -> Self {
@@ -305,6 +377,42 @@ impl ToolExecutor {
         } else {
             self.workspace_root.join(path)
         }
+    }
+
+    pub fn prepare_external_write(&self, name: &str, arguments_json: &str) -> Result<Option<ExternalWrite>, String> {
+        if !matches!(name, "write_file" | "edit_file") { return Ok(None); }
+        let args: Value = serde_json::from_str(arguments_json).map_err(|e| format!("Invalid JSON arguments: {e}"))?;
+        let requested = args["path"].as_str().ok_or("Missing 'path' argument")?;
+        let path = resolved_destination(&self.resolve_path(requested))?;
+        let workspace = fs::canonicalize(&self.workspace_root).map_err(|e| format!("Cannot resolve workspace: {e}"))?;
+        if path.starts_with(workspace) { return Ok(None); }
+        let before = read_write_destination(&path)?;
+        let after = if name == "write_file" {
+            args["content"].as_str().ok_or("Missing 'content' argument")?.to_string()
+        } else {
+            edited_content(&args, before.as_deref().ok_or("File to edit does not exist")?, &path)?
+        };
+        let display = path.display().to_string();
+        let diff = file_change_diff(&display, before.as_deref().unwrap_or(""), &after)
+            .unwrap_or_else(|| crate::i18n::tr("No content changes.").into());
+        let preview = format!("{}\n{}: {requested}\n{}: {display}\n\n{diff}",
+            crate::i18n::tr("Write outside workspace"), crate::i18n::tr("Requested path"), crate::i18n::tr("Resolved path"));
+        Ok(Some(ExternalWrite { tool: name.into(), path, before, arguments: args, preview }))
+    }
+
+    pub async fn execute_external_write(&self, name: &str, reviewed: &ExternalWrite,
+        event_tx: Option<mpsc::Sender<ToolOutputEvent>>, cancel: Option<CancellationToken>) -> Result<String, String> {
+        if name != reviewed.tool { return Err("Invalid reviewed write tool".into()); }
+        let requested = reviewed.arguments["path"].as_str().ok_or("Missing 'path' argument")?;
+        if resolved_destination(&self.resolve_path(requested))? != reviewed.path
+            || resolved_destination(&reviewed.path)? != reviewed.path
+            || read_write_destination(&reviewed.path)? != reviewed.before {
+            return Err("File or destination changed after review; request a new approval before writing".into());
+        }
+        if cancel.as_ref().is_some_and(|token| token.is_cancelled()) { return Err("Write cancelled".into()); }
+        let mut args = reviewed.arguments.clone();
+        args["path"] = json!(reviewed.path);
+        self.execute(name, &args.to_string(), event_tx, cancel).await
     }
 
     pub async fn execute(
@@ -352,7 +460,7 @@ impl ToolExecutor {
             "ask_question" => {
                 Ok("Interactive questionnaire presented to user.".to_string())
             }
-            other => Err(format!("Unknown tool: {other}")),
+            other => self.runtime.execute(other, args.clone(), cancel_token.unwrap_or_default()).await,
         };
 
         if let Some(ref tx) = event_tx {
@@ -465,23 +573,7 @@ impl ToolExecutor {
         let content = fs::read_to_string(&full_path)
             .map_err(|e| format!("Failed to read file '{}': {e}", full_path.display()))?;
 
-        if !content.contains(target) {
-            return Err(format!(
-                "Target content not found in '{}'. Ensure whitespace matches exactly.",
-                full_path.display()
-            ));
-        }
-
-        let count = content.matches(target).count();
-        if count > 1 {
-            return Err(format!(
-                "Target content matched {} times in '{}'. Provide a larger unique context block.",
-                count,
-                full_path.display()
-            ));
-        }
-
-        let new_content = content.replacen(target, replacement, 1);
+        let new_content = edited_content(args, &content, &full_path)?;
         fs::write(&full_path, new_content)
             .map_err(|e| format!("Failed to save modified file '{}': {e}", full_path.display()))?;
 
@@ -783,8 +875,13 @@ impl ToolExecutor {
         cmd.arg(flag)
             .arg(cmd_str)
             .current_dir(&self.workspace_root)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         #[cfg(windows)]
         {
@@ -794,12 +891,15 @@ impl ToolExecutor {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn command '{cmd_str}': {e}"))?;
+        #[cfg(unix)]
+        let mut group = CommandProcessGroup(child.id());
+        let cancel = cancel_token.unwrap_or_default();
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
         let tx_out = event_tx.cloned();
-        let stdout_handle = tokio::spawn(async move {
+        let mut stdout_handle = tokio::spawn(async move {
             let mut out_lines = Vec::new();
             if let Some(stream) = stdout {
                 let mut reader = BufReader::new(stream).lines();
@@ -814,7 +914,7 @@ impl ToolExecutor {
         });
 
         let tx_err = event_tx.cloned();
-        let stderr_handle = tokio::spawn(async move {
+        let mut stderr_handle = tokio::spawn(async move {
             let mut err_lines = Vec::new();
             if let Some(stream) = stderr {
                 let mut reader = BufReader::new(stream).lines();
@@ -829,23 +929,36 @@ impl ToolExecutor {
             err_lines
         });
 
-        let wait_result = tokio::select! {
-            _ = async {
-                if let Some(ref token) = cancel_token {
-                    token.cancelled().await;
-                } else {
-                    std::future::pending::<()>().await;
-                }
-            } => {
-                let _ = child.kill().await;
-                Err("Command interrupted by user (Ctrl+C)".to_string())
-            }
-            res = child.wait() => {
-                res.map_err(|e| format!("Error waiting for command: {e}"))
-            }
+        // Cancellation must cover both the shell and output drain. A shell may
+        // exit while a child (npm, npx, dev server) still holds stdout/stderr open.
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => None,
+            result = async {
+                let status = child.wait().await.map_err(|e| format!("Error waiting for command: {e}"));
+                let output = tokio::join!(&mut stdout_handle, &mut stderr_handle);
+                (status, output)
+            } => Some(result),
         };
-
-        let (stdout_res, stderr_res) = tokio::join!(stdout_handle, stderr_handle);
+        let Some((wait_result, (stdout_res, stderr_res))) = result else {
+            #[cfg(unix)]
+            group.kill();
+            #[cfg(windows)]
+            if let Some(pid) = child.id() {
+                let mut stop = Command::new("taskkill");
+                stop.args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+                    .kill_on_drop(true).creation_flags(0x08000000);
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stop.status()).await;
+            }
+            let _ = child.start_kill();
+            stdout_handle.abort();
+            stderr_handle.abort();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), child.wait()).await;
+            return Err("Command stopped by user".into());
+        };
+        #[cfg(unix)]
+        { group.0 = None; }
         let stdout_lines = stdout_res.unwrap_or_default();
         let stderr_lines = stderr_res.unwrap_or_default();
 
@@ -881,6 +994,94 @@ impl ToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_stops_descendants_even_after_shell_exit() {
+        for shell_exits in [false, true] {
+            let root = std::env::temp_dir().join(format!("takiza-command-cancel-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+            fs::create_dir_all(&root).unwrap();
+            let executor = ToolExecutor::new(root.clone());
+            let cancellation = CancellationToken::new();
+            let token = cancellation.clone();
+            let command = format!("sleep 30 & echo $! > child.pid; {}", if shell_exits { "exit 0" } else { "wait" });
+            let task = tokio::spawn(async move { executor.execute("run_command", &json!({"command":command}).to_string(), None, Some(token)).await });
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                while !root.join("child.pid").exists() { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
+            }).await.unwrap();
+            let pid: i32 = fs::read_to_string(root.join("child.pid")).unwrap().trim().parse().unwrap();
+            // Give bash time to exit while its background child keeps pipes open.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            cancellation.cancel();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(2), task).await.unwrap().unwrap();
+            assert_eq!(result.unwrap_err(), "Command stopped by user");
+            #[cfg(target_os = "linux")]
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let state = fs::read_to_string(format!("/proc/{pid}/stat")).ok();
+                    if state.is_none_or(|state| state.split(") ").nth(1).is_some_and(|tail| tail.starts_with('Z'))) { break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }).await.expect("descendant survived cancellation");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn external_write_review_checks_paths_diff_and_changed_content() {
+        let root = std::env::temp_dir().join(format!("takiza-write-review-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let executor = ToolExecutor::new(workspace.clone());
+        for path in ["local.txt".into(), workspace.join("local.txt").to_string_lossy().into_owned(), "new/../local.txt".into()] {
+            assert!(executor.prepare_external_write("write_file", &json!({"path":path,"content":"local"}).to_string()).unwrap().is_none());
+        }
+        let outside = root.join("external.txt");
+        fs::write(&outside, "before\n").unwrap();
+        let args = json!({"path":"../external.txt","target_content":"before","replacement_content":"after"});
+        let review = executor.prepare_external_write("edit_file", &args.to_string()).unwrap().unwrap();
+        assert!(review.preview.contains("-before") && review.preview.contains("+after"));
+        assert!(review.preview.contains(&outside.to_string_lossy().to_string()));
+        assert!(executor.execute_external_write("write_file", &review, None, None).await.is_err());
+        fs::write(&outside, "concurrent\n").unwrap();
+        assert!(executor.execute_external_write("edit_file", &review, None, None).await.unwrap_err().contains("changed after review"));
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "concurrent\n");
+        fs::write(&outside, "before\n").unwrap();
+        let cancel = CancellationToken::new(); cancel.cancel();
+        assert!(executor.execute_external_write("edit_file", &review, None, Some(cancel)).await.is_err());
+        executor.execute_external_write("edit_file", &review, None, None).await.unwrap();
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "after\n");
+        let new_file = root.join("workspace-neighbor/new/deep/file.txt");
+        let review = executor.prepare_external_write("write_file", &json!({"path":new_file,"content":"new\n"}).to_string()).unwrap().unwrap();
+        assert!(review.preview.contains("+new"));
+        executor.execute_external_write("write_file", &review, None, None).await.unwrap();
+        assert_eq!(fs::read_to_string(new_file).unwrap(), "new\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn external_write_review_resolves_symlinks_and_rejects_changed_destinations() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("takiza-write-links-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        let workspace = root.join("workspace");
+        let outside = root.join("outside/deep");
+        fs::create_dir_all(&workspace).unwrap(); fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, workspace.join("link")).unwrap();
+        symlink(&workspace, workspace.join("inside-link")).unwrap();
+        let executor = ToolExecutor::new(workspace.clone());
+        let args = json!({"path":"link/../new/file.txt","content":"approved"});
+        let review = executor.prepare_external_write("write_file", &args.to_string()).unwrap().unwrap();
+        assert_eq!(review.path, root.join("outside/new/file.txt"));
+        assert!(executor.prepare_external_write("write_file", &json!({"path":"inside-link/file.txt","content":"local"}).to_string()).unwrap().is_none());
+        fs::remove_file(workspace.join("link")).unwrap();
+        symlink(&workspace, workspace.join("link")).unwrap();
+        assert!(executor.execute_external_write("write_file", &review, None, None).await.is_err());
+        assert!(!root.join("outside/new/file.txt").exists());
+        symlink(root.join("missing"), workspace.join("broken")).unwrap();
+        assert!(executor.prepare_external_write("write_file", &json!({"path":"broken","content":"must not write"}).to_string()).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn web_search_is_registered_and_uses_normal_tool_events() {

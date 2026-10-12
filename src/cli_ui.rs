@@ -14,11 +14,25 @@ pub struct TerminalScreen {
     active: bool,
 }
 
+static TERMINAL_SCREEN_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Modal readers may release raw mode only when they own the terminal. The TUI
+/// keeps it enabled between readers too, while mouse reporting remains active.
+pub fn disable_raw_mode() -> std::io::Result<()> {
+    if TERMINAL_SCREEN_ACTIVE.load(std::sync::atomic::Ordering::Acquire) {
+        Ok(())
+    } else {
+        crossterm::terminal::disable_raw_mode()
+    }
+}
+
 impl TerminalScreen {
     pub fn enter() -> std::io::Result<Self> {
         let active = stdout().is_terminal();
         let screen = Self { active };
         if active {
+            crossterm::terminal::enable_raw_mode()?;
+            TERMINAL_SCREEN_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
             execute!(stdout(), crossterm::terminal::EndSynchronizedUpdate)?;
             // Windows can restore mouse modes only after EnableMouseCapture has
             // saved the original console mode. ANSI terminals can reset stale
@@ -41,9 +55,41 @@ impl Drop for TerminalScreen {
                 ResetColor, cursor::Show, crossterm::event::DisableBracketedPaste,
                 crossterm::event::DisableMouseCapture, crossterm::terminal::LeaveAlternateScreen);
             let _ = out.flush();
+            // Disabling reporting is asynchronous: packets already in flight
+            // can arrive after the output flush. Keep echo disabled until input
+            // has settled, then restore the shell's terminal mode.
+            #[cfg(unix)]
+            drain_terminal_input();
+            TERMINAL_SCREEN_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
             let _ = crossterm::terminal::disable_raw_mode();
         }
     }
+}
+
+#[cfg(unix)]
+fn drain_terminal_input() {
+    use std::os::fd::AsRawFd;
+    // Crossterm uses /dev/tty when stdin is redirected; drain the same terminal.
+    let tty = if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 { None }
+        else { std::fs::File::open("/dev/tty").ok() };
+    let fd = tty.as_ref().map(AsRawFd::as_raw_fd).unwrap_or(libc::STDIN_FILENO);
+    if unsafe { libc::tcflush(fd, libc::TCIFLUSH) } != 0 { return; }
+    let deadline = std::time::Instant::now() + Duration::from_millis(200);
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() { break; }
+        let timeout = remaining.min(Duration::from_millis(50)).as_millis() as i32;
+        let mut input = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let ready = unsafe { libc::poll(&mut input, 1, timeout) };
+        if ready == 0 { break; }
+        if ready < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted { continue; }
+            break;
+        }
+        if input.revents & libc::POLLIN == 0 { break; }
+        unsafe { libc::tcflush(fd, libc::TCIFLUSH); }
+    }
+    unsafe { libc::tcflush(fd, libc::TCIFLUSH); }
 }
 
 #[derive(Default)]
@@ -343,6 +389,67 @@ fn output_limit(rows: u16) -> u16 {
 }
 
 static ACTIVE_CHAT_TITLE: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+static CONTEXT_TOKENS: std::sync::RwLock<Option<u64>> = std::sync::RwLock::new(None);
+
+pub fn set_context_tokens(tokens: Option<u64>) { *CONTEXT_TOKENS.write().unwrap() = tokens; }
+pub fn context_tokens() -> Option<u64> { *CONTEXT_TOKENS.read().unwrap() }
+
+fn context_color(current: Option<u64>, maximum: Option<u64>) -> Color {
+    let (Some(current), Some(maximum)) = (current, maximum.filter(|n| *n > 0)) else { return Color::DarkGrey; };
+    let ratio = (current as f64 / maximum as f64).clamp(0.0, 1.0);
+    let green = (80.0, 210.0, 130.0);
+    let yellow = (240.0, 200.0, 70.0);
+    let red = (245.0, 80.0, 80.0);
+    let (start, end, progress) = if ratio <= 0.5 { (green, yellow, ratio * 2.0) }
+        else { (yellow, red, (ratio - 0.5) * 2.0) };
+    let blend = |a: f64, b: f64| (a + (b - a) * progress).round() as u8;
+    Color::Rgb { r: blend(start.0, end.0), g: blend(start.1, end.1), b: blend(start.2, end.2) }
+}
+
+fn remaining_context_percent(current: Option<u64>, maximum: Option<u64>) -> Option<u64> {
+    let current = current?;
+    let maximum = maximum.filter(|maximum| *maximum > 0)?;
+    let remaining = maximum.saturating_sub(crate::llm::AGENT_MAX_OUTPUT_TOKENS).saturating_sub(current);
+    Some((remaining as f64 * 100.0 / maximum as f64).round() as u64)
+}
+
+/// Shared footer for the idle editor and active response; all widths exclude ANSI.
+pub fn prompt_footer(width: usize, hint: &str, border: Color, primary: Color) -> String {
+    footer_with_context(width, hint, border, primary, context_tokens(),
+        crate::model_metadata::current_limit(), &get_active_chat_title())
+}
+
+fn footer_with_context(width: usize, hint: &str, border: Color, primary: Color,
+    current: Option<u64>, maximum: Option<u64>, title: &str) -> String {
+    let mut meter = format!("{}/{}", current.map(crate::model_metadata::format_limit).unwrap_or_else(|| "?".into()),
+        maximum.map(crate::model_metadata::format_limit).unwrap_or_else(|| "?".into()));
+    if let Some(percent) = remaining_context_percent(current, maximum) {
+        let full = format!(" · {}", crate::i18n::tf!("~{percent}% to compact", percent = percent));
+        let short = format!(" · ~{percent}%");
+        // Keep the token meter and frame intact on narrow terminals.
+        if str_width(&meter) + str_width(&full) + 6 <= width { meter.push_str(&full); }
+        else if str_width(&meter) + str_width(&short) + 6 <= width { meter.push_str(&short); }
+    }
+    let meter_vis = str_width(&meter) + 2;
+    let hint = truncate_str(hint, width.saturating_sub(meter_vis + 4));
+    let hint_vis = str_width(&hint);
+    let title_room = width.saturating_sub(meter_vis + hint_vis + 4);
+    let title_prefix = "💬 ";
+    let title_suffix = "  •  ";
+    let decoration = str_width(title_prefix) + str_width(title_suffix);
+    let title = if !title.trim().is_empty() && title_room > decoration {
+        truncate_str(title.trim(), (title_room - decoration).min(35))
+    } else { String::new() };
+    let title_vis = if title.is_empty() { 0 } else { decoration + str_width(&title) };
+    let dashes = width.saturating_sub(meter_vis + title_vis + hint_vis + 3);
+    let border = SetForegroundColor(border).to_string();
+    let grey = SetForegroundColor(Color::DarkGrey).to_string();
+    let meter_color = SetForegroundColor(context_color(current, maximum)).to_string();
+    let primary = SetForegroundColor(primary).to_string();
+    let title_part = if title.is_empty() { String::new() }
+        else { format!("{grey}{title_prefix}{primary}{title}{grey}{title_suffix}") };
+    format!("{border}╰{} {meter_color}{meter} {title_part}{grey}{hint}{border}─╯\x1b[0m", "─".repeat(dashes))
+}
 static EXPAND_COMMAND_OUTPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn is_output_expanded() -> bool {
@@ -356,8 +463,15 @@ pub fn toggle_expanded_output() -> bool {
 }
 
 pub fn set_active_chat_title(title: &str) {
+    let title = plain_terminal_text(title).replace(['\n', '\r'], " ");
+    let title = title.trim();
     if let Ok(mut lock) = ACTIVE_CHAT_TITLE.write() {
         *lock = title.to_string();
+    }
+    if stdout().is_terminal() {
+        let window_title = if title.is_empty() { "Takiza Code".to_string() }
+            else { format!("{title} — Takiza Code") };
+        let _ = execute!(stdout(), crossterm::terminal::SetTitle(window_title));
     }
 }
 
@@ -541,13 +655,13 @@ pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, worksp
 
 pub fn print_user_cmd(cmd: &str) {
     let color = crate::theme::current().primary_ansi();
-    println!("\x1b[1m{color}❯ {}\x1b[0m\n", plain_terminal_text(cmd));
+    println!("\n\x1b[1m{color}❯ {}\x1b[0m\n", plain_terminal_text(cmd));
 }
 
-pub fn print_help() {
-    let th = crate::theme::current();
+pub fn help_text() -> String {
+    let mut lines = Vec::new();
+    macro_rules! println { () => { lines.push(String::new()) }; ($($arg:tt)*) => { lines.push(format!($($arg)*)) }; }
     println!();
-    execute!(stdout(), SetForegroundColor(th.primary_crossterm())).ok();
     println!("{}", crate::i18n::tf!("Type while the agent responds; submitted prompts wait in FIFO order."));
     println!("{}", crate::i18n::tf!("Slash commands run immediately. Changing session/model interrupts the active response.\n"));
     println!("{}", crate::i18n::tf!("Available Slash Commands:"));
@@ -567,15 +681,17 @@ pub fn print_help() {
     println!("{}", crate::i18n::tf!("  /reset              - Reset conversation history to start fresh"));
     println!("{}", crate::i18n::tf!("  /approval           - Toggle auto-approving commands vs asking permissions"));
     println!("{}", crate::i18n::tf!("  /tools              - List available agent tools"));
+    println!("  /mcp                - {}",crate::i18n::tr("Manage MCP servers and OAuth login"));
+    println!("  /lsp                - {}",crate::i18n::tr("Manage language servers"));
     println!("{}", crate::i18n::tf!("  /skills             - Choose a skill (type to search, Enter to insert, F5 to rescan)"));
     println!("{}", crate::i18n::tf!("  /exit or /quit      - Exit Takiza Code"));
     println!("{}", crate::i18n::tf!("  !<shell command>    - Execute bash command directly (e.g. !git status, !cargo test)"));
-    println!("{}", crate::i18n::tf!("  Ctrl+O              - Toggle expansion of command/search output (max 5 lines in standard mode)"));
+    println!("{}", crate::i18n::tf!("  Ctrl+O              - Expand or collapse tool and command output (3-line preview)"));
     println!("{}", crate::i18n::tf!("\nCLI Flags (on startup):"));
     println!("{}", crate::i18n::tf!("  -c, --continue      - Continue previous session"));
     println!("{}", crate::i18n::tf!("  -y, --yes, -a       - Skip command permissions (default: ask permission before running commands)"));
-    execute!(stdout(), ResetColor).ok();
     println!();
+    lines.join("\n")
 }
 
 pub fn render_bottom_box(prompt: &str, branch_tag: &str) -> (u16, u16) {
@@ -688,49 +804,9 @@ pub fn render_bottom_box(prompt: &str, branch_tag: &str) -> (u16, u16) {
     } else {
         crate::i18n::tr(" Esc: Stop ")
     };
-    let hint_w = str_width(hint);
-
-    let chat_title = get_active_chat_title();
-    let (title_part, title_vis) = if !chat_title.trim().is_empty() && box_width >= 55 {
-        let max_title_w = box_width.saturating_sub(hint_w + 14).min(35);
-        let safe_title = truncate_str(chat_title.trim(), max_title_w);
-        let vis = str_width(" 💬 ") + str_width(&safe_title) + str_width("  •  ");
-        (Some(safe_title), vis)
-    } else {
-        (None, 0)
-    };
-
-    let total_text_w = title_vis + hint_w;
-    let dashes_bottom = box_width.saturating_sub(total_text_w + 3);
     let bottom_row = start_row + 1 + lines.len() as u16;
-    let _ = execute!(
-        out,
-        cursor::MoveTo(0, bottom_row),
-        SetForegroundColor(border_color),
-        crossterm::style::Print("╰"),
-        crossterm::style::Print("─".repeat(dashes_bottom)),
-    );
-
-    if let Some(ref t) = title_part {
-        let _ = execute!(
-            out,
-            SetForegroundColor(Color::DarkGrey),
-            crossterm::style::Print(" 💬 "),
-            SetForegroundColor(primary_color),
-            crossterm::style::Print(t),
-            SetForegroundColor(Color::DarkGrey),
-            crossterm::style::Print("  •  "),
-        );
-    }
-
-    let _ = execute!(
-        out,
-        SetForegroundColor(Color::DarkGrey),
-        crossterm::style::Print(hint),
-        SetForegroundColor(border_color),
-        crossterm::style::Print("─╯"),
-        ResetColor
-    );
+    let _ = execute!(out, cursor::MoveTo(0, bottom_row),
+        crossterm::style::Print(prompt_footer(box_width, hint, border_color, primary_color)));
     let _ = out.flush();
 
     let cursor_x = (crate::prompt::input_column(caret_row) + caret_col) as u16;
@@ -860,6 +936,12 @@ pub fn random_thinking_message() -> &'static str {
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 static ACTIVE_ACTIVITY: Mutex<Option<(&'static str, usize)>> = Mutex::new(None);
+static ACTIVITY_DETAIL: Mutex<String> = Mutex::new(String::new());
+
+pub fn set_compaction_progress(percent: u64, part: usize, parts: usize) {
+    *ACTIVITY_DETAIL.lock().unwrap() = format!(" {percent}% · {part}/{parts}");
+    paint_activity();
+}
 
 fn activity_line(width: usize) -> String {
     let activity = *ACTIVE_ACTIVITY.lock().unwrap();
@@ -870,7 +952,8 @@ fn activity_line(width: usize) -> String {
     match activity {
         Some((message, frame)) => {
             let message = crate::i18n::tr(message);
-            let status = format!("{} {message}", SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]);
+            let detail = ACTIVITY_DETAIL.lock().unwrap().clone();
+            let status = format!("{} {message}{detail}", SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]);
             let status = crate::prompt::truncate_visible(&status, width);
             let spare = width.saturating_sub(str_width(&status));
             let hint = if !scroll.is_empty() && spare >= str_width(&scroll) + 2 {
@@ -922,6 +1005,7 @@ impl Spinner {
         _output_row: Arc<Mutex<u16>>,
     ) -> Self {
         *ACTIVE_ACTIVITY.lock().unwrap() = Some((message, 0));
+        ACTIVITY_DETAIL.lock().unwrap().clear();
         let (x, y) = render_bottom_box(prompt, branch_tag);
         position_input_cursor(x, y);
         paint_activity();
@@ -948,6 +1032,7 @@ impl Spinner {
         if let Some(tx) = self.stop_tx.take() { let _ = tx.send(()).await; }
         if let Some(h) = self.handle.take() { let _ = h.await; }
         *ACTIVE_ACTIVITY.lock().unwrap() = None;
+        ACTIVITY_DETAIL.lock().unwrap().clear();
         paint_activity();
     }
 }
@@ -1309,93 +1394,191 @@ fn print_thought_internal(thought: &str, row: &mut u16, prompt: &str, branch_tag
 }
 
 fn extract_compact_arg(name: &str, args: &str) -> String {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
-        if let Some(obj) = v.as_object() {
-            if name == "ask_question" {
-                if let Some(questions) = obj.get("questions").and_then(|value| value.as_array()) {
-                    return format!("{} {}", questions.len(), if questions.len() == 1 { crate::i18n::tr("question") } else { "questions" });
-                }
-            }
-            if name == "read_skill" {
-                if let Some(name) = obj.get("name").and_then(|value| value.as_str()) { return name.to_string(); }
-            }
-            if let Some(path) = obj.get("path").and_then(|p| p.as_str()) {
-                return path.to_string();
-            }
-            if let Some(cmd) = obj.get("command").and_then(|c| c.as_str()) {
-                return cmd.to_string();
-            }
-            if let Some(q) = obj.get("query").and_then(|q| q.as_str()) {
-                return format!("\"{}\"", q);
-            }
-            if let Some(p) = obj.get("pattern").and_then(|p| p.as_str()) {
-                return format!("\"{}\"", p);
-            }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(args) else { return args.trim().into(); };
+    let Some(obj) = value.as_object() else { return value.to_string(); };
+    if name == "ask_question" {
+        if let Some(questions) = obj.get("questions").and_then(|v| v.as_array()) {
+            return crate::i18n::tf!("{} questions", questions.len());
         }
     }
-    let trimmed = args.trim();
-    if trimmed.is_empty() {
-        String::new()
-    } else {
-        truncate_str(trimmed, 35)
+    for key in ["path", "command", "query", "pattern", "name"] {
+        if let Some(value) = obj.get(key).and_then(|v| v.as_str()) {
+            let mut target = value.to_owned();
+            if name.starts_with("lsp_") {
+                if let Some(line) = obj.get("line").and_then(|v| v.as_u64()) {
+                    target.push_str(&format!(":{line}"));
+                    if let Some(column) = obj.get("column").and_then(|v| v.as_u64()) { target.push_str(&format!(":{column}")); }
+                }
+            }
+            return target;
+        }
     }
+    obj.iter().map(|(key, value)| {
+        let display = match value {
+            serde_json::Value::Array(items) => crate::i18n::tf!("{} items", items.len()),
+            serde_json::Value::Object(_) => "{…}".into(),
+            _ => value.to_string(),
+        };
+        format!("{key}: {display}")
+    }).collect::<Vec<_>>().join(" · ")
 }
 
-fn get_tool_icon(name: &str) -> &'static str {
-    match name {
-        "run_command" => crate::i18n::tr("command"),
-        "web_search" => "websearch",
-        "write_file" => crate::i18n::tr("write"),
-        "edit_file" => crate::i18n::tr("edit"),
-        "read_file" => crate::i18n::tr("read"),
-        "find_files" => crate::i18n::tr("find"),
-        "grep_search" => crate::i18n::tr("search"),
-        "list_dir" => crate::i18n::tr("list"),
-        "ask_question" => crate::i18n::tr("question"),
-        "read_skill" => crate::i18n::tr("skill"),
-        _ => crate::i18n::tr("tool"),
+fn tool_title(name: &str) -> String {
+    if let Some(encoded) = name.strip_prefix("mcp__") {
+        // Model names escape punctuation; show the familiar server/tool names.
+        fn decode(part: &str) -> String {
+            let mut bytes = Vec::new();
+            let mut rest = part.as_bytes();
+            while !rest.is_empty() {
+                if rest[0] == b'_' && rest.len() >= 3 {
+                    if let Ok(hex) = std::str::from_utf8(&rest[1..3]) {
+                        if let Ok(byte) = u8::from_str_radix(hex, 16) { bytes.push(byte); rest = &rest[3..]; continue; }
+                    }
+                }
+                bytes.push(rest[0]); rest = &rest[1..];
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        if let Some((server, tool)) = encoded.split_once("__") { return plain_terminal_text(&format!("MCP · {} / {}", decode(server), decode(tool))).replace(['\n', '\r'], " "); }
     }
+    let title = match name {
+        "run_command" => "Bash", "read_file" => "Read", "write_file" => "Write", "edit_file" => "Edit",
+        "list_dir" => "List", "find_files" => "Glob", "grep_search" => "Search", "web_search" => "Web search",
+        "ask_question" => "Ask", "read_skill" => "Skill", "lsp_hover" => "LSP · Hover", "lsp_definition" => "LSP · Definition",
+        "lsp_references" => "LSP · References", "lsp_symbols" => "LSP · Symbols", "lsp_diagnostics" => "LSP · Diagnostics",
+        _ => name,
+    };
+    plain_terminal_text(crate::i18n::tr(title)).replace(['\n', '\r'], " ")
+}
+
+pub fn tool_was_denied(result: &str) -> bool {
+    result.starts_with("Command execution denied by user:") || serde_json::from_str::<serde_json::Value>(result)
+        .is_ok_and(|value| value["status"] == "denied" && value["executed"] == false)
+}
+
+fn tool_was_cancelled(result: &str) -> bool {
+    result == "Command stopped by user" || result.starts_with("Integration call cancelled;")
 }
 
 fn tool_detail(name: &str, result: Option<&str>, is_error: bool) -> String {
-    if is_error { return crate::i18n::tr("failed").into(); }
     let Some(result) = result else { return crate::i18n::tr("running").into(); };
+    if tool_was_denied(result) { return crate::i18n::tr("denied").into(); }
+    if tool_was_cancelled(result) { return crate::i18n::tr("cancelled").into(); }
+    if is_error { return crate::i18n::tr("failed").into(); }
     match name {
         "list_dir" => crate::i18n::tf!("{} items", result.lines().filter(|line| !line.trim().is_empty()).count()),
         "read_file" => crate::i18n::tf!("{} lines", result.lines().count()),
-        _ => String::new(),
+        _ => crate::i18n::tr("done").into(),
     }
+}
+
+fn integration_result_text(name: &str, result: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(result) else { return result.into(); };
+    if name.starts_with("mcp__") {
+        let mut parts = Vec::new();
+        for block in value["content"].as_array().into_iter().flatten() {
+            let text = match block["type"].as_str().unwrap_or("") {
+                "text" => block["text"].as_str().unwrap_or("").to_owned(),
+                "resource_link" => format!("{} {}", block["name"].as_str().unwrap_or(""), block["uri"].as_str().unwrap_or("")).trim().to_owned(),
+                "resource" => block["resource"]["text"].as_str().unwrap_or("").to_owned(),
+                "image" => crate::i18n::tr("Image attached").into(),
+                "unsupported" => crate::i18n::tf!("Unsupported content: {}", block["format"].as_str().unwrap_or("unknown")),
+                _ => String::new(),
+            };
+            if !text.is_empty() { parts.push(text); }
+        }
+        if let Some(structured) = value.get("structuredContent").filter(|v| !v.is_null()) {
+            parts.push(serde_json::to_string_pretty(structured).unwrap_or_default());
+        }
+        return parts.join("\n");
+    }
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| result.into())
+}
+
+const OUTPUT_PREVIEW_LINES: usize = 3;
+
+fn collapsible_lines(mut lines: Vec<String>, width: usize, indent: &str, expanded: bool) -> Vec<String> {
+    if expanded || lines.len() <= OUTPUT_PREVIEW_LINES { return lines; }
+    let hidden = lines.len() - OUTPUT_PREVIEW_LINES;
+    lines.truncate(OUTPUT_PREVIEW_LINES);
+    let room = width.saturating_sub(str_width(indent));
+    let mut hint = crate::i18n::tf!("+{} lines  · Ctrl+O to expand", hidden);
+    if str_width(&hint) > room { hint = crate::i18n::tf!("+{} lines · Ctrl+O", hidden); }
+    if str_width(&hint) > room { hint = format!("Ctrl+O +{hidden}"); }
+    lines.push(format!("{indent}\x1b[90m{}\x1b[0m", truncate_str(&hint, room)));
+    lines
 }
 
 fn tool_error_lines(result: &str, width: usize, expanded: bool) -> Vec<String> {
-    let wrapped = wrap_history_text(result.trim(), width.max(1));
-    let visible = if expanded { wrapped.len() } else { wrapped.len().min(3) };
-    let mut lines: Vec<_> = wrapped[..visible].iter()
-        .map(|line| format!("    \x1b[31m{line}\x1b[0m")).collect();
-    if wrapped.len() > visible {
-        lines.push(crate::i18n::tf!("    \x1b[90m+{} lines  · Ctrl+O to expand\x1b[0m", wrapped.len() - visible));
-    }
-    lines
+    let lines = wrap_history_text(result.trim(), width.max(1)).into_iter().enumerate()
+        .map(|(index, line)| format!("{}\x1b[31m{line}\x1b[0m", if index == 0 { "  └ " } else { "    " })).collect();
+    collapsible_lines(lines, width + 4, "    ", expanded)
 }
 
 fn tool_output_lines(logs: &[&str], width: usize, expanded: bool) -> Vec<String> {
-    let wrapped: Vec<_> = logs.iter()
-        .flat_map(|text| wrap_history_text(text.trim(), width.max(1))).collect();
-    let visible = if expanded { wrapped.len() } else { wrapped.len().min(3) };
-    let mut lines: Vec<_> = wrapped[..visible].iter()
-        .map(|line| format!("    \x1b[90m{line}\x1b[0m")).collect();
-    if wrapped.len() > visible {
-        lines.push(crate::i18n::tf!("    \x1b[90m+{} lines  · Ctrl+O to expand\x1b[0m", wrapped.len() - visible));
-    }
-    lines
+    let lines = logs.iter().flat_map(|text| wrap_history_text(text.trim(), width.max(1)))
+        .enumerate().map(|(index, line)| format!("{}\x1b[90m{line}\x1b[0m", if index == 0 { "  └ " } else { "    " })).collect();
+    collapsible_lines(lines, width + 4, "    ", expanded)
+}
+
+fn is_approval_log(text: &str) -> bool {
+    ["approval requested", "approval allowed", "approval allowed for session", "approval denied"]
+        .iter().any(|key| text.trim() == *key || text.trim() == crate::i18n::tr(key))
+        || ["запрошено разрешение", "разрешено", "разрешено на сессию", "запрещено", "已请求权限", "已允许", "已在此会话中允许", "已拒绝"].contains(&text.trim())
 }
 
 fn tool_header_parts(name: &str, args: &str, detail: &str, width: usize) -> (String, String, String) {
-    let label = if width >= 32 { format!("  {}{}", get_tool_icon(name), " ".repeat(8usize.saturating_sub(str_width(get_tool_icon(name))))) } else { format!("  {} ", get_tool_icon(name)) };
-    let detail = if detail.is_empty() || width < 32 { String::new() } else { format!("  · {detail}") };
+    let detail = if detail.is_empty() || width < 24 { String::new() } else { format!("  · {detail}") };
     let target = plain_terminal_text(&extract_compact_arg(name, args)).replace(['\n', '\r'], " ");
-    let target = truncate_str(&target, width.saturating_sub(str_width(&label) + str_width(&detail)));
+    let room = width.saturating_sub(str_width(&detail));
+    let label = truncate_str(&format!("  ● {}", tool_title(name)), room.saturating_sub(if target.is_empty() { 0 } else { 12.min(room / 2) }).max(5).min(room));
+    let target = if target.is_empty() { target } else { truncate_str(&format!("  {target}"), room.saturating_sub(str_width(&label))) };
     (label, target, detail)
+}
+
+fn tool_argument_lines(name: &str, args: &str, detail: &str, width: usize) -> Vec<String> {
+    let (label, target, _) = tool_header_parts(name, args, detail, width + 4);
+    let full_target = plain_terminal_text(&extract_compact_arg(name, args)).replace(['\n', '\r'], " ");
+    let truncated = target != if full_target.is_empty() { String::new() } else { format!("  {full_target}") }
+        || label != format!("  ● {}", tool_title(name));
+    if !truncated { return Vec::new(); }
+    if !is_output_expanded() {
+        return vec![format!("    \x1b[90m{}\x1b[0m", truncate_str(crate::i18n::tr("Ctrl+O to view full call"), width))];
+    }
+    let full_args = serde_json::from_str::<serde_json::Value>(args).ok()
+        .and_then(|value| value.as_object().map(|obj| obj.iter().map(|(key, value)| {
+            let display = value.as_str().map(str::to_owned).unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_default());
+            format!("{key}: {display}")
+        }).collect::<Vec<_>>().join("\n"))).unwrap_or_else(|| args.to_owned());
+    tool_output_lines(&[&format!("{}\n{}", tool_title(name), full_args)], width, true)
+}
+
+fn tool_header_line(name: &str, args: &str, result: Option<(&str, bool)>, width: usize) -> String {
+    let (label, target, detail) = tool_header_parts(name, args, &tool_detail(name, result.map(|r| r.0), result.is_some_and(|r| r.1)), width);
+    let color = match result {
+        Some((text, _)) if tool_was_denied(text) || tool_was_cancelled(text) => "\x1b[33m",
+        Some((_, true)) => "\x1b[31m",
+        Some(_) => "\x1b[32m",
+        None => crate::theme::current().primary_ansi(),
+    };
+    let title = label.strip_prefix("  ● ").unwrap_or(&label);
+    format!("  {color}●\x1b[0m \x1b[1m{title}\x1b[0m{target}\x1b[90m{detail}\x1b[0m")
+}
+
+fn tool_result_lines(name: &str, result: &str, is_error: bool, width: usize) -> Vec<String> {
+    if tool_was_denied(result) {
+        return tool_output_lines(&[crate::i18n::tr("Declined by you. Nothing was executed.")], width, true);
+    }
+    if tool_was_cancelled(result) {
+        let message = if name.starts_with("mcp__") { crate::i18n::tr("Cancelled. The server may have executed this action; check before retrying.") }
+            else { crate::i18n::tr("Stopped by you.") };
+        return tool_output_lines(&[message], width, true);
+    }
+    let display = if name.starts_with("mcp__") || name.starts_with("lsp_") { integration_result_text(name, result) } else { result.into() };
+    if display.trim().is_empty() { return Vec::new(); }
+    if is_error { tool_error_lines(&display, width, is_output_expanded()) }
+    else if name.starts_with("mcp__") || name.starts_with("lsp_") { tool_output_lines(&[&display], width, is_output_expanded()) }
+    else { Vec::new() }
 }
 
 fn print_tool_header(name: &str, args: &str, result: Option<&str>, is_error: bool,
@@ -1403,25 +1586,14 @@ fn print_tool_header(name: &str, args: &str, result: Option<&str>, is_error: boo
     if history_scrolled() { return; }
     if terminal_is_small() { *row = 0; return; }
     let (cols, _) = terminal_size();
-    let detail = tool_detail(name, result, is_error);
-    let (label, target, detail) = tool_header_parts(name, args, &detail, cols.saturating_sub(2) as usize);
+    let mut lines = vec![tool_header_line(name, args, result.map(|r| (r, is_error)), cols.saturating_sub(2) as usize)];
+    if let Some(result) = result { lines.extend(tool_result_lines(name, result, is_error, cols.saturating_sub(6).max(1) as usize)); }
     let mut out = stdout();
-    prepare_output_line_internal(row, 1, prompt, branch, render_bottom);
-    let _ = execute!(out, cursor::Hide, cursor::MoveTo(0, *row),
-        crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
-        SetForegroundColor(if is_error { Color::Red } else { crate::theme::current().secondary_crossterm() }),
-        crossterm::style::Print(label), ResetColor, crossterm::style::Print(target),
-        SetForegroundColor(if is_error { Color::Red } else { Color::DarkGrey }),
-        crossterm::style::Print(detail), ResetColor);
-    *row += 1;
-    if is_error {
-        for line in tool_error_lines(result.unwrap_or(crate::i18n::tr("Unknown error")), cols.saturating_sub(6).max(1) as usize, is_output_expanded()) {
-            prepare_output_line_internal(row, 1, prompt, branch, render_bottom);
-            let _ = execute!(out, cursor::MoveTo(0, *row),
-                crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
-                crossterm::style::Print(line), ResetColor);
-            *row += 1;
-        }
+    for line in lines {
+        prepare_output_line_internal(row, 1, prompt, branch, render_bottom);
+        let _ = execute!(out, cursor::Hide, cursor::MoveTo(0, *row),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine), crossterm::style::Print(line), ResetColor);
+        *row += 1;
     }
     if render_bottom {
         let (x, y) = render_bottom_box(prompt, branch);
@@ -2564,7 +2736,7 @@ pub fn ask_interactive_question_with_redraw(
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HistoryItem {
     UserPrompt(String),
     Thought(String),
@@ -2708,8 +2880,8 @@ fn question_log_lines(text: &str, width: usize) -> Option<Vec<String>> {
         (crate::i18n::tr("    answer    "), text, theme.primary_ansi())
     } else { return None; };
     let label_color = if text_is_question { theme.secondary_ansi() } else { "\x1b[90m" };
-    Some(question_transcript_lines(label, &plain_terminal_text(text), width + 6).into_iter()
-        .map(|(label, line)| format!("{label_color}{label}{color}{line}\x1b[0m")).collect())
+    Some(collapsible_lines(question_transcript_lines(label, &plain_terminal_text(text), width + 6).into_iter()
+        .map(|(label, line)| format!("{label_color}{label}{color}{line}\x1b[0m")).collect(), width + 4, "    ", is_output_expanded()))
 }
 
 fn file_diff_lines(diff: &str, width: usize, expanded: bool) -> Vec<String> {
@@ -2720,7 +2892,7 @@ fn file_diff_lines(diff: &str, width: usize, expanded: bool) -> Vec<String> {
     let inner_width = width.saturating_sub(4).max(1);
     let mut rows = Vec::new();
     for line in plain_terminal_text(diff).lines() {
-        if !expanded && line.starts_with(' ') { continue; }
+        if !expanded && (line.starts_with(' ') || line.starts_with("--- ") || line.starts_with("+++ ")) { continue; }
         let (color, background) = if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
             (secondary, "")
         } else if line.starts_with('+') { (added, added_background) }
@@ -2731,7 +2903,7 @@ fn file_diff_lines(diff: &str, width: usize, expanded: bool) -> Vec<String> {
             rows.push(format!("    {background}{color}{wrapped}{}\x1b[0m", " ".repeat(padding)));
         }
     }
-    let count = if expanded { rows.len() } else { rows.len().min(10) };
+    let count = if expanded { rows.len() } else { rows.len().min(OUTPUT_PREVIEW_LINES) };
     let hidden = rows.len() - count;
     rows.truncate(count);
     if hidden > 0 {
@@ -2744,12 +2916,12 @@ fn file_diff_lines(diff: &str, width: usize, expanded: bool) -> Vec<String> {
 fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
     let theme = crate::theme::current();
     let primary = theme.primary_ansi();
-    let secondary = theme.secondary_ansi();
     let mut lines = Vec::new();
     let mut index = 0;
     while index < history.len() {
         match &history[index] {
             HistoryItem::UserPrompt(text) => {
+                lines.push(String::new());
                 for (i, line) in wrap_history_text(text, width).into_iter().enumerate() {
                     lines.push(format!("\x1b[1m{primary}{}{line}\x1b[0m", if i == 0 { "❯ " } else { "  " }));
                 }
@@ -2776,14 +2948,13 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
                 let completed = match history.get(end) {
                     Some(HistoryItem::ToolEnd { result, is_error, .. }) => Some((result.as_str(), *is_error)), _ => None,
                 };
-                let detail = tool_detail(name, completed.map(|c| c.0), completed.is_some_and(|c| c.1));
-                let (label, target, detail) = tool_header_parts(name, args, &detail, width + 4);
-                lines.push(format!("{secondary}{label}\x1b[0m{target}\x1b[90m{detail}\x1b[0m"));
-                if let Some((result, true)) = completed {
-                    lines.extend(tool_error_lines(result, width, is_output_expanded()));
+                lines.push(tool_header_line(name, args, completed, width + 4));
+                lines.extend(tool_argument_lines(name, args, &tool_detail(name, completed.map(|c| c.0), completed.is_some_and(|c| c.1)), width));
+                if let Some((result, is_error)) = completed {
+                    lines.extend(tool_result_lines(name, result, is_error, width));
                 }
                 let logs: Vec<_> = history[start..end].iter().filter_map(|item| match item {
-                    HistoryItem::ToolLog(text) if !text.starts_with("$ ") && question_log_lines(text, width).is_none()
+                    HistoryItem::ToolLog(text) if !text.starts_with("$ ") && !is_approval_log(text) && question_log_lines(text, width).is_none()
                         && !completed.is_some_and(|(result, error)| error && name == "run_command"
                             && plain_terminal_text(result).contains(plain_terminal_text(text).trim())) => Some(text.as_str()), _ => None,
                 }).collect();
@@ -2795,12 +2966,13 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
                         }
                     }
                 }
-                // Answers are conversation content, so keep them visible even when tool output is collapsed.
+                // Keep each question and answer visible, with expansion for long transcript entries.
                 for item in &history[start..end] {
                     if let HistoryItem::ToolLog(text) = item {
                         if let Some(answer_lines) = question_log_lines(text, width) { lines.extend(answer_lines); }
                     }
                 }
+                if completed.is_some() { lines.push(String::new()); }
                 index = if completed.is_some() { end + 1 } else { end };
                 continue;
             }
@@ -2808,15 +2980,15 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
                 lines.extend(file_diff_lines(diff, width, is_output_expanded()));
             }
             HistoryItem::ToolLog(text) => {
+                if is_approval_log(text) { index += 1; continue; }
                 if let Some(answer_lines) = question_log_lines(text, width) { lines.extend(answer_lines); }
-                else { lines.extend(wrap_history_text(text.trim(), width.max(1)).into_iter()
-                    .map(|line| format!("    \x1b[90m{line}\x1b[0m")));
-                }
+                else { lines.extend(tool_output_lines(&[text], width, is_output_expanded())); }
             }
             HistoryItem::ToolEnd { name, args, result, is_error } => {
-                let (label, target, detail) = tool_header_parts(name, args, &tool_detail(name, Some(result), *is_error), width);
-                lines.push(format!("{secondary}{label}\x1b[0m{target}  {detail}"));
-                if *is_error { lines.extend(tool_error_lines(result, width, is_output_expanded())); }
+                lines.push(tool_header_line(name, args, Some((result, *is_error)), width + 4));
+                lines.extend(tool_argument_lines(name, args, &tool_detail(name, Some(result), *is_error), width));
+                lines.extend(tool_result_lines(name, result, *is_error, width));
+                lines.push(String::new());
             }
             HistoryItem::Error(text) => {
                 let display = text.strip_prefix("LLM error: ").map(|detail| crate::i18n::tf!("LLM error: {}", detail));
@@ -2826,6 +2998,84 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
         index += 1;
     }
     lines
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HistoryLayoutKey {
+    width: usize,
+    theme: crate::theme::Theme,
+    language: crate::i18n::Language,
+    expanded: bool,
+}
+
+struct HistoryBlock { source: Vec<HistoryItem>, lines: Vec<String> }
+struct HistoryLayout { blocks: Vec<Arc<HistoryBlock>>, ends: Vec<usize>, total: usize }
+
+impl HistoryLayout {
+    fn visible(&self, range: std::ops::Range<usize>) -> Vec<String> {
+        let mut lines = Vec::with_capacity(range.len());
+        let first = self.ends.partition_point(|&end| end <= range.start);
+        for i in first..self.blocks.len() {
+            let start = if i == 0 { 0 } else { self.ends[i - 1] };
+            if start >= range.end { break; }
+            let from = range.start.saturating_sub(start);
+            let to = range.end.saturating_sub(start).min(self.blocks[i].lines.len());
+            lines.extend_from_slice(&self.blocks[i].lines[from..to]);
+        }
+        lines
+    }
+}
+
+#[derive(Default)]
+struct HistoryLayoutCache { key: Option<HistoryLayoutKey>, layout: Option<Arc<HistoryLayout>> }
+
+impl HistoryLayoutCache {
+    fn update(&mut self, history: &[HistoryItem], key: HistoryLayoutKey) -> Arc<HistoryLayout> {
+        let previous = self.layout.as_ref().filter(|_| self.key == Some(key));
+        let mut blocks = Vec::new();
+        let mut ends = Vec::new();
+        let mut total = 0;
+        let mut index = 0;
+        let mut changed = previous.is_none();
+        while index < history.len() {
+            let mut end = index + 1;
+            // A tool's logs, diff and completion are one rendering unit.
+            if matches!(history[index], HistoryItem::ToolStart { .. }) {
+                while end < history.len() && matches!(history[end], HistoryItem::ToolLog(_) | HistoryItem::FileDiff(_)) { end += 1; }
+                if matches!(history.get(end), Some(HistoryItem::ToolEnd { .. })) { end += 1; }
+            }
+            let source = &history[index..end];
+            let old = previous.and_then(|layout| layout.blocks.get(blocks.len()));
+            let block = if let Some(old) = old.filter(|old| old.source == source) { Arc::clone(old) }
+                else {
+                    changed = true;
+                    Arc::new(HistoryBlock { source: source.to_vec(), lines: history_lines(source, key.width) })
+                };
+            total += block.lines.len();
+            ends.push(total);
+            blocks.push(block);
+            index = end;
+        }
+        if !changed && previous.is_some_and(|layout| layout.blocks.len() == blocks.len()) {
+            return Arc::clone(previous.unwrap());
+        }
+        let layout = Arc::new(HistoryLayout { blocks, ends, total });
+        self.key = Some(key);
+        self.layout = Some(Arc::clone(&layout));
+        layout
+    }
+}
+
+fn history_layout(history: &[HistoryItem], width: usize) -> Arc<HistoryLayout> {
+    static CACHE: std::sync::OnceLock<Mutex<HistoryLayoutCache>> = std::sync::OnceLock::new();
+    let key = HistoryLayoutKey { width, theme: crate::theme::current(), language: crate::i18n::current(), expanded: is_output_expanded() };
+    CACHE.get_or_init(|| Mutex::new(HistoryLayoutCache::default())).lock().unwrap().update(history, key)
+}
+
+fn transcript_view(banner: &[String], history: &HistoryLayout, range: std::ops::Range<usize>) -> Vec<String> {
+    let mut visible = banner.get(range.start.min(banner.len())..range.end.min(banner.len())).unwrap_or_default().to_vec();
+    visible.extend(history.visible(range.start.saturating_sub(banner.len())..range.end.saturating_sub(banner.len()).min(history.total)));
+    visible
 }
 
 fn banner_lines(model: &str, base_url: &str, workspace: &str, git_info: &str) -> Vec<String> {
@@ -2860,7 +3110,8 @@ struct ChatBackground {
     base_url: String,
     workspace: String,
     git_info: String,
-    history: Vec<HistoryItem>,
+    layout: Arc<HistoryLayout>,
+    key: HistoryLayoutKey,
 }
 
 static CHAT_BACKGROUND: Mutex<Option<ChatBackground>> = Mutex::new(None);
@@ -2870,13 +3121,19 @@ pub fn paint_chat_background(out: &mut impl Write, panel_top: u16) -> std::io::R
     let background = CHAT_BACKGROUND.lock().unwrap();
     let Some(chat) = background.as_ref() else { return Ok(()); };
     let (cols, term_rows) = terminal_size();
-    let mut lines = banner_lines(&chat.model, &chat.base_url, &chat.workspace, &chat.git_info);
-    lines.extend(history_lines(&chat.history, cols.saturating_sub(6).max(1) as usize));
-    let offset = HISTORY_VIEW.lock().unwrap().offset.min(lines.len().saturating_sub(panel_top as usize));
-    let end = lines.len().saturating_sub(offset);
+    let banner = banner_lines(&chat.model, &chat.base_url, &chat.workspace, &chat.git_info);
+    let key = HistoryLayoutKey { width: cols.saturating_sub(6).max(1) as usize,
+        theme: crate::theme::current(), language: crate::i18n::current(), expanded: is_output_expanded() };
+    let layout = if key == chat.key { Arc::clone(&chat.layout) } else {
+        let history = chat.layout.blocks.iter().flat_map(|block| block.source.iter().cloned()).collect::<Vec<_>>();
+        history_layout(&history, key.width)
+    };
+    let total = banner.len() + layout.total;
+    let offset = HISTORY_VIEW.lock().unwrap().offset.min(total.saturating_sub(panel_top as usize));
+    let end = total.saturating_sub(offset);
     let start = end.saturating_sub(panel_top as usize);
-    let text = (0..panel_top).map(|row| lines.get(start + row as usize)
-        .filter(|_| start + (row as usize) < end).cloned().unwrap_or_default()).collect::<Vec<_>>();
+    let mut text = transcript_view(&banner, &layout, start..end);
+    text.resize(panel_top as usize, String::new());
     let snow = crate::snow::Frame::new(cols.saturating_sub(1) as usize, text.len());
     let painted = text.iter().enumerate().map(|(row, line)| snow.line(line, row)).collect::<Vec<_>>();
     for (row, line) in painted.iter().enumerate() {
@@ -2893,20 +3150,22 @@ pub fn redraw_all(
     model: &str, base_url: &str, workspace: &str, git_info: &str,
     history: &[HistoryItem], _branch_tag: &str, _current_prompt: &str,
 ) -> u16 {
-    *CHAT_BACKGROUND.lock().unwrap() = Some(ChatBackground {
-        model: model.to_string(), base_url: base_url.to_string(), workspace: workspace.to_string(),
-        git_info: git_info.to_string(), history: history.to_vec(),
-    });
     let _geometry = begin_terminal_frame();
     if terminal_is_small() { render_small_terminal(); return 0; }
     let (cols, rows) = terminal_size();
     let width = cols.saturating_sub(2).max(1) as usize;
-    let mut lines = banner_lines(model, base_url, workspace, git_info);
-    lines.extend(history_lines(history, cols.saturating_sub(6).max(1) as usize));
+    let banner = banner_lines(model, base_url, workspace, git_info);
+    let layout = history_layout(history, cols.saturating_sub(6).max(1) as usize);
+    *CHAT_BACKGROUND.lock().unwrap() = Some(ChatBackground {
+        model: model.to_string(), base_url: base_url.to_string(), workspace: workspace.to_string(),
+        git_info: git_info.to_string(), layout: Arc::clone(&layout),
+        key: HistoryLayoutKey { width: cols.saturating_sub(6).max(1) as usize,
+            theme: crate::theme::current(), language: crate::i18n::current(), expanded: is_output_expanded() },
+    });
     let reserved = active_box_rows(rows).unwrap_or_else(|| INPUT_ROWS.load(std::sync::atomic::Ordering::Relaxed));
     let height = rows.saturating_sub(reserved.min(rows.saturating_sub(2)) + 1).max(1) as usize;
-    let range = HISTORY_VIEW.lock().unwrap().range(lines.len(), height);
-    let mut visible = lines[range.clone()].to_vec();
+    let range = HISTORY_VIEW.lock().unwrap().range(banner.len() + layout.total, height);
+    let mut visible = transcript_view(&banner, &layout, range.clone());
     visible.resize(height, String::new());
     let text = visible.clone();
     // Keep the text under the mouse fixed while a streamed response grows.
@@ -2955,9 +3214,100 @@ mod tests {
     use super::*;
 
     #[test]
+    fn context_gradient_interpolates_and_caps_overflow() {
+        assert_eq!(context_color(Some(0), Some(100)), Color::Rgb { r:80, g:210, b:130 });
+        assert_eq!(context_color(Some(50), Some(100)), Color::Rgb { r:240, g:200, b:70 });
+        assert_eq!(context_color(Some(100), Some(100)), Color::Rgb { r:245, g:80, b:80 });
+        assert_eq!(context_color(Some(200), Some(100)), context_color(Some(100), Some(100)));
+        assert_eq!(context_color(None, Some(100)), Color::DarkGrey);
+        assert_eq!(context_color(Some(20), Some(0)), Color::DarkGrey);
+        for (a, b) in [(24,25), (49,50), (50,51), (74,75)] {
+            let (Color::Rgb {r:ar,g:ag,b:ab}, Color::Rgb {r:br,g:bg,b:bb}) =
+                (context_color(Some(a),Some(100)),context_color(Some(b),Some(100))) else { panic!("Expected RGB"); };
+            assert!(ar.abs_diff(br) <= 4 && ag.abs_diff(bg) <= 4 && ab.abs_diff(bb) <= 4);
+            assert_ne!((ar,ag,ab),(br,bg,bb));
+        }
+    }
+
+    #[test]
+    fn context_headroom_reserves_response_and_handles_unknown_usage() {
+        assert_eq!(remaining_context_percent(Some(98304), Some(131072)), Some(19));
+        assert_eq!(remaining_context_percent(Some(122880), Some(131072)), Some(0));
+        assert_eq!(remaining_context_percent(Some(140000), Some(131072)), Some(0));
+        assert_eq!(remaining_context_percent(Some(0), Some(4096)), Some(0));
+        assert_eq!(remaining_context_percent(Some(0), Some(0)), None);
+        assert_eq!(remaining_context_percent(None, Some(131072)), None);
+        assert_eq!(remaining_context_percent(Some(98304), None), None);
+        let footer = plain_terminal_text(&footer_with_context(100, " Enter ", Color::Cyan, Color::White,
+            Some(98304), Some(131072), "Chat"));
+        assert!(footer.contains("~19%"));
+        let unknown = plain_terminal_text(&footer_with_context(100, " Enter ", Color::Cyan, Color::White,
+            None, Some(131072), "Chat"));
+        assert!(!unknown.contains('%'));
+    }
+
+    #[test]
+    fn context_footer_fits_and_places_meter_before_unicode_title() {
+        for width in [25,35,55,65,80,100,160] {
+            let footer = footer_with_context(width, " Ctrl+O: Expand • Ctrl+C: Cancel ", Color::Cyan, Color::White,
+                Some(32768),Some(131072), "Контекст 日本語 🙂 очень длинное название чата");
+            let plain = plain_terminal_text(&footer);
+            assert_eq!(str_width(&plain), width, "{width}: {plain}");
+            assert!(plain.contains("32K/128K"));
+            if let Some(title) = plain.find('💬') { assert!(plain.find("32K/128K").unwrap() < title); }
+        }
+        let unknown = footer_with_context(80," Enter ",Color::Cyan,Color::White,None,None,"");
+        assert!(plain_terminal_text(&unknown).contains("?/?"));
+
+    }
+
+    #[test]
+    fn large_history_reuses_completed_layout_and_renders_only_changed_blocks() {
+        let key = HistoryLayoutKey { width: 80, theme: crate::theme::current(), language: crate::i18n::current(), expanded: is_output_expanded() };
+        let mut cache = HistoryLayoutCache::default();
+        let mut history = (0..1000).map(|i| HistoryItem::AssistantMessage(format!("Message {i}: **bold** `code` ").repeat(20))).collect::<Vec<_>>();
+        let cold = std::time::Instant::now();
+        let first = cache.update(&history, key);
+        let cold_elapsed = cold.elapsed();
+        let warm = std::time::Instant::now();
+        let second = cache.update(&history, key);
+        let warm_elapsed = warm.elapsed();
+        assert!(Arc::ptr_eq(&first, &second));
+        history.push(HistoryItem::AssistantMessage("streamed tail".into()));
+        let third = cache.update(&history, key);
+        assert!(first.blocks.iter().zip(&third.blocks).all(|(a, b)| Arc::ptr_eq(a, b)));
+        let visible = third.visible(third.total.saturating_sub(24)..third.total);
+        assert_eq!(visible.len(), 24);
+        assert!(visible.join("\n").contains("streamed tail"));
+        let mut changed_key = key; changed_key.width = 40;
+        let resized = cache.update(&history, changed_key);
+        assert!(!Arc::ptr_eq(&third.blocks[0], &resized.blocks[0]));
+        history.truncate(5);
+        let rewound = cache.update(&history, changed_key);
+        assert_eq!(rewound.visible(0..rewound.total), history_lines(&history, changed_key.width));
+        eprintln!("1000-message layout: cold={cold_elapsed:?}, cached={warm_elapsed:?}");
+    }
+
+    #[test]
+    fn cached_tool_layout_tracks_completion_diffs_and_errors() {
+        let key = HistoryLayoutKey { width: 80, theme: crate::theme::current(), language: crate::i18n::current(), expanded: is_output_expanded() };
+        let mut cache = HistoryLayoutCache::default();
+        let mut history = vec![HistoryItem::ToolStart { name: "read_file".into(), args: "{\"path\":\"README.md\"}".into() }];
+        let first = cache.update(&history, key);
+        history.push(HistoryItem::ToolLog("file contents".into()));
+        history.push(HistoryItem::ToolEnd { name: "read_file".into(), args: "{}".into(), result: "file contents".into(), is_error: false });
+        let complete = cache.update(&history, key);
+        assert!(!Arc::ptr_eq(&first.blocks[0], &complete.blocks[0]));
+        assert_eq!(complete.visible(0..complete.total), history_lines(&history, key.width));
+        history[2] = HistoryItem::ToolEnd { name: "read_file".into(), args: "{}".into(), result: "Permission denied".into(), is_error: true };
+        let failed = cache.update(&history, key);
+        assert_eq!(failed.visible(0..failed.total), history_lines(&history, key.width));
+    }
+
+    #[test]
     fn web_search_renders_with_its_own_label() {
         let (label, target, detail) = tool_header_parts("web_search", r#"{"query":"Rust documentation"}"#, "", 80);
-        assert!(label.contains("websearch"));
+        assert!(label.contains("Web search"));
         assert!(target.contains("Rust documentation"));
         assert!(detail.is_empty());
     }
@@ -3047,8 +3397,9 @@ mod tests {
         let logs = [long_line.as_str(), "TAIL"];
         let collapsed = tool_output_lines(&logs, 20, false);
         assert_eq!(collapsed.len(), 4);
-        assert!(collapsed[..3].iter().all(|line| plain_terminal_text(line) == format!("    {}", "x".repeat(20))));
-        assert!(collapsed[3].contains("+14 lines  · Ctrl+O to expand"));
+        assert_eq!(plain_terminal_text(&collapsed[0]), format!("  └ {}", "x".repeat(20)));
+        assert!(collapsed[1..3].iter().all(|line| plain_terminal_text(line) == format!("    {}", "x".repeat(20))));
+        assert!(collapsed[3].contains("+14 lines · Ctrl+O"));
         assert!(!collapsed.iter().any(|line| line.contains("TAIL")));
         let expanded = tool_output_lines(&logs, 20, true);
         assert_eq!(expanded.len(), 17);
@@ -3357,7 +3708,8 @@ mod scroll_tests {
         assert!(!expanded.contains("to expand"));
         let wrapped = tool_error_lines(&"x".repeat(100), 10, false);
         assert_eq!(wrapped.len(), 4);
-        assert!(wrapped.last().unwrap().contains("+7 lines"));
+        assert!(wrapped.last().unwrap().contains("Ctrl+O") && wrapped.last().unwrap().contains("+7"));
+        assert!(wrapped.iter().all(|line|str_width(&plain_terminal_text(line))<=14));
     }
 
     #[test]
@@ -3371,5 +3723,60 @@ mod scroll_tests {
         assert_eq!(reverse.text(), selection.text());
         assert!(selection.highlighted()[0].contains("\x1b[7mПривет"));
         assert_eq!(column_slice("界a\u{301}b", 2, 3), "a\u{301}");
+    }
+}
+
+#[cfg(test)]
+mod tool_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_denial_is_a_single_card_and_does_not_look_like_a_shell_error() {
+        let args = r#"{"text":"Привет из Takiza"}"#;
+        for result in [
+            r#"{"status":"denied","executed":false,"message":"User denied permission"}"#,
+            "Command execution denied by user: permission rejected for command: MCP server: demo",
+        ] {
+            let history = vec![HistoryItem::ToolStart { name:"mcp__demo__echo".into(), args:args.into() },
+                HistoryItem::ToolEnd { name:"mcp__demo__echo".into(), args:args.into(), result:result.into(), is_error:true }];
+            let lines = history_lines(&history, 100).join("\n");
+            let text = plain_terminal_text(&lines);
+            assert_eq!(text.matches("MCP · demo / echo").count(), 1);
+            assert!(text.contains("text:") && text.contains("Привет из Takiza"));
+            assert!(text.contains(crate::i18n::tr("Declined by you. Nothing was executed.")));
+            assert!(!text.contains("Command execution") && !text.contains("executed\":false"));
+            assert!(!lines.contains("\x1b[31m"));
+        }
+        assert!(!tool_was_denied("Failed to read file: Permission denied"));
+        assert!(tool_header_line("read_file","{}",Some(("Permission denied",true)),100).contains("\x1b[31m"));
+    }
+
+    #[test]
+    fn integration_preview_extracts_content_and_headers_fit_small_terminals() {
+        let result = r#"{"content":[{"type":"text","text":"echo result"},{"type":"resource_link","name":"Docs","uri":"https://example.com"}]}"#;
+        let text = integration_result_text("mcp__demo__echo",result);
+        assert_eq!(text,"echo result\nDocs https://example.com");
+        assert!(tool_title("mcp__my_2dserver__echo_5ftext").contains("my-server / echo_text"));
+        assert!(!tool_title("mcp__demo__a_1b_5b2Jb").contains('\x1b'));
+        for width in [20,24,40,80] {
+            let header = tool_header_line("mcp__demo__echo",r#"{"text":"😀Очень длинный аргумент 日本語"}"#,Some((result,false)),width);
+            assert!(str_width(&plain_terminal_text(&header)) <= width, "{width}: {header}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod output_preview_tests {
+    use super::*;
+    #[test]
+    fn shared_preview_counts_screen_rows_and_preserves_full_styled_output() {
+        let rows = wrap_history_text(&"😀слово ".repeat(80),20).into_iter()
+            .map(|row|format!("  \x1b[36m{row}\x1b[0m")).collect::<Vec<_>>();
+        let short = collapsible_lines(rows.clone(),22,"  ",false);
+        assert_eq!(short.len(),4);
+        assert_eq!(&short[..3],&rows[..3]);
+        assert!(short[3].contains("Ctrl+O"));
+        assert!(short.iter().all(|row|str_width(&plain_terminal_text(row))<=22));
+        assert_eq!(collapsible_lines(rows.clone(),22,"  ",true),rows);
     }
 }

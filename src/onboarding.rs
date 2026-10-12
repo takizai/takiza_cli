@@ -1,3 +1,4 @@
+use crate::cli_ui::disable_raw_mode;
 use crate::theme::{Theme, UserPreferences};
 use chrono::Local;
 use crossterm::{
@@ -5,7 +6,7 @@ use crossterm::{
     event::{Event, KeyCode, KeyEventKind},
     execute, queue,
     style::Print,
-    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
+    terminal::{enable_raw_mode, Clear, ClearType},
 };
 use std::io::{stdout, Write};
 

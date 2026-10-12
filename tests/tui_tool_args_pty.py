@@ -17,6 +17,12 @@ class API(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         self.send_response(200)
+        if not body.get('stream') and body.get('tools'):
+            self.server.requests.append(body)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'choices': [{'message': {'tool_calls': [{'id': 'fixed', 'type': 'function', 'function': {'name': 'find_files', 'arguments': '{"pattern":"file.txt"}'}}]}}], 'usage': {'total_tokens': 42}}).encode())
+            return
         if not body.get('stream'):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -25,7 +31,9 @@ class API(http.server.BaseHTTPRequestHandler):
         self.server.requests.append(body)
         self.send_header('Content-Type', 'text/event-stream')
         self.end_headers()
-        if len(self.server.requests) > 1:
+        if self.server.mode == 'missing_find' and len(self.server.requests) <= 2:
+            deltas = [{'tool_calls': [{'index': 0, 'id': 'broken', 'function': {'name': 'find_files'}}]}]
+        elif len(self.server.requests) > 1:
             deltas = [{'content': 'PARSER_OK'}]
         elif self.server.mode == 'empty':
             deltas = [{'tool_calls': [{'index': 0, 'id': 'broken', 'function': {'name': 'web_search', 'arguments': ''}}]}]
@@ -34,6 +42,11 @@ class API(http.server.BaseHTTPRequestHandler):
                 {'id': 'first', 'function': {'name': 'read_file', 'arguments': {'path': 'file.txt'}}},
                 {'id': 'second', 'function': {'name': 'list_dir', 'arguments': {}}},
             ]}]
+        elif self.server.mode in ('wrapped_write', 'conflicting_write'):
+            inner_path = 'other.txt' if self.server.mode == 'conflicting_write' else 'written.txt'
+            args = {'path': 'written.txt', 'content': {'path': inner_path, 'content': 'exact "quotes"\nпривет\n'}}
+            deltas = [{'tool_calls': [{'index': 0, 'id': 'write', 'function': {
+                'name': 'write_file', 'arguments': json.dumps(args)}}]}]
         else:
             deltas = [
                 {'tool_calls': [{'index': 0, 'id': 'first', 'function': {'name': 'read_file', 'arguments': ''}}]},
@@ -68,18 +81,37 @@ def run(binary, mode):
             (workspace / 'file.txt').write_text('fixture evidence\n')
             terminal = Terminal(binary, workspace, 100, 30, initial_prompt='search latest news')
             try:
-                if mode == 'empty':
-                    terminal.wait(lambda: b'missing' in terminal.output and b'JSON arguments' in terminal.output,
-                                  'incomplete tool call was not rejected', timeout=8)
-                    terminal.pump(.4)
-                    assert len(server.requests) == 1, 'invalid calls triggered more model requests'
-                    assert b'EOF while parsing' not in terminal.output, 'raw JSON errors still reached tool execution'
+                if mode in ('empty', 'missing_find', 'conflicting_write'):
+                    terminal.wait(lambda: b'PARSER_OK' in terminal.output, 'invalid call recovery did not complete', timeout=10)
+                    assert len(server.requests) == (4 if mode == 'missing_find' else 2)
+                    repair = server.requests[1]['messages'][-1]
+                    assert repair['role'] == 'tool'
+                    report = json.loads(repair['content'])
+                    assert report['executed'] is False and report['batch_executed'] is False
+                    expected = 'pattern' if mode == 'missing_find' else 'content' if mode == 'conflicting_write' else 'query'
+                    assert expected in report['parameters_schema']['required']
+                    if mode == 'conflicting_write':
+                        assert not (workspace / 'written.txt').exists()
+                        assert not (workspace / 'other.txt').exists()
+                        assert 'path: string, content: string' in report['error']
+                    if mode == 'missing_find':
+                        assert not server.requests[2].get('stream')
+                        result = server.requests[3]['messages'][-1]
+                        assert result['role'] == 'tool' and 'file.txt' in result['content']
+                    assert b'EOF while parsing' not in terminal.output, 'raw JSON errors reached execution'
                 else:
                     terminal.wait(lambda: b'PARSER_OK' in terminal.output, 'valid arguments did not complete', timeout=8)
                     assert len(server.requests) == 2
                     tools = [message for message in server.requests[1]['messages'] if message['role'] == 'tool']
                     assert len(tools) == (2 if mode == 'object_parallel' else 1)
-                    assert 'fixture evidence' in tools[0]['content'], 'object/fragment arguments were lost'
+                    if mode == 'wrapped_write':
+                        expected_text = 'exact "quotes"\nпривет\n'
+                        assert (workspace / 'written.txt').read_text() == expected_text
+                        call = next(message for message in server.requests[1]['messages'] if message.get('tool_calls'))
+                        assert json.loads(call['tool_calls'][0]['function']['arguments']) == {
+                            'path': 'written.txt', 'content': expected_text}
+                    else:
+                        assert 'fixture evidence' in tools[0]['content'], 'object/fragment arguments were lost'
                     assert all('Invalid JSON' not in message['content'] for message in tools)
                 prompt = server.requests[0]['messages'][0]['content']
                 assert str(datetime.date.today()) in prompt, 'model was not given the actual date'
@@ -96,5 +128,5 @@ def run(binary, mode):
 
 if __name__ == '__main__':
     binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/takiza').resolve()
-    for mode in ['empty', 'object_parallel', 'fragmented']:
+    for mode in ['empty', 'missing_find', 'object_parallel', 'fragmented', 'wrapped_write', 'conflicting_write']:
         run(binary, mode)

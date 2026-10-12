@@ -410,7 +410,31 @@ fn render_table(rows: &[Vec<String>], alignment: &[Alignment], max_width: usize)
 
 /// Full Markdown document renderer:
 /// Processes headers, bullet lists, numbered lists, blockquotes, horizontal rules,
-/// code blocks, and standard paragraphs with inline styling and word wrapping.
+/// Wrap literal content without losing spaces or treating Markdown as markup.
+fn wrap_literal_line(raw: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut columns = 0;
+    let mut source_columns = 0;
+    for ch in raw.chars() {
+        let expanded = if ch == '\t' { " ".repeat(4 - source_columns % 4) } else { ch.to_string() };
+        for ch in expanded.chars() {
+            let size = char_width(ch);
+            if columns > 0 && columns + size > width {
+                lines.push(std::mem::take(&mut line));
+                columns = 0;
+            }
+            line.push(ch);
+            columns += size;
+            source_columns += size;
+        }
+    }
+    if !line.is_empty() || lines.is_empty() { lines.push(line); }
+    lines
+}
+
+/// Render Markdown, including fenced blocks with literal soft-wrapped content.
 pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
     let mut result_lines = Vec::new();
     let raw_lines: Vec<&str> = text.lines().collect();
@@ -422,8 +446,8 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
 
     let mut in_code_block = false;
 
-    let code_box_w = max_width.min(84);
-    let code_inner_w = code_box_w.saturating_sub(4);
+    let code_box_w = max_width.saturating_sub(2).min(84);
+    let code_inner_w = code_box_w.saturating_sub(4).max(1);
 
     let mut raw_lines = raw_lines.into_iter().peekable();
     while let Some(raw) = raw_lines.next() {
@@ -437,7 +461,7 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
                 let code_lang = if lang.is_empty() { "code" } else { lang };
 
                 // Draw code box top: ╭─ [rust] ──────────────────────────────────╮
-                let tag = format!(" [{}] ", code_lang);
+                let tag = truncate_visible(&format!(" [{}] ", code_lang), code_box_w.saturating_sub(3));
                 let tag_w = str_width(&tag);
                 let dashes = code_box_w.saturating_sub(tag_w + 3);
                 let top_line = format!(
@@ -455,20 +479,15 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
             continue;
         }
 
-        // Inside code block: preserve literal content inside bordered box
+        // Soft-wrap literal content instead of discarding the rest of a line.
         if in_code_block {
-            let trunc = if str_width(raw) > code_inner_w {
-                truncate_visible(raw, code_inner_w)
-            } else {
-                raw.to_string()
-            };
-            let vis_w = str_width(&trunc);
-            let pad = code_inner_w.saturating_sub(vis_w);
-            let code_line = format!(
-                "  {s_ansi}│\x1b[0m {code_background}{p_ansi}{}\x1b[0m{} {s_ansi}│\x1b[0m",
-                trunc, " ".repeat(pad)
-            );
-            result_lines.push(code_line);
+            for wrapped in wrap_literal_line(raw, code_inner_w) {
+                let pad = code_inner_w.saturating_sub(str_width(&wrapped));
+                result_lines.push(format!(
+                    "  {s_ansi}│\x1b[0m {code_background}{p_ansi}{wrapped}\x1b[0m{} {s_ansi}│\x1b[0m",
+                    " ".repeat(pad)
+                ));
+            }
             continue;
         }
 
@@ -594,6 +613,32 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fenced_blocks_wrap_long_lines_without_losing_literal_content() {
+        let raw = format!("{}FULL_PROMPT_END", "ab界😀e\u{301}".repeat(30));
+        for width in [8, 12, 40, 80, 120] {
+            let rows = render_markdown(&format!("```text\n{raw}\n```"), width);
+            assert!(rows.iter().all(|row| visible_width(row) <= width), "{width}: {rows:?}");
+            let strip = |text: &str| {
+                let mut result = String::new(); let mut chars = text.chars();
+                while let Some(ch) = chars.next() {
+                    if ch == '\x1b' { for ch in chars.by_ref() { if ch == 'm' { break; } } }
+                    else { result.push(ch); }
+                }
+                result
+            };
+            let restored: String = rows[1..rows.len()-1].iter().map(|row| {
+                let plain = strip(row);
+                plain.strip_prefix("  │ ").unwrap().strip_suffix(" │").unwrap().trim_end().to_string()
+            }).collect();
+            assert_eq!(restored, raw, "{width}");
+        }
+        let spaced = "    literal **text** `code`   with trailing spaces   ";
+        assert_eq!(wrap_literal_line(spaced, 10).concat(), spaced);
+        assert_eq!(wrap_literal_line("\tlet x = 1;", 8).concat(), "    let x = 1;");
+        assert_eq!(wrap_literal_line("", 8), vec![String::new()]);
+    }
 
     #[test]
     fn tables_align_columns_and_style_headers() {

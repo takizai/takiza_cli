@@ -134,7 +134,8 @@ def run(binary, cols, rows):
             text = '\n'.join(screen.text)
             assert text.count('example.txt') == 1, f'read header duplicated: {text}'
             assert text.count('printf') == 1, f'command repeated: {text}'
-            assert 'approval allowed' in text
+            assert 'approval allowed' not in text
+            assert '● Bash' in text and '● Read' in text, text
             assert 'one' in text and 'two' in text and 'three' in text
             assert '+2 lines' in text, f'collapsed count incorrect: {text}'
             assert 'failed' in text and 'Failed to read file' in text, f'error missing: {text}'

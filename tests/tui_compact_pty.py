@@ -24,6 +24,11 @@ class API(http.server.BaseHTTPRequestHandler):
             summary_requests.append(body)
             summary_started.set()
             if hold_summary: release.wait(10)
+            chunk = body['messages'][1]['content'].split('Next transcript chunk:\n', 1)[1]
+            if mode == 'backoff' and len(chunk) > 32768:
+                self.send_response(400); self.end_headers()
+                self.wfile.write(b'{"error":{"code":"context_length_exceeded"}}')
+                return
             self.send_response(200)
             self.end_headers()
             content = '' if fail_summary else 'Earlier task completed. Preserve file README.md and pending user requirements.'
@@ -41,7 +46,8 @@ class API(http.server.BaseHTTPRequestHandler):
         if overflow:
             self.wfile.write(b'{"error":{"code":"context_length_exceeded"}}')
             return
-        content = 'OLD_REPLY ' + ('long context ' * 100) if len(requests) == 1 else 'COMPACT_REPLY_OK'
+        repetitions = 20000 if mode == 'large' else 6000 if mode == 'backoff' else 100
+        content = 'OLD_REPLY ' + ('long context ' * repetitions) if len(requests) == 1 else 'COMPACT_REPLY_OK'
         self.wfile.write(('data: ' + json.dumps({'choices': [{'delta': {'content': content}, 'finish_reason': 'stop'}]}) + '\n\ndata: {"choices":[],"usage":{"total_tokens":100}}\n\ndata: [DONE]\n\n').encode())
 
 
@@ -70,7 +76,19 @@ def run(binary, port, scenario):
             t.pump(.2)
             before = saved(workspace)
             checkpoints = set((workspace / '.takiza/checkpoints').glob('*.json'))
-            if scenario == 'manual':
+            if scenario in ['large', 'backoff']:
+                hold_summary = scenario == 'large'
+                t.send('/compact\r')
+                if scenario == 'large':
+                    t.wait(lambda: '0% · 1/3' in screen(t), 'large-chat progress missing', timeout=10)
+                    release.set(); hold_summary = False
+                t.wait(lambda: 'Context compacted:' in screen(t), 'large-chat compact failed', timeout=10)
+                t.pump(.2)
+                assert len(summary_requests) == (3 if scenario == 'large' else 5), len(summary_requests)
+                assert len(json.dumps(saved(workspace)['messages'])) < len(json.dumps(before['messages']))
+                assert saved(workspace)['messages'][-2]['content'] == 'latest prompt'
+                assert saved(workspace)['history'][:len(before['history'])] == before['history']
+            elif scenario == 'manual':
                 fail_summary = True
                 t.send('/compact\r')
                 t.wait(lambda: 'empty context summary' in screen(t), 'summary failure missing')
@@ -109,6 +127,6 @@ if __name__ == '__main__':
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), API)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        for scenario in ['manual', 'auto']: run(binary, server.server_port, scenario)
-        print('PASS compaction: manual, automatic retry, bounded chunks, history/prompt preservation, failure, cancellation, persistence')
+        for scenario in ['manual', 'auto', 'large', 'backoff']: run(binary, server.server_port, scenario)
+        print('PASS compaction: manual, auto, large-chat progress, overflow backoff, history/prompt preservation, failure, cancellation, persistence')
     finally: server.shutdown()

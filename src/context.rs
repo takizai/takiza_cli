@@ -21,6 +21,13 @@ fn retained(messages: &[ChatMessage]) -> Vec<usize> {
     indices
 }
 
+fn initial_chunk_size(limit: Option<u64>) -> usize {
+    // One character per token is a conservative starting bound, not a
+    // tokenizer estimate. Reserve room for instructions, prior summary and
+    // output. Unknown/smaller deployments still use overflow backoff.
+    limit.map(|limit| limit.saturating_sub(10000).clamp(500, 128000) as usize).unwrap_or(128000)
+}
+
 pub async fn compact(client: &LlmClient, messages: &[ChatMessage],
     tx: &mpsc::Sender<AgentEvent>, cancel: &CancellationToken) -> Result<Option<Vec<ChatMessage>>> {
     let keep = retained(messages);
@@ -37,14 +44,20 @@ pub async fn compact(client: &LlmClient, messages: &[ChatMessage],
     if transcript.trim().is_empty() { return Ok(None); }
     let chars = transcript.chars().collect::<Vec<_>>();
     let mut offset = 0;
-    let mut chunk_size = 6000;
+    let mut chunk_size = initial_chunk_size(client.context_limit());
     let mut summary = String::new();
+    let mut part = 1;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
     while offset < chars.len() {
         anyhow::ensure!(!cancel.is_cancelled(), crate::i18n::tr("Context compaction cancelled."));
         let end = (offset + chunk_size).min(chars.len());
         let chunk = chars[offset..end].iter().collect::<String>();
-        match client.summarize_context(&summary, &chunk, tx, cancel).await {
-            Ok(next) => { summary = next; offset = end; }
+        let _ = tx.send(AgentEvent::CompactionProgress { percent: (offset as u64 * 100 / chars.len() as u64),
+            part, parts: part - 1 + (chars.len() - offset).div_ceil(chunk_size) }).await;
+        let result = tokio::time::timeout_at(deadline, client.summarize_context(&summary, &chunk, tx, cancel)).await
+            .map_err(|_| anyhow::anyhow!(crate::i18n::tr("Context compaction exceeded 3 minutes; the original history was preserved.")))?;
+        match result {
+            Ok(next) => { summary = next; offset = end; part += 1; }
             Err(error) if error.is::<ContextOverflow>() && chunk_size > 500 => { chunk_size = (chunk_size / 2).max(500); }
             Err(error) => return Err(error),
         }
@@ -61,6 +74,13 @@ pub async fn compact(client: &LlmClient, messages: &[ChatMessage],
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chunk_budget_reserves_summary_space_without_zero_sized_chunks() {
+        assert_eq!(initial_chunk_size(None), 128000);
+        assert_eq!(initial_chunk_size(Some(1000000)), 128000);
+        assert_eq!(initial_chunk_size(Some(32768)), 22768);
+        assert_eq!(initial_chunk_size(Some(4096)), 500);
+    }
     #[test]
     fn preserves_system_instructions_latest_prompt_and_answer_without_orphan_tool_results() {
         let mut tool = message("tool", "file contents".into());

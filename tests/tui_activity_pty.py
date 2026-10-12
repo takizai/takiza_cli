@@ -76,10 +76,10 @@ def run(binary, cols, rows):
             assert not any('You' in line or 'Ctrl+O: Expand' in line for line in lines[:-3]), lines
             assert not re.search(r'38;2;\d+|\[\?2026|\[\d+;\d+H', '\n'.join(lines)), lines
         try:
-            terminal.wait(lambda: any(line.strip() == 'COMMAND_STARTED' for line in screen()), 'slow command missing')
+            terminal.wait(lambda: any(line.strip().removeprefix('└ ') == 'COMMAND_STARTED' for line in screen()), 'slow command missing')
             terminal.wait(lambda: 'Executing tools...' in '\n'.join(screen()), 'tool activity disappeared')
             assert 'Executing tools...' in screen()[-4], 'activity overwrote the transcript'
-            assert any('command' in line and 'printf' in line for line in screen()[:-4]), screen()
+            assert any('● Bash' in line and 'printf' in line for line in screen()[:-4]), screen()
             terminal.send('draft')
             verify()
             # Exercise editor redraws while the spinner and streamed reasoning write.
@@ -94,7 +94,7 @@ def run(binary, cols, rows):
             assert 'Responding...' in screen()[-4], 'editor redraw removed response activity'
             terminal.send('\x1b[1;5H')
             verify()
-            assert any(line.strip() == 'COMMAND_STARTED' for line in screen()), 'command text lost during scroll'
+            assert any(line.strip().removeprefix('└ ') == 'COMMAND_STARTED' for line in screen()), 'command text lost during scroll'
             assert 'CHILD_TITLE' not in '\n'.join(screen()), 'terminal title sequence leaked into text'
             assert b'\x1b]0;CHILD_TITLE' not in terminal.output, 'command changed the terminal title'
             assert b'\x1b[?1049l' not in terminal.output, 'command left the application screen'

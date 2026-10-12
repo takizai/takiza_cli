@@ -291,6 +291,10 @@ impl AppMode {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserPreferences {
+    #[serde(default, rename = "mcpServers")]
+    pub mcp_servers: std::collections::BTreeMap<String, crate::runtime::McpConfig>,
+    #[serde(default, rename = "lspServers")]
+    pub lsp_servers: std::collections::BTreeMap<String, crate::runtime::LspConfig>,
     pub agreed_to_terms: bool,
     pub terms_version: String,
     pub theme: Theme,
@@ -318,6 +322,8 @@ pub struct UserPreferences {
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
+            mcp_servers: Default::default(),
+            lsp_servers: Default::default(),
             agreed_to_terms: false,
             terms_version: "1.0.0".to_string(),
             theme: Theme::Amber,

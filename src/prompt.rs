@@ -1,10 +1,11 @@
+use crate::cli_ui::disable_raw_mode;
 use crate::cli_ui;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute, queue,
     style::{Color, Print, ResetColor, SetForegroundColor},
-    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
+    terminal::{enable_raw_mode, Clear, ClearType},
 };
 use std::io::{stdin, stdout, IsTerminal, Write};
 
@@ -128,6 +129,8 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "Show daily quotas and token usage breakdown (Takiza Manual / MoA)",
         has_args: false,
     },
+    SlashCommand { name: "/mcp", description: "Manage MCP servers: status, connect, disconnect, restart, login, logout", has_args: true },
+    SlashCommand { name: "/lsp", description: "Manage language servers: status, connect, disconnect, restart", has_args: true },
     SlashCommand {
         name: "/tools",
         description: "List active agent tools and descriptions",
@@ -1251,50 +1254,9 @@ impl LineEditor {
             } else {
                 " ↵ Enter "
             };
-            let hint_w = str_width(hint);
+            queue!(out, cursor::MoveTo(0, current_row),
+                Print(crate::cli_ui::prompt_footer(box_width, hint, border_color, primary_color)))?;
 
-            let chat_title = crate::cli_ui::get_active_chat_title();
-            let (title_part, title_vis) = if !chat_title.trim().is_empty() && box_width >= 55 {
-                let max_title_w = box_width.saturating_sub(hint_w + 14).min(35);
-                let safe_title = truncate_visible(chat_title.trim(), max_title_w);
-                let vis = str_width(" 💬 ") + str_width(&safe_title) + str_width("  •  ");
-                (Some(safe_title), vis)
-            } else {
-                (None, 0)
-            };
-
-            let total_text_w = title_vis + hint_w;
-            let dashes_bottom = box_width.saturating_sub(total_text_w + 3);
-            let bottom_row = current_row;
-
-            queue!(
-                out,
-                cursor::MoveTo(0, bottom_row),
-                SetForegroundColor(border_color),
-                Print("╰"),
-                Print("─".repeat(dashes_bottom)),
-            )?;
-
-            if let Some(ref t) = title_part {
-                queue!(
-                    out,
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(" 💬 "),
-                    SetForegroundColor(primary_color),
-                    Print(t),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print("  •  "),
-                )?;
-            }
-
-            queue!(
-                out,
-                SetForegroundColor(Color::DarkGrey),
-                Print(hint),
-                SetForegroundColor(border_color),
-                Print("─╯"),
-                ResetColor
-            )?;
         }
 
         // Position terminal cursor strictly inside the prompt line

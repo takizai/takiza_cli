@@ -1,3 +1,4 @@
+use crate::cli_ui::disable_raw_mode;
 use crate::config::Config;
 use crate::prompt::{str_width, truncate_visible};
 use crate::session::Session;
@@ -7,7 +8,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     queue,
     style::{Color, Print, ResetColor, SetForegroundColor},
-    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
+    terminal::{enable_raw_mode, Clear, ClearType},
 };
 use std::io::{stdout, Write};
 use std::path::Path;
@@ -2156,66 +2157,13 @@ pub fn show_interactive_skills(ctx: &ScreenContext, workspace: &Path) -> std::io
 }
 
 /// Interactive Tools Explorer view rendered in bottom box replacing the input field.
-pub fn show_interactive_tools(ctx: &ScreenContext) -> std::io::Result<()> {
-    enable_raw_mode()?;
-    let (_term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let box_w = crate::cli_ui::get_box_width();
-    let th = theme::current();
-    let b_color = th.border_crossterm();
-    let p_color = th.primary_crossterm();
-
-    let mut out = MenuFrame::default();
-    queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-    let _ = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
-
-    let tools = [
-        ("read_file", "(path, start, end)", crate::i18n::tr("Reads workspace file with 1-indexed lines")),
-        ("write_file", "(path, content)", crate::i18n::tr("Creates or overwrites files in workspace")),
-        ("edit_file", "(path, target, repl)", crate::i18n::tr("Replaces exact substring chunk in file")),
-        ("list_dir", "(path)", crate::i18n::tr("Lists directory entries with file sizes")),
-        ("find_files", "(pattern, path)", crate::i18n::tr("Recursively searches files by glob/pattern")),
-        ("grep_search", "(query, path)", crate::i18n::tr("Recursively searches text contents inside files")),
-        ("run_command", "(command)", crate::i18n::tr("Executes bash shell commands in workspace sandbox")),
-    ];
-
-    let total_box_height = 1 + 1 + 1 + tools.len() + 1; // 11 lines
-    let start_row = term_rows.saturating_sub(total_box_height as u16);
-
-    let title = if ctx.branch_tag.is_empty() {
-        crate::i18n::tr("Autonomous Agent Tools & Capabilities").to_string()
-    } else {
-        crate::i18n::tf!("Autonomous Agent Tools & Capabilities [{}]", ctx.branch_tag.trim())
-    };
-
-    draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
-
-    let mut cur_row = start_row + 1;
-    let header_desc = crate::i18n::tr("Takiza Harness provides 7 autonomous tools to inspect and modify code:");
-    draw_bottom_box_line(&mut out, cur_row, &format!("\x1b[38;2;160;160;165m{}\x1b[0m", header_desc), str_width(header_desc), box_w, b_color)?;
-    cur_row += 1;
-
-    draw_bottom_box_divider(&mut out, cur_row, box_w, b_color)?;
-    cur_row += 1;
-
-    for (name, sig, desc) in tools {
-        let line = format!("\x1b[1;38;2;0;220;255m• {:<12}\x1b[0m \x1b[38;2;140;140;145m{:<22}\x1b[0m \x1b[38;2;210;210;215m{}\x1b[0m", name, sig, desc);
-        let vis_len = 2 + 12 + 1 + 22 + 1 + str_width(desc);
-        draw_bottom_box_line(&mut out, cur_row, &line, vis_len, box_w, b_color)?;
-        cur_row += 1;
-    }
-
-    draw_bottom_box_bottom(&mut out, cur_row, crate::i18n::tr("Press [Enter] or [Esc] to return to chat"), box_w, b_color)?;
-    out.flush()?;
-
-    loop {
-        if let Event::Key(key) = crate::cli_ui::read_event_with_background()? {
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-            disable_raw_mode()?;
-            return Ok(());
-        }
-    }
+pub fn show_interactive_tools(ctx: &ScreenContext, definitions: &serde_json::Value) -> std::io::Result<()> {
+    let details = definitions.as_array().into_iter().flatten().map(|tool| {
+        let function = &tool["function"];
+        format!("{} · {}", function["name"].as_str().unwrap_or("?"), function["description"].as_str().unwrap_or(""))
+    }).collect::<Vec<_>>();
+    rewind_menu(ctx, crate::i18n::tr("Autonomous Agent Tools & Capabilities"), &[], &details)?;
+    Ok(())
 }
 
 /// Interactive Quota & Token Usage dashboard rendered in bottom box replacing the input field.
@@ -2357,6 +2305,18 @@ mod tests {
 
 /// Checkpoint selection and confirmation use the same keyboard controls as command menus.
 pub fn rewind_menu(ctx: &ScreenContext, title: &str, details: &[String], choices: &[String]) -> std::io::Result<Option<usize>> {
+    selection_menu(ctx, title, details, choices, false, false)
+}
+
+pub fn mcp_permission_menu(ctx: &ScreenContext, details: &[String], choices: &[String]) -> std::io::Result<Option<usize>> {
+    selection_menu(ctx, crate::i18n::tr("MCP tool permission"), details, choices, true, false)
+}
+
+pub fn file_permission_menu(ctx: &ScreenContext, details: &[String], choices: &[String]) -> std::io::Result<Option<usize>> {
+    selection_menu(ctx, crate::i18n::tr("File write permission"), details, choices, true, true)
+}
+
+fn selection_menu(ctx: &ScreenContext, title: &str, details: &[String], choices: &[String], tool_permission: bool, file_permission: bool) -> std::io::Result<Option<usize>> {
     enable_raw_mode()?;
     let result = (|| {
         let mut selected = 0usize;
@@ -2378,7 +2338,9 @@ pub fn rewind_menu(ctx: &ScreenContext, title: &str, details: &[String], choices
                         if index == selected { th.primary_crossterm() } else { th.secondary_crossterm() }));
                 }
             } else {
-                lines.push((format!("{} changes · files {}–{}", details.len(), start + 1, (start + slots).min(details.len())), Color::DarkGrey));
+                lines.push((if file_permission { crate::i18n::tf!("Changes · {}–{} / {}", start + 1, (start + slots).min(details.len()), details.len()) }
+                    else if tool_permission { crate::i18n::tf!("Arguments · {}–{} / {}", start + 1, (start + slots).min(details.len()), details.len()) }
+                    else { format!("{} changes · files {}–{}", details.len(), start + 1, (start + slots).min(details.len())) }, Color::DarkGrey));
                 for detail in details.iter().skip(start).take(slots) { lines.push((detail.clone(), th.secondary_crossterm())); }
                 lines.push((String::new(), Color::DarkGrey));
                 for (index, choice) in choices.iter().enumerate() {
@@ -2390,6 +2352,8 @@ pub fn rewind_menu(ctx: &ScreenContext, title: &str, details: &[String], choices
             else {
                 let hint = if choices.is_empty() { crate::i18n::tr("Esc Back").to_string() }
                     else if details.is_empty() { crate::i18n::tf!("{}/{} · ↑↓ · Enter Review · Esc Back", selected + 1, choices.len()) }
+                    else if file_permission { crate::i18n::tr("↑↓ Select · Enter · PgUp/PgDn Changes · Esc Deny").to_string() }
+                    else if tool_permission { crate::i18n::tr("↑↓ Select · Enter · PgUp/PgDn Arguments · Esc Deny").to_string() }
                     else { crate::i18n::tr("↑↓ · Enter Confirm · PgUp/PgDn Files · Esc Back").to_string() };
                 panel.draw(ctx, title, &lines, &hint)?;
             }
