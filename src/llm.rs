@@ -1430,7 +1430,7 @@ mod tests {
         let config = Config {
             api_key: "test-key".into(), base_url: format!("http://{address}/v1"),
             model: "vendor/model:free".into(), workspace_dir: std::env::temp_dir(),
-            auto_approve: false, continue_session: false, proxy: None,
+            execution_mode: Default::default(), continue_session: false, proxy: None,
             mode: crate::theme::AppMode::Manual, effort: None, max_steps: 100,
         };
         let client = LlmClient::new(config);
@@ -1549,7 +1549,7 @@ mod tests {
         let config = Config {
             api_key: String::new(), base_url: format!("http://{address}/v1"),
             model: "test".into(), workspace_dir: std::env::temp_dir(),
-            auto_approve: false, continue_session: false, proxy: None,
+            execution_mode: Default::default(), continue_session: false, proxy: None,
             mode: crate::theme::AppMode::Manual, effort: None, max_steps: 100,
         };
         (LlmClient::new(config), server)

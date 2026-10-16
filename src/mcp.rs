@@ -109,7 +109,7 @@ impl Server {
             return error.clone();
         }
         if self.connected() {
-            format!(
+            crate::i18n::tf!(
                 "{} · {} tools",
                 crate::i18n::tr("Connected"),
                 self.tools.len()

@@ -10,6 +10,7 @@ use crossterm::{
 use std::io::{stdin, stdout, IsTerminal, Write};
 
 pub enum PromptResult {
+    CycleMode,
     Line(String),
     Interrupted,
     Exit,
@@ -70,6 +71,9 @@ pub struct SlashCommand {
 }
 
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
+    SlashCommand { name: "/agents", description: "List helpers, inspect a report, or stop a subagent", has_args: true },
+    SlashCommand { name: "/permissions", description: "Set execution mode: auto, plan, allow-all (Shift+Tab)", has_args: true },
+    SlashCommand { name: "/logo", description: "Set custom artwork (/logo <path>) or restore default (/logo reset)", has_args: true },
     SlashCommand { name: "/config", description: "Configure language, theme, provider, model and permissions", has_args: false },
     SlashCommand {
         name: "/help",
@@ -621,7 +625,8 @@ impl Draft {
 }
 
 fn command_menu_slots(count: usize, rows: u16) -> usize {
-    count.min(5).min((rows as usize).saturating_sub(9).max(1))
+    // Keep the latest answer visible above a wrapped response summary.
+    count.min(5).min((rows as usize).saturating_sub(12).max(1))
 }
 
 /// Use the same command dropdown as the idle editor while reserving space for output.
@@ -805,6 +810,10 @@ impl LineEditor {
                     draft.insert_text(&text);
                 }
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if crate::execution_mode::is_cycle_key(key) {
+                        self.draft = draft;
+                        return Ok(PromptResult::CycleMode);
+                    }
                     if !matches!(key.code, KeyCode::Up | KeyCode::Down) { self.history_index = None; }
                     if cli_ui::clear_mouse_selection() { on_redraw(&draft.text); }
                     let control = key.modifiers.contains(KeyModifiers::CONTROL);

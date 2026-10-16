@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.8
+
+- Added Auto, Plan and Allow-all execution modes, switchable with Shift+Tab or `/permissions`. Modes persist across launches; Plan enforces read-only tools at runtime, while legacy auto-approval settings remain supported.
+- Added Explore and Reviewer subagents with isolated conversations, read-only tools, two concurrent helpers, bounded execution, cancellation and session token accounting. `/agents` lists helpers, shows reports and cancels tasks.
+- Added a workspace access prompt with remembered trusted directories.
+- Added a bundled image logo and `/logo <path|reset>` for custom PNG, JPEG, WebP and GIF artwork. Supported terminals use Kitty graphics, inline PNG or SIXEL; other terminals retain colored text artwork.
+- Fixed Russian and Simplified Chinese translations for execution modes, active badges, queued prompts, checkpoints, session messages, subagent status, integration management and agent errors. Queue identities and machine-readable statuses remain independent of the interface language.
+- Kept the latest answer visible when opening skill completions on short terminals.
+- Preserved the terminal's normal exit output when launching through npm, while retaining cleanup after signal termination.
+- Expanded documentation and regression coverage for execution modes, subagents, workspace trust, logos and localization.
+
 ## 0.1.7
 
 - Configurable MCP services and language-server tools share the agent runtime, with interactive connection management, cancellation, approval for external actions, and diagnostics for the current document version.

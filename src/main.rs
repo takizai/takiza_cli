@@ -10,6 +10,10 @@ mod interactive;
 mod llm;
 mod model_metadata;
 mod logo;
+mod custom_logo;
+mod terminal_image;
+mod execution_mode;
+mod subagents;
 pub mod logger;
 mod markdown;
 mod onboarding;
@@ -106,6 +110,18 @@ fn clear_screen_and_banner(config: &Config) -> u16 {
     let _ = out.flush();
     let (_, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
     row.min(term_rows.saturating_sub(1))
+}
+
+fn set_execution_mode(config: &Config, prefs: &mut theme::UserPreferences,
+    mode: execution_mode::ExecutionMode) -> std::io::Result<()> {
+    let mut updated = prefs.clone();
+    updated.execution_mode = Some(mode);
+    updated.auto_approve = Some(mode == execution_mode::ExecutionMode::AllowAll);
+    updated.save()?;
+    *prefs = updated;
+    config.execution_mode.set(mode);
+    execution_mode::set_display(mode);
+    Ok(())
 }
 
 fn redraw_full_screen(config: &Config, history: &[cli_ui::HistoryItem]) -> u16 {
@@ -353,11 +369,11 @@ async fn handle_tui_command(
     line: &str, config: &mut Config, user_prefs: &mut theme::UserPreferences,
     agent: &Arc<Mutex<Agent>>, current_session: &mut Session,
     history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>, output_row: &Arc<StdMutex<u16>>,
-    branch_tag: &str, active: &mut Option<ActiveAgent>, runtime: &Arc<runtime::Runtime>,
+    branch_tag: &str, active: &mut Option<ActiveAgent>, tools: &Arc<tools::ToolExecutor>,
 ) -> anyhow::Result<CommandResult> {
     let mut command_output = Vec::new();
     let result = Box::pin(handle_tui_command_inner(line, config, user_prefs, agent, current_session,
-        history, output_row, branch_tag, active, runtime, &mut command_output)).await;
+        history, output_row, branch_tag, active, tools, &mut command_output)).await;
     if !command_output.is_empty() {
         history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(format!("{}\n{}", line, command_output.join("\n").trim())));
         *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
@@ -369,14 +385,40 @@ async fn handle_tui_command_inner(
     line: &str, config: &mut Config, user_prefs: &mut theme::UserPreferences,
     agent: &Arc<Mutex<Agent>>, current_session: &mut Session,
     history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>, output_row: &Arc<StdMutex<u16>>,
-    branch_tag: &str, active: &mut Option<ActiveAgent>, runtime: &Arc<runtime::Runtime>, command_output: &mut Vec<String>,
+    branch_tag: &str, active: &mut Option<ActiveAgent>, tools: &Arc<tools::ToolExecutor>, command_output: &mut Vec<String>,
 ) -> anyhow::Result<CommandResult> {
+    let runtime = &tools.runtime;
     // Buffer textual responses so every command supports the shared Ctrl+O preview.
     macro_rules! command_message {
         () => { command_output.push(String::new()) };
         ($($arg:tt)*) => { command_output.push(format!($($arg)*)) };
     }
     cli_ui::invalidate_content_frame();
+    if line == "/agents" || line.starts_with("/agents ") {
+        if let Some(manager) = tools.subagents() {
+            let args = line.strip_prefix("/agents").unwrap().trim();
+            if let Some(id) = args.strip_prefix("stop ") {
+                if id.trim() == "all" { manager.cancel_all(); command_message!("{}", crate::i18n::tr("Subagent cancellation requested.")); }
+                else { match manager.cancel(id.trim()) {
+                    Ok(()) => command_message!("{}", crate::i18n::tr("Subagent cancellation requested.")),
+                    Err(error) => command_message!("{error}"),
+                } }
+            } else if args.is_empty() {
+                let views = manager.views();
+                if views.is_empty() { command_message!("{}", crate::i18n::tr("No subagents in this chat yet.")); }
+                for view in views {
+                    command_message!("{}", crate::i18n::tf!("{} | {} | {} | {} | {} tokens{}", view.id, crate::i18n::tr(&view.profile),
+                        crate::i18n::tr(&view.status), view.model.chars().take(24).collect::<String>(), view.tokens,
+                        if view.usage_complete { "" } else { crate::i18n::tr(" (partial)") }));
+                }
+            } else { match manager.view(args) {
+                Ok(view) => command_message!("{} | {} | {}\n{}\n{}\n{}", view.id, crate::i18n::tr(&view.profile), crate::i18n::tr(&view.status),
+                    view.task, view.report.as_deref().unwrap_or_else(|| crate::i18n::tr(&view.activity)), view.error.as_deref().unwrap_or("")),
+                Err(error) => command_message!("{error}\n/agents | /agents <id> | /agents stop <id|all>"),
+            } }
+        }
+        return Ok(CommandResult::Handled);
+    }
     if line == "/config" {
         let mut selection = 0;
         loop {
@@ -389,6 +431,8 @@ async fn handle_tui_command_inner(
                     user_prefs.save()?;
                     i18n::set_current(language);
                 }
+            } else if matches!(action, interactive::ConfigAction::Approval) {
+                set_execution_mode(config, user_prefs, config.execution_mode.current().next())?;
             } else {
                 let command = match action {
                     interactive::ConfigAction::Theme => "/theme",
@@ -400,7 +444,7 @@ async fn handle_tui_command_inner(
                     interactive::ConfigAction::Language => unreachable!(),
                 };
                 Box::pin(handle_tui_command(command, config, user_prefs, agent, current_session,
-                    history, output_row, branch_tag, active, runtime)).await?;
+                    history, output_row, branch_tag, active, tools)).await?;
             }
             *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
         }
@@ -518,18 +562,43 @@ async fn handle_tui_command_inner(
             return Ok(CommandResult::Handled);
         }
 
-        if line == "/approval" || line == "/permissions" {
-            config.auto_approve = !config.auto_approve;
-            user_prefs.auto_approve = Some(config.auto_approve);
-            user_prefs.save()?;
-            let mut locked = command_agent(agent, active, current_session, history, config).await;
-            locked.config.auto_approve = config.auto_approve;
-            *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-            cli_ui::print_user_cmd(&line);
-            if config.auto_approve {
-                command_message!("{}", crate::i18n::tf!("Approval: AUTO-APPROVE (commands, external file writes and MCP calls)\n"));
+        if line == "/approval" || line == "/permissions" || line.starts_with("/permissions ") {
+            let mode = if let Some(value) = line.strip_prefix("/permissions ") {
+                execution_mode::ExecutionMode::parse(value.trim())
+            } else { Some(if config.execution_mode.current() == execution_mode::ExecutionMode::AllowAll {
+                execution_mode::ExecutionMode::Auto
+            } else { execution_mode::ExecutionMode::AllowAll }) };
+            if let Some(mode) = mode {
+                set_execution_mode(config, user_prefs, mode)?;
+                *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
+                command_message!("{}: {}", crate::i18n::tr("Execution mode"), mode.name());
+            } else { command_message!("{}", crate::i18n::tr("Usage: /permissions auto|plan|allow-all")); }
+            return Ok(CommandResult::Handled);
+        }
+
+        if line == "/logo" || line.starts_with("/logo ") {
+            let value = line.strip_prefix("/logo").unwrap().trim();
+            if value.is_empty() {
+                command_message!("{}", crate::i18n::tr("Usage: /logo <image path> | /logo reset"));
             } else {
-                command_message!("{}", crate::i18n::tf!("Approval: ASK (commands, external file writes and untrusted MCP calls)\n"));
+                let result = if value == "reset" {
+                    Ok(None)
+                } else {
+                    custom_logo::CustomLogo::from_path(&custom_logo::image_path(value)).map(Some)
+                };
+                match result {
+                    Ok(logo) => {
+                        let mut updated = user_prefs.clone();
+                        updated.custom_logo = logo;
+                        updated.save()?;
+                        *user_prefs = updated;
+                        custom_logo::set_current(user_prefs.custom_logo.as_ref());
+                        *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
+                    }
+                    Err(error) => {
+                        command_message!("{} {}", crate::i18n::tr("Could not load logo:"), error);
+                    }
+                }
             }
             return Ok(CommandResult::Handled);
         }
@@ -1021,7 +1090,7 @@ async fn handle_tui_command_inner(
                 } else {
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
-                    command_message!("Session {} not found.\n", id);
+                    command_message!("{}", crate::i18n::tf!("Session {} not found.\n", id));
                 }
             } else {
                 let sessions = Session::list(&config.workspace_dir);
@@ -1050,7 +1119,7 @@ async fn handle_tui_command_inner(
                         Ok(Some(interactive::SessionAction::Deleted(id))) => {
                             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                             cli_ui::print_user_cmd(&line);
-                            command_message!("Deleted session {}.\n", id);
+                            command_message!("{}", crate::i18n::tf!("Deleted session {}.\n", id));
                         }
                         _ => {
                             let hist = history.lock().unwrap().clone();
@@ -1119,6 +1188,7 @@ async fn main() -> anyhow::Result<()> {
         Err(error) => return Err(error),
     };
     theme::set_current(user_prefs.theme);
+    custom_logo::set_current(user_prefs.custom_logo.as_ref());
 
     // If onboarding was not shown, purge previous terminal output (e.g. `cargo run`).
     // If onboarding was shown, it already purged previous output on startup.
@@ -1127,6 +1197,21 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let mut config = Config::load_with_args(&cli_args);
+    execution_mode::set_display(config.execution_mode.current());
+
+    if !user_prefs.is_workspace_trusted(&config.workspace_dir,
+        config.execution_mode.current() == execution_mode::ExecutionMode::AllowAll) {
+        let ctx = interactive::ScreenContext::from_config(&config);
+        let allowed = interactive::workspace_trust_menu(&ctx, &config.workspace_dir)?;
+        if allowed {
+            user_prefs.trust_workspace(&config.workspace_dir)?;
+        } else {
+            drop(_terminal_screen);
+            println!("{}", crate::i18n::tr("Directory access was declined. Goodbye!"));
+            return Ok(());
+        }
+    }
+
     let mut initial_prompt = cli_args.prompt;
     let mut line_editor = LineEditor::new();
     let agent = Arc::new(Mutex::new(Agent::new(config.clone())));
@@ -1225,6 +1310,10 @@ async fn main() -> anyhow::Result<()> {
             })?;
 
             match input_res {
+                PromptResult::CycleMode => {
+                    set_execution_mode(&config, &mut user_prefs, config.execution_mode.current().next())?;
+                    continue 'chat;
+                }
                 PromptResult::Exit => {
                     break;
                 }
@@ -1242,7 +1331,7 @@ async fn main() -> anyhow::Result<()> {
 
         if line.starts_with('/') {
             let outcome = handle_tui_command(&line, &mut config, &mut user_prefs, &agent,
-                &mut current_session, &history, &output_row, &branch_tag, &mut None, &tools_executor.runtime).await?;
+                &mut current_session, &history, &output_row, &branch_tag, &mut None, &tools_executor).await?;
             if pending_title.as_ref().is_some_and(|(id, _)| *id != current_session.id) {
                 if let Some((_, task)) = pending_title.take() { task.abort(); }
             }
@@ -1261,6 +1350,12 @@ async fn main() -> anyhow::Result<()> {
 
         // Direct shell command (!<command>)
         if line.starts_with('!') {
+            if config.execution_mode.current() == execution_mode::ExecutionMode::Plan {
+                history.lock().unwrap().push(cli_ui::HistoryItem::Error(
+                    crate::i18n::tr("Plan mode blocks shell commands. Switch modes with Shift+Tab.").into()));
+                *output_row.lock().unwrap() = redraw_full_screen(&config, &history.lock().unwrap());
+                continue;
+            }
             let cmd = line[1..].trim().to_string();
             if cmd.is_empty() {
                 continue;
@@ -1412,18 +1507,20 @@ async fn main() -> anyhow::Result<()> {
                     .await.context("Title generation timed out after 90 seconds")?
             })));
         }
+        let capture_checkpoint = config.execution_mode.current() != execution_mode::ExecutionMode::Plan;
         let agent_task = tokio::spawn(async move {
             // Keep the editor, spinner and cancellation alive while scanning and
             // copying the workspace. Previously Enter blocked the UI here.
             let checkpoint_cancel = cancel_token_clone.clone();
-            let capture = tokio::task::spawn_blocking(move ||
-                checkpoints::capture_session_cancellable(&workspace, &conversation, &label, checkpoint_cancel)).await;
+            let capture = if capture_checkpoint { Some(tokio::task::spawn_blocking(move ||
+                checkpoints::capture_session_cancellable(&workspace, &conversation, &label, checkpoint_cancel)).await) } else { None };
             if cancel_token_clone.is_cancelled() {
                 let _ = event_tx.send(AgentEvent::Interrupted).await;
                 let _ = event_tx.send(AgentEvent::Finished).await;
                 return;
             }
-            let error = match capture { Ok(Ok(_)) => None, Ok(Err(error)) => Some(format!("{error:#}")), Err(error) => Some(error.to_string()) };
+            let error = match capture { Some(Ok(Err(error))) => Some(format!("{error:#}")),
+                Some(Err(error)) => Some(error.to_string()), _ => None };
             if let Some(error) = error {
                 let _ = event_tx.send(AgentEvent::ToolLog(crate::i18n::tf!("Checkpoint unavailable: {error}", error = error))).await;
             }
@@ -1525,6 +1622,12 @@ async fn main() -> anyhow::Result<()> {
                             redraw_active_view(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
                         }
                         TerminalEvent::Key(key) => {
+                            if execution_mode::is_cycle_key(key) {
+                                set_execution_mode(&config, &mut user_prefs, config.execution_mode.current().next())?;
+                                let snapshot = history.lock().unwrap().clone();
+                                redraw_active_editor(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
+                                continue;
+                            }
                             if line_editor.draft.clipboard_key(key) {
                                 cli_ui::set_active_draft(Some(line_editor.draft.clone()));
                                 let snapshot = history.lock().unwrap().clone();
@@ -1566,7 +1669,7 @@ async fn main() -> anyhow::Result<()> {
                                     cli_ui::set_active_draft(None);
                                     cli_ui::disable_raw_mode().ok();
                                     let outcome = handle_tui_command(&submitted, &mut config, &mut user_prefs,
-                                        &agent, &mut current_session, &history, &output_row, &branch_tag, &mut active, &tools_executor.runtime).await?;
+                                        &agent, &mut current_session, &history, &output_row, &branch_tag, &mut active, &tools_executor).await?;
                                     crossterm::terminal::enable_raw_mode().ok();
                                     exit_requested = outcome == CommandResult::Exit;
                                     match outcome {
@@ -1704,7 +1807,9 @@ async fn main() -> anyhow::Result<()> {
                             agent::PermissionResponse::AllowOnce
                         }
                         cli_ui::PermissionChoice::AllowAlways => {
-                            if name == "run_command" { config.auto_approve = true; }
+                            if name == "run_command" {
+                                set_execution_mode(&config, &mut user_prefs, execution_mode::ExecutionMode::AllowAll)?;
+                            }
                             agent::PermissionResponse::AllowAlways
                         }
                         cli_ui::PermissionChoice::Deny => {
@@ -1985,6 +2090,10 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
             if let TerminalEvent::Key(key) = event {
+                if execution_mode::is_cycle_key(key) {
+                    set_execution_mode(&config, &mut user_prefs, config.execution_mode.current().next())?;
+                    continue;
+                }
                 if let Some(text) = line_editor.active_key(key) {
                     if text.starts_with('/') {
                         ready_commands.push_back(text);

@@ -304,9 +304,9 @@ impl Runtime {
             });
         }
         let name =
-            name.ok_or("Usage: /mcp|/lsp status | connect|disconnect|restart|login|logout SERVER")?;
+            name.ok_or_else(|| crate::i18n::tr("Usage: /mcp|/lsp status | connect|disconnect|restart|login|logout SERVER").to_string())?;
         if kind == "mcp" {
-            let server = self.mcp.get(name).ok_or("Unknown MCP server")?;
+            let server = self.mcp.get(name).ok_or_else(|| crate::i18n::tr("Unknown MCP server").to_string())?;
             let mut server = server.lock().await;
             match action {
                 "connect" | "restart" => {
@@ -329,14 +329,14 @@ impl Runtime {
                     server.logout(name).await;
                     self.trusted.write().unwrap().remove(name);
                 }
-                _ => return Err("Unknown MCP action".into()),
+                _ => return Err(crate::i18n::tr("Unknown MCP action").into()),
             }
             let status = server.status();
             drop(server);
             self.rebuild().await;
             Ok(status)
         } else {
-            let mut server = self.lsp.get(name).ok_or("Unknown LSP server")?.lock().await;
+            let mut server = self.lsp.get(name).ok_or_else(|| crate::i18n::tr("Unknown LSP server").to_string())?.lock().await;
             match action {
                 "connect" | "restart" => {
                     server.stop().await;
@@ -347,7 +347,7 @@ impl Runtime {
                     server.stop().await;
                     server.disabled = true;
                 }
-                _ => return Err("Unknown LSP action".into()),
+                _ => return Err(crate::i18n::tr("Unknown LSP action").into()),
             }
             Ok(server.status())
         }

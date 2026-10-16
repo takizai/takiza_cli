@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="700" viewBox="0 0 880 700" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif">
+<rect x="0.5" y="0.5" width="879" height="699" rx="12" fill="#17171c" stroke="#2e2e33"/>
+<text x="40.0" y="46.0" font-size="19" fill="#f4f4f5" font-weight="600" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">Одинаковая модель: NVIDIA NIM GLM-5.3-Flash · «привет как дела?»</text>
+<text x="40.0" y="68.0" font-size="12.5" fill="#a1a1aa" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">Замеры 12–13.10.2026 · от запуска CLI до готового ответа · Linux x86_64, прокси до integrate.api.nvidia.com</text>
+<text x="40.0" y="100.0" font-size="11.5" fill="#a1a1aa" font-weight="600" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start" letter-spacing="1.1">Вечер, NIM свободен · медиана 3 прогонов, рядом — мин–макс</text>
+<line x1="252.0" y1="114.0" x2="252.0" y2="232.0" stroke="#27272a" stroke-width="1"/>
+<text x="252.0" y="246.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">0</text>
+<line x1="364.5" y1="114.0" x2="364.5" y2="232.0" stroke="#27272a" stroke-width="1"/>
+<text x="364.5" y="246.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">2</text>
+<line x1="476.9" y1="114.0" x2="476.9" y2="232.0" stroke="#27272a" stroke-width="1"/>
+<text x="476.9" y="246.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">4</text>
+<line x1="589.4" y1="114.0" x2="589.4" y2="232.0" stroke="#27272a" stroke-width="1"/>
+<text x="589.4" y="246.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">6</text>
+<line x1="701.9" y1="114.0" x2="701.9" y2="232.0" stroke="#27272a" stroke-width="1"/>
+<text x="701.9" y="246.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">8</text>
+<text x="40.0" y="125.0" font-size="13" fill="#f4f4f5" font-weight="600" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">opencode 1.18.29</text>
+<rect x="252.0" y="114.0" width="180.0" height="12.0" rx="3" fill="#f59e0b"/>
+<text x="442.0" y="125.0" font-size="12.5" fill="#f4f4f5" font-weight="600" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">3.2 с</text>
+<text x="490.0" y="125.0" font-size="11" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">разброс 3.2–3.4</text>
+<text x="40.0" y="157.0" font-size="13" fill="#d4d4d8" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">pi 1.1.0</text>
+<rect x="252.0" y="146.0" width="219.3" height="12.0" rx="3" fill="#52525b"/>
+<text x="481.3" y="157.0" font-size="12.5" fill="#d4d4d8" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">3.9 с</text>
+<text x="529.3" y="157.0" font-size="11" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">разброс 3.8–14.1</text>
+<text x="40.0" y="189.0" font-size="13" fill="#d4d4d8" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">openclaude 0.31.0</text>
+<rect x="252.0" y="178.0" width="331.8" height="12.0" rx="3" fill="#52525b"/>
+<text x="593.8" y="189.0" font-size="12.5" fill="#d4d4d8" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">5.9 с</text>
+<text x="641.8" y="189.0" font-size="11" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">разброс 5.8–10.6</text>
+<text x="40.0" y="221.0" font-size="13" fill="#d4d4d8" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">Takiza 0.1.7</text>
+<rect x="252.0" y="210.0" width="382.4" height="12.0" rx="3" fill="#52525b"/>
+<text x="644.4" y="221.0" font-size="12.5" fill="#d4d4d8" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">6.8 с</text>
+<text x="692.4" y="221.0" font-size="11" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">разброс 5.5–14.3</text>
+<text x="40.0" y="272.0" font-size="11.5" fill="#a1a1aa" font-weight="600" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start" letter-spacing="1.1">День, NIM перегружен · ручной замер, по одному прогону</text>
+<line x1="252.0" y1="286.0" x2="252.0" y2="404.0" stroke="#27272a" stroke-width="1"/>
+<text x="252.0" y="418.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">0</text>
+<line x1="388.6" y1="286.0" x2="388.6" y2="404.0" stroke="#27272a" stroke-width="1"/>
+<text x="388.6" y="418.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">20</text>
+<line x1="525.1" y1="286.0" x2="525.1" y2="404.0" stroke="#27272a" stroke-width="1"/>
+<text x="525.1" y="418.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">40</text>
+<line x1="661.7" y1="286.0" x2="661.7" y2="404.0" stroke="#27272a" stroke-width="1"/>
+<text x="661.7" y="418.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">60</text>
+<text x="40.0" y="297.0" font-size="13" fill="#d4d4d8" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">opencode 1.18.29</text>
+<rect x="252.0" y="286.0" width="430.2" height="12.0" rx="3" fill="#52525b"/>
+<text x="692.2" y="297.0" font-size="12.5" fill="#d4d4d8" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">63 с</text>
+<text x="40.0" y="329.0" font-size="13" fill="#d4d4d8" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">pi 1.1.0</text>
+<rect x="252.0" y="318.0" width="341.4" height="12.0" rx="3" fill="#52525b"/>
+<text x="603.4" y="329.0" font-size="12.5" fill="#d4d4d8" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">50 с</text>
+<text x="40.0" y="361.0" font-size="13" fill="#d4d4d8" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">openclaude 0.31.0</text>
+<rect x="252.0" y="350.0" width="361.9" height="12.0" rx="3" fill="#52525b"/>
+<text x="623.9" y="361.0" font-size="12.5" fill="#d4d4d8" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">53 с</text>
+<text x="40.0" y="393.0" font-size="13" fill="#f4f4f5" font-weight="600" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">Takiza 0.1.7</text>
+<rect x="252.0" y="382.0" width="314.1" height="12.0" rx="3" fill="#f59e0b"/>
+<text x="576.1" y="393.0" font-size="12.5" fill="#f4f4f5" font-weight="600" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">46 с</text>
+<text x="40.0" y="444.0" font-size="11.5" fill="#a1a1aa" font-weight="600" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start" letter-spacing="1.1">Контекст одного запроса, входные токены · стабилен в обеих сериях</text>
+<line x1="252.0" y1="458.0" x2="252.0" y2="576.0" stroke="#27272a" stroke-width="1"/>
+<text x="252.0" y="590.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">0</text>
+<line x1="411.3" y1="458.0" x2="411.3" y2="576.0" stroke="#27272a" stroke-width="1"/>
+<text x="411.3" y="590.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">4K</text>
+<line x1="570.7" y1="458.0" x2="570.7" y2="576.0" stroke="#27272a" stroke-width="1"/>
+<text x="570.7" y="590.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">8K</text>
+<line x1="730.0" y1="458.0" x2="730.0" y2="576.0" stroke="#27272a" stroke-width="1"/>
+<text x="730.0" y="590.0" font-size="10.5" fill="#71717a" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="middle">12K</text>
+<text x="40.0" y="469.0" font-size="13" fill="#f4f4f5" font-weight="600" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">pi 1.1.0</text>
+<rect x="252.0" y="458.0" width="78.3" height="12.0" rx="3" fill="#f59e0b"/>
+<text x="340.3" y="469.0" font-size="12.5" fill="#f4f4f5" font-weight="600" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">≈2 000</text>
+<text x="40.0" y="501.0" font-size="13" fill="#d4d4d8" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">Takiza 0.1.7</text>
+<rect x="252.0" y="490.0" width="279.0" height="12.0" rx="3" fill="#52525b"/>
+<text x="541.0" y="501.0" font-size="12.5" fill="#d4d4d8" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">7 004 *</text>
+<text x="40.0" y="533.0" font-size="13" fill="#d4d4d8" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">opencode 1.18.29</text>
+<rect x="252.0" y="522.0" width="298.9" height="12.0" rx="3" fill="#52525b"/>
+<text x="560.9" y="533.0" font-size="12.5" fill="#d4d4d8" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">7 505</text>
+<text x="40.0" y="565.0" font-size="13" fill="#d4d4d8" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">openclaude 0.31.0</text>
+<rect x="252.0" y="554.0" width="444.9" height="12.0" rx="3" fill="#52525b"/>
+<text x="706.9" y="565.0" font-size="12.5" fill="#d4d4d8" font-weight="400" font-family="ui-monospace, &#x27;SF Mono&#x27;, &#x27;Cascadia Code&#x27;, Menlo, Consolas, monospace" text-anchor="start">≈11 200</text>
+<text x="40.0" y="612.0" font-size="11" fill="#71717a" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">* у takiza провайдер отдаёт только сумму input+reasoning+output; разбивки нет.</text>
+<text x="40.0" y="624.0" font-size="11" fill="#71717a" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">У openclaude 10 880 из 11 169 входных токенов на повторах обслуживает prompt-cache.</text>
+<text x="40.0" y="654.0" font-size="11" fill="#71717a" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">Базовая линия днём: голый запрос к NIM без харнесса — 35–57 с (25 промпт-токенов), с ~7.6K промптом — 34–35 с.</text>
+<text x="40.0" y="670.0" font-size="11" fill="#71717a" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">Рейтинг скорости меняется с нагрузкой NIM: вечером быстрее всех opencode, днём — takiza. Ручной замер takiza подкреплён</text>
+<text x="40.0" y="686.0" font-size="11" fill="#71717a" font-weight="400" font-family="-apple-system, &#x27;Segoe UI&#x27;, Roboto, &#x27;Helvetica Neue&#x27;, Arial, sans-serif" text-anchor="start">автоматическим контролем (медиана 46.1 с, k=3). opencode дополнительно тратит отдельный запрос на заголовок сессии.</text>
+</svg>

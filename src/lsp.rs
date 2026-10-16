@@ -138,7 +138,7 @@ impl Server {
             .as_ref()
             .is_some_and(|c| !c.reader.is_finished())
         {
-            format!(
+            crate::i18n::tf!(
                 "{} · {} · capabilities: {}",
                 crate::i18n::tr("Connected"),
                 self.encoding,

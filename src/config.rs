@@ -86,7 +86,7 @@ pub struct Config {
     pub base_url: String,
     pub model: String,
     pub workspace_dir: PathBuf,
-    pub auto_approve: bool,
+    pub execution_mode: crate::execution_mode::ModeControl,
     pub continue_session: bool,
     pub proxy: Option<String>,
     pub mode: crate::theme::AppMode,
@@ -154,6 +154,11 @@ impl Config {
             .unwrap_or(false);
 
         let auto_approve = cli_args.auto_approve || prefs.auto_approve.unwrap_or(env_auto_approve);
+        let execution_mode = crate::execution_mode::ModeControl::new(if cli_args.auto_approve {
+            crate::execution_mode::ExecutionMode::AllowAll
+        } else { prefs.execution_mode.unwrap_or(if auto_approve {
+            crate::execution_mode::ExecutionMode::AllowAll
+        } else { crate::execution_mode::ExecutionMode::Auto }) });
 
         let effort = prefs.effort
             .filter(|s| !s.trim().is_empty())
@@ -166,7 +171,7 @@ impl Config {
             base_url,
             model,
             workspace_dir,
-            auto_approve,
+            execution_mode,
             continue_session: cli_args.continue_session,
             proxy,
             mode,

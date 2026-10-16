@@ -134,7 +134,7 @@ class Terminal:
     def pump(self, seconds=.05):
         end = time.monotonic() + seconds
         while time.monotonic() < end:
-            readable, _, _ = select.select([self.fd], [], [], min(.02, end - time.monotonic()))
+            readable, _, _ = select.select([self.fd], [], [], max(0, min(.02, end - time.monotonic())))
             if readable:
                 try:
                     self.output += os.read(self.fd, 65536)
@@ -408,7 +408,11 @@ def run_skill_completions(binary, cols, rows):
             packet_start = len(terminal.output)
             terminal.send('\r')
             packet = terminal.output[packet_start:]
-            assert packet.count(b'\x1b[?2026h') == 1 and packet.count(b'\x1b[?2026l') == 1, 'busy selection painted intermediate frames'
+            assert packet.count(b'\x1b[?2026h') == packet.count(b'\x1b[?2026l'), 'unbalanced synchronized frames'
+            frames = re.findall(rb'\x1b\[\?2026h(.*?)\x1b\[\?2026l', packet, re.DOTALL)
+            # Spinner-only frames can arrive during send()'s 150 ms pump.
+            editor_frames = [frame for frame in frames if 'Привет'.encode() in frame]
+            assert len(editor_frames) == 1, 'busy selection painted intermediate editor frames'
             screen = '\n'.join(Screen(terminal.output, cols, rows).text)
             assert 'Привет $demo-b' in screen and 'skills)' not in screen
             assert len(requests) == 1, 'Enter on completion submitted prompt'
@@ -422,7 +426,7 @@ def run_skill_completions(binary, cols, rows):
             terminal.pump(.3)
             terminal.send('добавь $demo-')
             screen = '\n'.join(Screen(terminal.output, cols, rows).text)
-            assert '$demo-a' in screen and 'RESPONSE_1' in screen, 'idle inline completion hid chat'
+            assert '$demo-a' in screen and 'RESPONSE_1' in screen, f'idle inline completion hid chat:\n{screen}'
             terminal.send('\x1b')
             assert len(requests) == 2, 'Esc submitted or interrupted idle completion'
             assert 'добавь $demo-' in '\n'.join(Screen(terminal.output, cols, rows).text), 'Esc lost draft'

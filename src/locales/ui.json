@@ -1989,5 +1989,221 @@
   "Approval: AUTO-APPROVE (commands, external file writes and MCP calls)\n": ["Подтверждения: АВТО (команды, запись вне workspace и MCP-вызовы)\n", "审批：自动批准（命令、工作区外写入和 MCP 调用）\n"],
   "Approval: ASK (commands, external file writes and untrusted MCP calls)\n": ["Подтверждения: СПРАШИВАТЬ (команды, запись вне workspace и MCP без доверия)\n", "审批：询问（命令、工作区外写入和未信任的 MCP 调用）\n"],
   "            Skip permission prompts for commands, external file writes and MCP calls": ["            Не спрашивать подтверждения команд, записи вне workspace и MCP-вызовов", "            跳过命令、工作区外写入和 MCP 调用的审批"],
-  "            (Default: confirm commands, external file writes and untrusted MCP calls)\n": ["            (По умолчанию: подтверждать команды, запись вне workspace и MCP без доверия)\n", "            （默认：确认命令、工作区外写入和未信任的 MCP 调用）\n"]
+  "            (Default: confirm commands, external file writes and untrusted MCP calls)\n": ["            (По умолчанию: подтверждать команды, запись вне workspace и MCP без доверия)\n", "            （默认：确认命令、工作区外写入和未信任的 MCP 调用）\n"],
+  "Directory access permission": [
+    "Разрешение на доступ к директории",
+    "目录访问权限"
+  ],
+  "Allow Takiza Code access to files in this directory?": [
+    "Разрешить Takiza Code доступ к файлам этой директории?",
+    "允许 Takiza Code 访问此目录中的文件？"
+  ],
+  "Allow access to this directory": [
+    "Разрешить доступ к этой директории",
+    "允许访问此目录"
+  ],
+  "Deny and exit": [
+    "Отклонить и выйти",
+    "拒绝并退出"
+  ],
+  "Directory access was declined. Goodbye!": [
+    "В доступе к директории отказано. До свидания!",
+    "目录访问已被拒绝。再见！"
+  ],
+  "↑↓: Select  Enter: Confirm  Esc: Deny": [
+    "↑↓: Выбор  Enter: Подтвердить  Esc: Отклонить",
+    "↑↓: 选择  Enter: 确认  Esc: 拒绝"
+  ],
+  "Usage: /logo <image path> | /logo reset": [
+    "Использование: /logo <путь к картинке> | /logo reset",
+    "用法：/logo <图片路径> | /logo reset"
+  ],
+  "Could not load logo:": [
+    "Не удалось загрузить лого:",
+    "无法加载标志："
+  ],
+  "  /logo <path|reset>  - Set custom artwork or restore the default logo": [
+    "  /logo <путь|reset>  - Свой арт или возврат стандартного лого",
+    "  /logo <路径|reset>  - 设置自定义图片或恢复默认标志"
+  ],
+  "Set custom artwork (/logo <path>) or restore default (/logo reset)": [
+    "Свой арт (/logo <путь>) или стандартное лого (/logo reset)",
+    "设置自定义图片（/logo <路径>）或恢复默认标志（/logo reset）"
+  ],
+  "Execution mode": [
+    "Режим выполнения",
+    "执行模式"
+  ],
+  "Usage: /permissions auto|plan|allow-all": [
+    "Использование: /permissions auto|plan|allow-all",
+    "用法：/permissions auto|plan|allow-all"
+  ],
+  "Plan mode blocks shell commands. Switch modes with Shift+Tab.": [
+    "Режим Plan запрещает shell-команды. Переключи режим через Shift+Tab.",
+    "Plan 模式禁止 shell 命令。请使用 Shift+Tab 切换模式。"
+  ],
+  "Set execution mode: auto, plan, allow-all (Shift+Tab)": [
+    "Режим выполнения: auto, plan, allow-all (Shift+Tab)",
+    "设置执行模式：auto、plan、allow-all（Shift+Tab）"
+  ],
+  "  Shift+Tab           - Cycle Auto / Plan / Allow-all execution modes": [
+    "  Shift+Tab           - Переключить режим Auto / Plan / Allow-all",
+    "  Shift+Tab           - 切换 Auto / Plan / Allow-all 执行模式"
+  ],
+  "No subagents in this chat yet.": [
+    "В этом чате пока нет субагентов.",
+    "当前聊天暂无子代理。"
+  ],
+  "Subagent cancellation requested.": [
+    "Отмена субагента запрошена.",
+    "已请求取消子代理。"
+  ],
+  "List helpers, inspect a report, or stop a subagent": [
+    "Список помощников, отчёты и остановка субагентов",
+    "列出助手、查看报告或停止子代理"
+  ],
+  "\u001b[1;38;2;40;220;120m[active]\u001b[0m": [
+    "\u001b[1;38;2;40;220;120m[активно]\u001b[0m",
+    "\u001b[1;38;2;40;220;120m[当前]\u001b[0m"
+  ],
+  "\u001b[38;2;160;160;165m[Model]\u001b[0m": [
+    "\u001b[38;2;160;160;165m[Модель]\u001b[0m",
+    "\u001b[38;2;160;160;165m[模型]\u001b[0m"
+  ],
+  "No checkpoints in this chat.": [
+    "В этом чате нет контрольных точек.",
+    "此聊天中没有检查点。"
+  ],
+  "Checkpoints are saved before prompts.": [
+    "Контрольные точки сохраняются перед запросами.",
+    "检查点会在提交提示前保存。"
+  ],
+  "{} changes · files {}–{}": [
+    "{} изменений · файлы {}–{}",
+    "{} 项更改 · 文件 {}–{}"
+  ],
+  "Remove": [
+    "Удалить",
+    "删除"
+  ],
+  "Recover": [
+    "Восстановить",
+    "恢复"
+  ],
+  "Restore": [
+    "Вернуть",
+    "还原"
+  ],
+  "(configured)": [
+    "(настроен)",
+    "（已配置）"
+  ],
+  "Auto": [
+    "Авто",
+    "自动"
+  ],
+  "Plan": [
+    "План",
+    "计划"
+  ],
+  "Allow-all": [
+    "Разрешить всё",
+    "全部允许"
+  ],
+  "⏳ Queued #{id}: {text}": [
+    "⏳ В очереди #{id}: {text}",
+    "⏳ 排队中 #{id}：{text}"
+  ],
+  "Session {} not found.\n": [
+    "Сессия {} не найдена.\n",
+    "未找到会话 {}。\n"
+  ],
+  "Deleted session {}.\n": [
+    "Сессия {} удалена.\n",
+    "已删除会话 {}。\n"
+  ],
+  "{} | {} | {} | {} | {} tokens{}": [
+    "{} | {} | {} | {} | {} токенов{}",
+    "{} | {} | {} | {} | {} 个 token{}"
+  ],
+  " (partial)": [
+    " (неполные данные)",
+    "（部分数据）"
+  ],
+  "completed": [
+    "завершено",
+    "已完成"
+  ],
+  "explore": [
+    "исследователь",
+    "探索助手"
+  ],
+  "reviewer": [
+    "рецензент",
+    "审查助手"
+  ],
+  "[{id} {}] started": [
+    "[{id} {}] запущен",
+    "[{id} {}] 已启动"
+  ],
+  "Unknown subagent: {id}": [
+    "Неизвестный субагент: {id}",
+    "未知子代理：{id}"
+  ],
+  "Subagent exceeded the 180-second limit": [
+    "Субагент превысил лимит в 180 секунд",
+    "子代理超出了 180 秒的时间限制"
+  ],
+  "Subagent finished without a report": [
+    "Субагент завершился без отчёта",
+    "子代理已结束，但未返回报告"
+  ],
+  "[Skipped]": [
+    "[Пропущено]",
+    "[已跳过]"
+  ],
+  "{} · {} tools": [
+    "{} · инструментов: {}",
+    "{} · {} 个工具"
+  ],
+  "{} · {} · capabilities: {}": [
+    "{} · {} · возможности: {}",
+    "{} · {} · 能力：{}"
+  ],
+  "Usage: /mcp|/lsp status | connect|disconnect|restart|login|logout SERVER": [
+    "Использование: /mcp|/lsp status | connect|disconnect|restart|login|logout СЕРВЕР",
+    "用法：/mcp|/lsp status | connect|disconnect|restart|login|logout 服务器"
+  ],
+  "Unknown MCP server": [
+    "Неизвестный сервер MCP",
+    "未知 MCP 服务器"
+  ],
+  "Unknown MCP action": [
+    "Неизвестное действие MCP",
+    "未知 MCP 操作"
+  ],
+  "Unknown LSP server": [
+    "Неизвестный сервер LSP",
+    "未知 LSP 服务器"
+  ],
+  "Unknown LSP action": [
+    "Неизвестное действие LSP",
+    "未知 LSP 操作"
+  ],
+  "Subagent reached its {max_steps}-step limit without finishing.": [
+    "Субагент достиг лимита в {max_steps} шагов, не завершив задачу.",
+    "子代理已达到 {max_steps} 步的限制，但尚未完成任务。"
+  ],
+  "Reached maximum step limit ({max_steps} steps). Set TAKIZA_MAX_STEPS to raise the limit, or 0 to disable it.": [
+    "Достигнут лимит шагов ({max_steps}). Увеличьте TAKIZA_MAX_STEPS или установите 0, чтобы отключить лимит.",
+    "已达到最大步数限制（{max_steps} 步）。请增大 TAKIZA_MAX_STEPS，或设为 0 以取消限制。"
+  ],
+  "The model returned no answer after 3 attempts{reason}. Try another model or resend your prompt.": [
+    "Модель не вернула ответ после 3 попыток{reason}. Попробуйте другую модель или отправьте запрос повторно.",
+    "模型尝试 3 次后仍未返回答案{reason}。请尝试其他模型或重新发送提示。"
+  ],
+  "Plan mode blocked '{name}'; no action was executed. Switch to Auto or Allow-all to implement changes.": [
+    "Режим «План» заблокировал '{name}'; действие не выполнено. Для внесения изменений переключитесь в «Авто» или «Разрешить всё».",
+    "计划模式已阻止 '{name}'；未执行任何操作。请切换到自动或全部允许模式以实施更改。"
+  ]
 }

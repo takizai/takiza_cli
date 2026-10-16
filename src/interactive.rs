@@ -10,7 +10,7 @@ use crossterm::{
     style::{Color, Print, ResetColor, SetForegroundColor},
     terminal::{enable_raw_mode, Clear, ClearType},
 };
-use std::io::{stdout, Write};
+use std::io::{stdout, IsTerminal, Write};
 use std::path::Path;
 
 /// Buffer menu painting so clearing, transcript and controls appear together.
@@ -162,7 +162,7 @@ pub fn configure_interactive(ctx: &ScreenContext, config: &Config, prefs: &theme
                 (ConfigAction::Model, crate::i18n::tr("Model"), config.model.clone()),
                 (ConfigAction::Mode, crate::i18n::tr("Mode"), config.mode.name().to_string()),
                 (ConfigAction::Effort, crate::i18n::tr("Reasoning Effort"), crate::i18n::tr(config.effort.as_deref().unwrap_or("default")).to_string()),
-                (ConfigAction::Approval, crate::i18n::tr("Approval"), crate::i18n::tr(if config.auto_approve { "Auto-approve" } else { "Ask confirmation" }).to_string()),
+                (ConfigAction::Approval, crate::i18n::tr("Execution mode"), config.execution_mode.current().name().to_string()),
             ];
             let (_, rows) = crate::cli_ui::terminal_size();
             let visible = rows.saturating_sub(13).clamp(1, entries.len() as u16) as usize;
@@ -1076,7 +1076,7 @@ pub fn select_theme_interactive(ctx: &ScreenContext, initial: Theme) -> std::io:
 
             let prefix = if is_sel { "> " } else { "  " };
             let (mark_str, mark_vis) = if is_init {
-                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), 8)
+                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), crate::markdown::visible_width(crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m")))
             } else {
                 ("        ", 8)
             };
@@ -1263,7 +1263,7 @@ pub fn select_mode_interactive(ctx: &ScreenContext, current_mode: AppMode) -> st
 
             let prefix = if is_sel { "> " } else { "  " };
             let (mark_str, mark_vis) = if is_curr {
-                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), 8)
+                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), crate::markdown::visible_width(crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m")))
             } else {
                 ("        ", 8)
             };
@@ -1404,7 +1404,7 @@ pub fn select_effort_interactive(ctx: &ScreenContext, current_effort: &str) -> s
 
             let prefix = if is_sel { "> " } else { "  " };
             let (mark_str, mark_vis) = if is_curr {
-                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), 8)
+                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), crate::markdown::visible_width(crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m")))
             } else {
                 ("        ", 8)
             };
@@ -1534,7 +1534,7 @@ pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str
 
             let prefix = if is_sel { "> " } else { "  " };
             let (mark_str, mark_vis) = if is_curr {
-                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), 8)
+                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), crate::markdown::visible_width(crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m")))
             } else {
                 ("        ", 8)
             };
@@ -1551,7 +1551,7 @@ pub fn select_curated_model_interactive(ctx: &ScreenContext, current_model: &str
                 "Anthropic" => 11,
                 "Google" => 8,
                 "Moonshot AI" => 10,
-                _ => 7,
+                _ => crate::markdown::visible_width(prov_styled),
             };
 
             let (cost_tag, cost_vis) = if m.is_expensive {
@@ -1958,16 +1958,12 @@ pub fn show_interactive_status(
     let masked_key = if config.api_key.len() > 8 {
         format!("{}...{}", &config.api_key[..4], &config.api_key[config.api_key.len() - 4..])
     } else if !config.api_key.is_empty() {
-        "(configured)".to_string()
+        crate::i18n::tr("(configured)").to_string()
     } else {
         crate::i18n::tr("(not set)").to_string()
     };
 
-    let approval_str = if config.auto_approve {
-        crate::i18n::tr("Auto-approve (skip permissions)")
-    } else {
-        crate::i18n::tr("Ask on command (default)")
-    };
+    let approval_str = config.execution_mode.current().name();
 
     let items = [
         (crate::i18n::tr("AI Model"), config.model.as_str()),
@@ -2330,8 +2326,8 @@ fn selection_menu(ctx: &ScreenContext, title: &str, details: &[String], choices:
             let start = if details.is_empty() { selected.saturating_sub(slots - 1) } else { scroll };
             let mut lines = Vec::new();
             if choices.is_empty() {
-                lines.push(("No checkpoints in this chat.".into(), th.secondary_crossterm()));
-                lines.push(("Checkpoints are saved before prompts.".into(), Color::DarkGrey));
+                lines.push((crate::i18n::tr("No checkpoints in this chat.").into(), th.secondary_crossterm()));
+                lines.push((crate::i18n::tr("Checkpoints are saved before prompts.").into(), Color::DarkGrey));
             } else if details.is_empty() {
                 for (index, choice) in choices.iter().enumerate().skip(start).take(slots) {
                     lines.push((format!("{} {choice}", if index == selected { ">" } else { " " }),
@@ -2340,7 +2336,7 @@ fn selection_menu(ctx: &ScreenContext, title: &str, details: &[String], choices:
             } else {
                 lines.push((if file_permission { crate::i18n::tf!("Changes · {}–{} / {}", start + 1, (start + slots).min(details.len()), details.len()) }
                     else if tool_permission { crate::i18n::tf!("Arguments · {}–{} / {}", start + 1, (start + slots).min(details.len()), details.len()) }
-                    else { format!("{} changes · files {}–{}", details.len(), start + 1, (start + slots).min(details.len())) }, Color::DarkGrey));
+                    else { crate::i18n::tf!("{} changes · files {}–{}", details.len(), start + 1, (start + slots).min(details.len())) }, Color::DarkGrey));
                 for detail in details.iter().skip(start).take(slots) { lines.push((detail.clone(), th.secondary_crossterm())); }
                 lines.push((String::new(), Color::DarkGrey));
                 for (index, choice) in choices.iter().enumerate() {
@@ -2368,6 +2364,60 @@ fn selection_menu(ctx: &ScreenContext, title: &str, details: &[String], choices:
                     KeyCode::PageDown if details.is_empty() => selected = (selected + slots).min(choices.len().saturating_sub(1)),
                     KeyCode::PageUp => scroll = scroll.saturating_sub(slots),
                     KeyCode::PageDown => scroll = (scroll + slots).min(details.len().saturating_sub(slots)),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    })();
+    let _ = disable_raw_mode();
+    result
+}
+
+pub fn workspace_trust_menu(ctx: &ScreenContext, workspace: &Path) -> std::io::Result<bool> {
+    if !stdout().is_terminal() {
+        return Ok(false);
+    }
+    enable_raw_mode()?;
+    let result = (|| {
+        let mut selected = 0usize;
+        let mut panel = BottomSelectionPanel::default();
+        let choices = [
+            crate::i18n::tr("Allow access to this directory"),
+            crate::i18n::tr("Deny and exit"),
+        ];
+        let title = crate::i18n::tr("Directory access permission");
+        let question = crate::i18n::tr("Allow Takiza Code access to files in this directory?");
+        let dir_display = workspace.display().to_string();
+        let hint = crate::i18n::tr("↑↓: Select  Enter: Confirm  Esc: Deny");
+
+        loop {
+            let _geometry = crate::cli_ui::begin_terminal_frame();
+            let th = theme::current();
+            let mut lines = Vec::new();
+            lines.push((question.to_string(), Color::White));
+            lines.push((dir_display.clone(), th.primary_crossterm()));
+            lines.push((String::new(), Color::DarkGrey));
+            for (index, choice) in choices.iter().enumerate() {
+                lines.push((
+                    format!("{} {choice}", if index == selected { ">" } else { " " }),
+                    if index == selected { th.primary_crossterm() } else { th.secondary_crossterm() },
+                ));
+            }
+
+            if crate::cli_ui::terminal_is_small() {
+                crate::cli_ui::render_small_terminal();
+            } else {
+                panel.draw(ctx, title, &lines, hint)?;
+            }
+
+            match crate::cli_ui::read_event_with_background()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Esc => return Ok(false),
+                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => return Ok(false),
+                    KeyCode::Enter => return Ok(selected == 0),
+                    KeyCode::Up => selected = selected.saturating_sub(1),
+                    KeyCode::Down => selected = (selected + 1).min(choices.len().saturating_sub(1)),
                     _ => {}
                 },
                 _ => {}

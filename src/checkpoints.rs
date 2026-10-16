@@ -293,7 +293,9 @@ pub fn preview(workspace: &Path, point: &Checkpoint) -> Result<Vec<String>> {
     for path in paths {
         if changed(workspace, point, &current, &path)? {
             let status = if !point.entries.contains_key(&path) { "Remove" } else if !current.contains_key(&path) { "Recover" } else { "Restore" };
-            lines.push(format!("{status:<7} {}", path.display()));
+            let status = crate::i18n::tr(status);
+            let padding = " ".repeat(7usize.saturating_sub(crate::markdown::visible_width(status)));
+            lines.push(format!("{status}{padding} {}", path.display()));
         }
     }
     Ok(lines)

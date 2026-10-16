@@ -94,6 +94,11 @@ def run(binary, cols, rows):
             assert 'Responding...' in screen()[-4], 'editor redraw removed response activity'
             terminal.send('\x1b[1;5H')
             verify()
+            # On short screens the command's wrapped arguments occupy the oldest page.
+            for _ in range(3):
+                if any(line.strip().removeprefix('└ ') == 'COMMAND_STARTED' for line in screen()):
+                    break
+                terminal.send('\x1b[6~')
             assert any(line.strip().removeprefix('└ ') == 'COMMAND_STARTED' for line in screen()), 'command text lost during scroll'
             assert 'CHILD_TITLE' not in '\n'.join(screen()), 'terminal title sequence leaked into text'
             assert b'\x1b]0;CHILD_TITLE' not in terminal.output, 'command changed the terminal title'

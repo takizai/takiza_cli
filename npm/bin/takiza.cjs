@@ -78,7 +78,7 @@ function main() {
     process.exitCode = 1;
   });
   child.once('exit', (code, signal) => {
-    restoreTerminal();
+    if (signal) restoreTerminal(); else process.removeListener('exit', restoreTerminal);
     for (const [name, handler] of handlers) process.removeListener(name, handler);
     process.exitCode = code ?? ({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal] || 1);
   });

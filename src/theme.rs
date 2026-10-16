@@ -299,6 +299,8 @@ pub struct UserPreferences {
     pub terms_version: String,
     pub theme: Theme,
     #[serde(default)]
+    pub custom_logo: Option<crate::custom_logo::CustomLogo>,
+    #[serde(default)]
     pub language: crate::i18n::Language,
     pub accepted_at: Option<String>,
     #[serde(default)]
@@ -315,6 +317,10 @@ pub struct UserPreferences {
     pub effort: Option<String>,
     #[serde(default)]
     pub auto_approve: Option<bool>,
+    #[serde(default)]
+    pub execution_mode: Option<crate::execution_mode::ExecutionMode>,
+    #[serde(default)]
+    pub trusted_directories: Vec<String>,
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
@@ -327,6 +333,7 @@ impl Default for UserPreferences {
             agreed_to_terms: false,
             terms_version: "1.0.0".to_string(),
             theme: Theme::Amber,
+            custom_logo: None,
             language: crate::i18n::Language::English,
             accepted_at: None,
             provider: None,
@@ -336,12 +343,78 @@ impl Default for UserPreferences {
             mode: None,
             effort: None,
             auto_approve: None,
+            execution_mode: None,
+            trusted_directories: Vec::new(),
             extra: Default::default(),
         }
     }
 }
 
 impl UserPreferences {
+    pub fn global_config_path() -> Option<PathBuf> {
+        dirs_next_or_home().map(|h| h.join(".config").join("takiza").join("config.json"))
+    }
+
+    pub fn is_workspace_trusted(&self, workspace: &std::path::Path, auto_approve: bool) -> bool {
+        if auto_approve {
+            return true;
+        }
+        let canonical = fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+        let canonical_str = canonical.to_string_lossy().to_string();
+        if self.trusted_directories.iter().any(|d| std::path::Path::new(d) == canonical || d == &canonical_str) {
+            return true;
+        }
+        if let Some(global_path) = Self::global_config_path() {
+            if let Ok(content) = fs::read_to_string(&global_path) {
+                if let Ok(global_prefs) = serde_json::from_str::<UserPreferences>(&content) {
+                    if global_prefs.trusted_directories.iter().any(|d| std::path::Path::new(d) == canonical || d == &canonical_str) {
+                        return true;
+                    }
+                }
+            }
+        }
+        let local_takiza = workspace.join(".takiza");
+        if local_takiza.join("sessions").exists() || local_takiza.join("history").exists() {
+            return true;
+        }
+        let local_config = local_takiza.join("config.json");
+        if local_config.exists() {
+            if let Ok(content) = fs::read_to_string(&local_config) {
+                if let Ok(local_prefs) = serde_json::from_str::<UserPreferences>(&content) {
+                    if local_prefs.agreed_to_terms || local_prefs.trusted_directories.iter().any(|d| std::path::Path::new(d) == canonical || d == &canonical_str) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn trust_workspace(&mut self, workspace: &std::path::Path) -> std::io::Result<()> {
+        let canonical = fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+        let canonical_str = canonical.to_string_lossy().to_string();
+        if !self.trusted_directories.contains(&canonical_str) {
+            self.trusted_directories.push(canonical_str.clone());
+        }
+        if let Some(global_path) = Self::global_config_path() {
+            let mut global_prefs = if let Ok(content) = fs::read_to_string(&global_path) {
+                serde_json::from_str::<UserPreferences>(&content).unwrap_or_else(|_| self.clone())
+            } else {
+                self.clone()
+            };
+            if !global_prefs.trusted_directories.contains(&canonical_str) {
+                global_prefs.trusted_directories.push(canonical_str);
+            }
+            if let Some(parent) = global_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(json) = serde_json::to_string_pretty(&global_prefs) {
+                let _ = fs::write(global_path, json);
+            }
+        }
+        self.save()
+    }
+
     pub fn config_path() -> PathBuf {
         if let Ok(workspace) = std::env::current_dir() {
             let local = workspace.join(".takiza").join("config.json");

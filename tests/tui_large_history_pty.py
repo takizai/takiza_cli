@@ -21,7 +21,7 @@ if __name__ == '__main__':
         (sessions / '20261006_000000.json').write_text(json.dumps({
             'id': '20261006_000000', 'created_at': '2026-10-06 00:00:00', 'model': 'test-model',
             'title': 'Large chat', 'started': True, 'messages': [{'role': 'user', 'content': 'inspect project'}], 'history': history}))
-        t = Terminal(binary, workspace, 100, 30, initial_prompt=None, cli_args=['--session', '20261006_000000'])
+        t = Terminal(binary, workspace, 100, 30, initial_prompt=None, cli_args=['--session', '20261006_000000'], controlling_tty=True)
         def screen(): return '\n'.join(Screen(t.output, 100, 30).text)
         try:
             t.wait(lambda: 'LASTMESSAGE' in screen(), 'large chat failed to render', timeout=15)
@@ -31,7 +31,12 @@ if __name__ == '__main__':
             t.wait(lambda: 'MESSAGE0000' in screen(), 'scroll to oldest message stalled')
             t.send('\x1b[1;5F')
             t.wait(lambda: 'LASTMESSAGE' in screen(), 'scroll to latest stalled')
-            t.resize(90, 28); t.resize(100, 30)
+            # Wait for each resize frame before injecting more terminal input.
+            for cols, rows in [(90, 28), (100, 30)]:
+                t.resize(cols, rows)
+                t.wait(lambda: Screen(t.output, cols, rows).text[-1].endswith('╯')
+                       and 'draft' in Screen(t.output, cols, rows).text[-2],
+                       'resize frame did not finish', timeout=15)
             t.wait(lambda: 'LASTMESSAGE' in screen() and 'draft' in screen(), 'resize lost chat or editor')
             t.send('\x15/tools\r')
             t.wait(lambda: 'Autonomous Agent Tools' in screen(), 'tools menu stalled')

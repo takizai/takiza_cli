@@ -82,6 +82,9 @@ fn render_banner(
     step_info: &[(&str, &str)],
 ) -> std::io::Result<()> {
     let p_ansi = current_theme.primary_ansi();
+    let rows = crate::cli_ui::terminal_size().1;
+    let native = crate::terminal_image::Frame::begin(out, term_cols, rows, 0..rows as usize,
+        (term_cols >= 80).then_some(*row as usize))?;
 
     if term_cols >= 80 {
         let box_w = (term_cols as usize).saturating_sub(4).min(84);
@@ -109,8 +112,9 @@ fn render_banner(
 
         info_lines.push(format!("\x1b[38;2;60;60;65m{}\x1b[0m", divider));
 
+        let logo_lines = crate::custom_logo::current_lines();
         for i in 0..crate::logo::LOGO_HEIGHT {
-            let logo_part = crate::logo::LOGO_LINES[i];
+            let logo_part = &logo_lines[i];
             let info_part = if i < info_lines.len() { &info_lines[i] } else { "" };
             let info_part = crate::interactive::fit_menu_text(info_part, info_w);
             execute!(
@@ -148,6 +152,7 @@ fn render_banner(
         }
     }
 
+    native.paint(out, true)?;
     Ok(())
 }
 
@@ -176,6 +181,7 @@ impl Onboarding {
     }
     pub fn run_always() -> anyhow::Result<(UserPreferences, bool)> {
         let mut prefs = UserPreferences::load();
+        crate::custom_logo::set_current(prefs.custom_logo.as_ref());
         crate::i18n::set_current(prefs.language);
         crate::theme::set_current(prefs.theme);
 
@@ -207,6 +213,7 @@ impl Onboarding {
 
     pub fn run_if_needed() -> anyhow::Result<(UserPreferences, bool)> {
         let prefs = UserPreferences::load();
+        crate::custom_logo::set_current(prefs.custom_logo.as_ref());
         crate::i18n::set_current(prefs.language);
         crate::theme::set_current(prefs.theme);
         if prefs.agreed_to_terms {

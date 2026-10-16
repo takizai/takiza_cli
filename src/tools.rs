@@ -302,10 +302,14 @@ pub fn get_tool_definitions() -> Value {
     ])
 }
 
+#[derive(Clone)]
 pub struct ToolExecutor {
     pub workspace_root: PathBuf,
     pub runtime: std::sync::Arc<crate::runtime::Runtime>,
     web_proxy: Option<String>,
+    execution_mode: crate::execution_mode::ModeControl,
+    read_only: bool,
+    subagents: Option<std::sync::Arc<crate::subagents::Manager>>,
 }
 
 /// A single reviewed write, bound to the resolved destination and its contents.
@@ -362,7 +366,32 @@ fn edited_content(args: &Value, content: &str, path: &Path) -> Result<String, St
 
 impl ToolExecutor {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { runtime: crate::runtime::Runtime::new(workspace_root.clone()), workspace_root, web_proxy: None }
+        Self { runtime: crate::runtime::Runtime::new(workspace_root.clone()), workspace_root, web_proxy: None,
+            execution_mode: Default::default(), read_only: false, subagents: None }
+    }
+
+    pub fn with_subagents(mut self, manager: std::sync::Arc<crate::subagents::Manager>) -> Self {
+        self.subagents = Some(manager); self
+    }
+    pub fn subagents(&self) -> Option<std::sync::Arc<crate::subagents::Manager>> { self.subagents.clone() }
+    pub fn read_only(mut self, mode: crate::execution_mode::ModeControl) -> Self {
+        self.read_only = true; self.subagents = None; self.execution_mode = mode; self
+    }
+    pub fn is_read_only(&self) -> bool { self.read_only }
+    pub fn check_tool(&self, name: &str) -> Result<(), String> {
+        self.execution_mode.check_tool(name)?;
+        if self.read_only && !crate::subagents::read_tool(name) {
+            return Err(format!("Read-only subagent blocked '{name}'; no action was executed."));
+        }
+        if crate::subagents::is_control(name) && self.subagents.is_none() {
+            return Err("Subagent delegation is unavailable in this worker".into());
+        }
+        Ok(())
+    }
+
+    pub fn with_execution_mode(mut self, mode: crate::execution_mode::ModeControl) -> Self {
+        self.execution_mode = mode;
+        self
     }
 
     pub fn with_web_proxy(mut self, proxy: Option<String>) -> Self {
@@ -402,6 +431,7 @@ impl ToolExecutor {
 
     pub async fn execute_external_write(&self, name: &str, reviewed: &ExternalWrite,
         event_tx: Option<mpsc::Sender<ToolOutputEvent>>, cancel: Option<CancellationToken>) -> Result<String, String> {
+        self.check_tool(name)?;
         if name != reviewed.tool { return Err("Invalid reviewed write tool".into()); }
         let requested = reviewed.arguments["path"].as_str().ok_or("Missing 'path' argument")?;
         if resolved_destination(&self.resolve_path(requested))? != reviewed.path
@@ -422,6 +452,7 @@ impl ToolExecutor {
         event_tx: Option<mpsc::Sender<ToolOutputEvent>>,
         cancel_token: Option<CancellationToken>,
     ) -> Result<String, String> {
+        self.check_tool(name)?;
         let args: Value = serde_json::from_str(arguments_json)
             .map_err(|e| format!("Invalid JSON arguments: {e}"))?;
 
@@ -444,6 +475,7 @@ impl ToolExecutor {
             })
         } else { None };
 
+        self.check_tool(name)?;
         let result = match name {
             "web_search" => crate::web_search::search(&args, self.web_proxy.as_deref(), cancel_token).await,
             "read_file" => self.exec_read_file(&args),
@@ -843,6 +875,7 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::Sender<ToolOutputEvent>>,
         cancel_token: Option<CancellationToken>,
     ) -> Result<String, String> {
+        self.check_tool("run_command")?;
         let cmd_str = args["command"]
             .as_str()
             .ok_or("Missing 'command' argument")?;
@@ -888,6 +921,7 @@ impl ToolExecutor {
             cmd.creation_flags(0x08000000);
         }
 
+        self.check_tool("run_command")?;
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn command '{cmd_str}': {e}"))?;

@@ -51,6 +51,7 @@ impl Drop for TerminalScreen {
     fn drop(&mut self) {
         if self.active {
             let mut out = stdout();
+            let _ = crate::terminal_image::clear(&mut out);
             let _ = execute!(out, crossterm::terminal::EndSynchronizedUpdate,
                 ResetColor, cursor::Show, crossterm::event::DisableBracketedPaste,
                 crossterm::event::DisableMouseCapture, crossterm::terminal::LeaveAlternateScreen);
@@ -187,13 +188,17 @@ pub fn animate_background() {
     let painted = surface.text.iter().enumerate().map(|(row, text)| snow.line(text, row)).collect::<Vec<_>>();
     let mut frame = Vec::new();
     let _ = queue!(frame, crossterm::terminal::BeginSynchronizedUpdate, cursor::SavePosition, ResetColor);
+    let mut changed_rows = Vec::new();
     for (row, line) in painted.iter().enumerate() {
         if surface.painted.get(row) == Some(line) { continue; }
+        changed_rows.push(surface.top as usize + row);
         let _ = queue!(frame, cursor::MoveTo(0, surface.top + row as u16),
             crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
             crossterm::style::Print(line), ResetColor);
     }
-    let _ = queue!(frame, cursor::RestorePosition, crossterm::terminal::EndSynchronizedUpdate);
+    let _ = queue!(frame, cursor::RestorePosition);
+    let _ = crate::terminal_image::repaint_current(&mut frame, &changed_rows);
+    let _ = queue!(frame, crossterm::terminal::EndSynchronizedUpdate);
     {
         let mut out = stdout().lock();
         let _ = out.write_all(&frame); let _ = out.flush();
@@ -415,7 +420,9 @@ fn remaining_context_percent(current: Option<u64>, maximum: Option<u64>) -> Opti
 
 /// Shared footer for the idle editor and active response; all widths exclude ANSI.
 pub fn prompt_footer(width: usize, hint: &str, border: Color, primary: Color) -> String {
-    footer_with_context(width, hint, border, primary, context_tokens(),
+    let mode = crate::execution_mode::display();
+    let hint = format!(" {} · Shift+Tab  {}", mode.name(), hint.trim());
+    footer_with_context(width, &hint, border, primary, context_tokens(),
         crate::model_metadata::current_limit(), &get_active_chat_title())
 }
 
@@ -530,8 +537,10 @@ pub fn terminal_is_small() -> bool {
 }
 
 pub fn render_small_terminal() {
+    invalidate_content_frame();
     let (cols, _) = terminal_size();
     let mut out = stdout();
+    let _ = crate::terminal_image::clear(&mut out);
     let _ = execute!(out, cursor::Hide, crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         cursor::MoveTo(0, 0), crossterm::style::Print(crate::prompt::truncate_visible(crate::i18n::tr("Resize terminal"), cols.saturating_sub(1) as usize)));
     let _ = out.flush();
@@ -547,6 +556,15 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 }
 
 pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, workspace: &str, git_info: &str) -> u16 {
+    let (cols, rows) = terminal_size();
+    let top = (cols >= 65 && rows >= 18).then_some(1);
+    let native = crate::terminal_image::Frame::begin(out, cols, rows, 0..rows as usize, top).ok();
+    let height = banner_text_to(out, model, base_url, workspace, git_info);
+    if let Some(native) = native { let _ = native.paint(out, true); }
+    height
+}
+
+fn banner_text_to(out: &mut impl Write, model: &str, base_url: &str, workspace: &str, git_info: &str) -> u16 {
     if terminal_is_small() {
         render_small_terminal();
         return 0;
@@ -593,8 +611,9 @@ pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, worksp
         }
         info_lines.push(format!("\x1b[38;2;60;60;65m{}\x1b[0m", divider));
 
+        let logo_lines = crate::custom_logo::current_lines();
         for i in 0..crate::logo::LOGO_HEIGHT {
-            let logo_part = crate::logo::LOGO_LINES[i];
+            let logo_part = &logo_lines[i];
             let info_part = if i < info_lines.len() { &info_lines[i] } else { "" };
             let info_part = crate::interactive::fit_menu_text(info_part, info_w);
             let _ = queue!(
@@ -609,8 +628,9 @@ pub fn print_banner_to(out: &mut impl Write, model: &str, base_url: &str, worksp
         // Compact layout for very narrow terminals (< 65 columns): show logo on top, then box below
         let pad_left = (term_cols as usize).saturating_sub(crate::logo::LOGO_WIDTH) / 2;
         let pad_str = " ".repeat(pad_left);
+        let logo_lines = crate::custom_logo::current_lines();
         for i in 0..crate::logo::LOGO_HEIGHT {
-            let logo_part = crate::logo::LOGO_LINES[i];
+            let logo_part = &logo_lines[i];
             let _ = queue!(
                 out,
                 cursor::MoveTo(0, row),
@@ -669,6 +689,10 @@ pub fn help_text() -> String {
     println!("{}", crate::i18n::tf!("  /help               - Show this help summary"));
     println!("{}", crate::i18n::tf!("  /clear              - Start a new chat and clear conversation history"));
     println!("{}", crate::i18n::tf!("  /theme [name]       - View or switch visual theme (amber, cyberpunk, emerald, nord, monochrome)"));
+    println!("{}", crate::i18n::tr("  /logo <path|reset>  - Set custom artwork or restore the default logo"));
+    println!("{}", crate::i18n::tr("  Shift+Tab           - Cycle Auto / Plan / Allow-all execution modes"));
+    println!("  /permissions auto|plan|allow-all");
+    println!("  /agents [id] | /agents stop <id|all>");
     println!("{}", crate::i18n::tf!("  /mode [manual|moa]  - Switch execution mode (Takiza Manual: pick model, Takiza MoA: auto)"));
     println!("{}", crate::i18n::tf!("  /model <name>       - Switch model (e.g. /model gpt-4o, /model claude-3-5-sonnet)"));
     println!("{}", crate::i18n::tf!("  /provider <name>    - Switch preset provider (openai, openrouter, deepseek, ollama, groq)"));
@@ -1515,8 +1539,17 @@ fn tool_error_lines(result: &str, width: usize, expanded: bool) -> Vec<String> {
     collapsible_lines(lines, width + 4, "    ", expanded)
 }
 
+fn display_tool_log(text: &str) -> std::borrow::Cow<'_, str> {
+    if let Some((id, text)) = text.strip_prefix("⏳ Queued #").and_then(|rest| rest.split_once(": ")) {
+        if !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()) {
+            return crate::i18n::tf!("⏳ Queued #{id}: {text}", id = id, text = text).into();
+        }
+    }
+    text.into()
+}
+
 fn tool_output_lines(logs: &[&str], width: usize, expanded: bool) -> Vec<String> {
-    let lines = logs.iter().flat_map(|text| wrap_history_text(text.trim(), width.max(1)))
+    let lines = logs.iter().flat_map(|text| wrap_history_text(&display_tool_log(text.trim()), width.max(1)))
         .enumerate().map(|(index, line)| format!("{}\x1b[90m{line}\x1b[0m", if index == 0 { "  └ " } else { "    " })).collect();
     collapsible_lines(lines, width + 4, "    ", expanded)
 }
@@ -1625,6 +1658,7 @@ pub fn print_tool_log_internal(line: &str, row: &mut u16, prompt: &str, branch_t
     ] {
         if let Some(text) = line.strip_prefix(prefix) {
             let display_prefix = if prefix.contains("Question") { crate::i18n::tr("    question  ") } else { crate::i18n::tr("    answer    ") };
+            let text = if prefix.contains("Answer") && text == "[Skipped]" { crate::i18n::tr(text) } else { text };
             print_question_transcript_line(display_prefix, text, prefix_color, text_color,
                 row, prompt, branch_tag, render_bottom);
             return;
@@ -1639,7 +1673,8 @@ pub fn print_tool_log_internal(line: &str, row: &mut u16, prompt: &str, branch_t
         if trimmed.contains("Always") { crate::i18n::tr("approval allowed for session") } else { crate::i18n::tr("approval allowed") }
     } else if trimmed.contains("Command denied") { crate::i18n::tr("approval denied") }
     else { trimmed };
-    let truncated_log = truncate_str(normalized, max_log_w);
+    let display = display_tool_log(normalized);
+    let truncated_log = truncate_str(&display, max_log_w);
 
     prepare_output_line_internal(row, 1, prompt, branch_tag, render_bottom);
     let mut out = stdout();
@@ -2877,7 +2912,7 @@ fn question_log_lines(text: &str, width: usize) -> Option<Vec<String>> {
     let (label, text, color) = if let Some(text) = text.strip_prefix("  📋 Question: ") {
         (crate::i18n::tr("    question  "), text, "\x1b[37m")
     } else if let Some(text) = text.strip_prefix("     Answer: ") {
-        (crate::i18n::tr("    answer    "), text, theme.primary_ansi())
+        (crate::i18n::tr("    answer    "), if text == "[Skipped]" { crate::i18n::tr(text) } else { text }, theme.primary_ansi())
     } else { return None; };
     let label_color = if text_is_question { theme.secondary_ansi() } else { "\x1b[90m" };
     Some(collapsible_lines(question_transcript_lines(label, &plain_terminal_text(text), width + 6).into_iter()
@@ -2922,9 +2957,12 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
         match &history[index] {
             HistoryItem::UserPrompt(text) => {
                 lines.push(String::new());
+                let divider = format!("  \x1b[90m{}\x1b[0m", "─".repeat(width));
+                lines.push(divider.clone());
                 for (i, line) in wrap_history_text(text, width).into_iter().enumerate() {
                     lines.push(format!("\x1b[1m{primary}{}{line}\x1b[0m", if i == 0 { "❯ " } else { "  " }));
                 }
+                lines.push(divider);
                 lines.push(String::new());
             }
             HistoryItem::AssistantMessage(text) => {
@@ -3080,7 +3118,7 @@ fn transcript_view(banner: &[String], history: &HistoryLayout, range: std::ops::
 
 fn banner_lines(model: &str, base_url: &str, workspace: &str, git_info: &str) -> Vec<String> {
     let mut bytes = Vec::new();
-    let rows = print_banner_to(&mut bytes, model, base_url, workspace, git_info) as usize;
+    let rows = banner_text_to(&mut bytes, model, base_url, workspace, git_info) as usize;
     let output = String::from_utf8_lossy(&bytes);
     let mut lines = vec![String::new(); rows];
     let mut row = 0;
@@ -3136,11 +3174,14 @@ pub fn paint_chat_background(out: &mut impl Write, panel_top: u16) -> std::io::R
     text.resize(panel_top as usize, String::new());
     let snow = crate::snow::Frame::new(cols.saturating_sub(1) as usize, text.len());
     let painted = text.iter().enumerate().map(|(row, line)| snow.line(line, row)).collect::<Vec<_>>();
+    let native = crate::terminal_image::Frame::begin(out, cols, term_rows, start..start + panel_top as usize,
+        (cols >= 65 && term_rows >= 18).then_some(1))?;
     for (row, line) in painted.iter().enumerate() {
         queue!(out, cursor::MoveTo(0, row as u16), ResetColor,
             crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
             crossterm::style::Print(line), ResetColor)?;
     }
+    native.paint(out, true)?;
     remember_snow_surface(0, cols, term_rows, text, painted);
     invalidate_content_frame();
     Ok(())
@@ -3183,18 +3224,24 @@ pub fn redraw_all(
 
     // Only changed content rows are painted. The editor and dropdown own the bottom rows.
     let mut previous = CONTENT_FRAME.lock().unwrap();
-    let same_size = previous.as_ref().is_some_and(|(w, h, _)| *w == cols && *h == rows);
     let mut frame = Vec::new();
     let nested = CONTENT_UPDATE.with(|active| active.get());
     if !nested { let _ = queue!(frame, crossterm::terminal::BeginSynchronizedUpdate); }
+    let native = crate::terminal_image::Frame::begin(&mut frame, cols, rows,
+        range.start..range.start + height, (cols >= 65 && rows >= 18).then_some(1)).ok();
+    let same_size = previous.as_ref().is_some_and(|(w, h, _)| *w == cols && *h == rows)
+        && !native.as_ref().is_some_and(|native| native.repaint_text);
+    let mut native_dirty = false;
     let _ = queue!(frame, cursor::SavePosition, ResetColor);
     for (row, line) in visible.iter().enumerate() {
         if same_size && previous.as_ref().and_then(|(_, _, lines)| lines.get(row)) == Some(line) { continue; }
+        native_dirty |= native.as_ref().is_some_and(|native| native.overlaps(row));
         let _ = queue!(frame, cursor::MoveTo(0, row as u16),
             crossterm::terminal::Clear(crossterm::terminal::ClearType::UntilNewLine),
             crossterm::style::Print(line), ResetColor);
     }
     let _ = queue!(frame, cursor::RestorePosition);
+    if let Some(native) = native { let _ = native.paint(&mut frame, native_dirty); }
     if !nested { let _ = queue!(frame, crossterm::terminal::EndSynchronizedUpdate); }
     let mut out = stdout().lock();
     let _ = out.write_all(&frame);
@@ -3413,7 +3460,7 @@ mod tests {
         let text = "используй $claude-design и $frontend-excellence для проверки результата";
         let history = vec![HistoryItem::UserPrompt(text.into())];
         let lines = history_lines(&history, 24);
-        let content: Vec<_> = lines.iter().filter(|line| !line.is_empty())
+        let content: Vec<_> = lines.iter().filter(|line| line.contains("\x1b[1m"))
             .map(|line| plain_terminal_text(line).chars().skip(2).collect::<String>()).collect();
         assert_eq!(content.concat(), text);
         assert!(content.iter().all(|line| str_width(line) <= 24));
