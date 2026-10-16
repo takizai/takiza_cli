@@ -328,7 +328,15 @@ pub struct UserPreferences {
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
-            mcp_servers: Default::default(),
+            // Seed new configurations only. Missing/empty maps in saved configs
+            // stay empty so removing the default server remains persistent.
+            mcp_servers: std::collections::BTreeMap::from([(
+                "exa".to_string(),
+                crate::runtime::McpConfig::Http {
+                    url: "https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa".to_string(),
+                    auth: crate::runtime::HttpAuth::None,
+                },
+            )]),
             lsp_servers: Default::default(),
             agreed_to_terms: false,
             terms_version: "1.0.0".to_string(),
@@ -507,6 +515,40 @@ mod tests {
         assert!(deserialized.agreed_to_terms);
         assert_eq!(deserialized.theme, Theme::Cyberpunk);
         assert_eq!(deserialized.terms_version, "1.0.0");
+    }
+
+    #[test]
+    fn new_preferences_save_keyless_search_mcp() {
+        let saved = serde_json::to_value(UserPreferences::default()).unwrap();
+        assert_eq!(saved["mcpServers"], serde_json::json!({
+            "exa": {
+                "transport": "http",
+                "url": "https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa",
+                "auth": {"type": "none"}
+            }
+        }));
+        let loaded: UserPreferences = serde_json::from_value(saved).unwrap();
+        assert!(matches!(loaded.mcp_servers.get("exa"), Some(
+            crate::runtime::McpConfig::Http { auth: crate::runtime::HttpAuth::None, .. }
+        )));
+    }
+
+    #[test]
+    fn saved_mcp_configuration_is_not_reseeded() {
+        let original = serde_json::to_value(UserPreferences::default()).unwrap();
+        for servers in [None, Some(serde_json::json!({})), Some(serde_json::json!({
+            "custom": {"transport": "http", "url": "https://example.com/mcp", "auth": {"type": "none"}}
+        }))] {
+            let mut saved = original.clone();
+            match &servers {
+                Some(servers) => saved["mcpServers"] = servers.clone(),
+                None => { saved.as_object_mut().unwrap().remove("mcpServers"); }
+            }
+            let loaded: UserPreferences = serde_json::from_value(saved).unwrap();
+            assert!(!loaded.mcp_servers.contains_key("exa"));
+            let resaved = serde_json::to_value(loaded).unwrap();
+            assert_eq!(resaved["mcpServers"], servers.unwrap_or(serde_json::json!({})));
+        }
     }
 
     #[test]

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9
+
+- New configurations include Exa MCP for keyless web search and page fetching. The server is an editable `mcpServers.exa` entry in `config.json`, with only `web_search_exa` and `web_fetch_exa` enabled.
+- Existing configurations are preserved, including missing or empty MCP server maps. Removing the default Exa entry remains persistent; it is not added back when preferences are loaded or saved.
+- Documented the default server, how to disable it, and how to add it to an existing configuration. Added regression coverage for generated configuration and saved MCP settings.
+
 ## 0.1.8
 
 - Added Auto, Plan and Allow-all execution modes, switchable with Shift+Tab or `/permissions`. Modes persist across launches; Plan enforces read-only tools at runtime, while legacy auto-approval settings remain supported.

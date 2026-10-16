@@ -424,6 +424,26 @@ The existing selection stays the same: `.takiza/config.json` in the workspace
 when that file exists, otherwise `~/.config/takiza/config.json`. Existing settings
 and unrecognized configuration fields are preserved when saving preferences.
 
+New configurations include the Exa MCP server for web search and page fetching
+without an API key (subject to Exa's anonymous rate limits). Its configuration
+is visible and editable in `config.json`:
+
+```json
+{
+  "mcpServers": {
+    "exa": {
+      "transport": "http",
+      "url": "https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa",
+      "auth": {"type": "none"}
+    }
+  }
+}
+```
+
+Remove `exa` from `mcpServers` to disable it permanently, or use
+`/mcp disconnect exa` for the current session. Existing configurations are not
+modified automatically; add the entry above to enable Exa in an existing setup.
+
 ```json
 {
   "mcpServers": {
