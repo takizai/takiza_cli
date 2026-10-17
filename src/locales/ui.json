@@ -1751,6 +1751,10 @@
     "Контрольная точка недоступна: {error}",
     "检查点不可用： {error}"
   ],
+  "Checkpoints are disabled in the Windows user profile root. Start Takiza from a project directory to enable file recovery.": [
+    "Контрольные точки отключены в корне профиля Windows. Запустите Takiza из папки проекта, чтобы включить восстановление файлов.",
+    "Windows 用户配置文件根目录中已禁用检查点。请从项目目录启动 Takiza，以启用文件恢复。"
+  ],
   "(optional)": [
     "(необязательно)",
     "（可选）"

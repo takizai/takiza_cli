@@ -430,7 +430,7 @@ fn footer_with_context(width: usize, hint: &str, border: Color, primary: Color,
     current: Option<u64>, maximum: Option<u64>, title: &str) -> String {
     let mut meter = format!("{}/{}", current.map(crate::model_metadata::format_limit).unwrap_or_else(|| "?".into()),
         maximum.map(crate::model_metadata::format_limit).unwrap_or_else(|| "?".into()));
-    if let Some(percent) = remaining_context_percent(current, maximum) {
+    if let Some(percent) = remaining_context_percent(current, maximum).filter(|percent| *percent <= 10) {
         let full = format!(" · {}", crate::i18n::tf!("~{percent}% to compact", percent = percent));
         let short = format!(" · ~{percent}%");
         // Keep the token meter and frame intact on narrow terminals.
@@ -3287,7 +3287,14 @@ mod tests {
         assert_eq!(remaining_context_percent(Some(98304), None), None);
         let footer = plain_terminal_text(&footer_with_context(100, " Enter ", Color::Cyan, Color::White,
             Some(98304), Some(131072), "Chat"));
-        assert!(footer.contains("~19%"));
+        assert!(!footer.contains('%'));
+        assert!(footer.contains("96K/128K"));
+        for (current, expected) in [(80808, None), (81808, Some("~10%")), (91808, Some("~0%"))] {
+            let footer = plain_terminal_text(&footer_with_context(100, " Enter ", Color::Cyan, Color::White,
+                Some(current), Some(100000), "Chat"));
+            if let Some(expected) = expected { assert!(footer.contains(expected), "{footer}"); }
+            else { assert!(!footer.contains('%'), "{footer}"); }
+        }
         let unknown = plain_terminal_text(&footer_with_context(100, " Enter ", Color::Cyan, Color::White,
             None, Some(131072), "Chat"));
         assert!(!unknown.contains('%'));

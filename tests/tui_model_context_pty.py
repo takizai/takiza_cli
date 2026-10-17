@@ -11,7 +11,7 @@ from tui_queue_pty import Terminal, Screen
 if __name__ == '__main__':
     gate = threading.Event()
     requests = []
-    stream_gates = [threading.Event(), threading.Event(), threading.Event()]
+    stream_gates = [threading.Event(), threading.Event(), threading.Event(), threading.Event()]
     chat_requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -54,7 +54,7 @@ if __name__ == '__main__':
                 self.wfile.flush()
 
             if len(chat_requests) == 1:
-                for tokens, stream_gate in zip([8192, 65536, 131072], stream_gates):
+                for tokens, stream_gate in zip([8192, 65536, 114688, 131072], stream_gates):
                     event({'choices': [], 'usage': {'total_tokens': tokens}})
                     stream_gate.wait(10)
             else:
@@ -99,25 +99,28 @@ if __name__ == '__main__':
                 terminal.resize(100, 30)
                 terminal.send('inspect context\r')
                 terminal.wait(lambda: '8K/128K' in screen(), 'stream usage did not update context')
-                assert '~88% to compact' in screen(), 'headroom did not reserve output tokens'
+                assert 'to compact' not in screen(), 'low context usage showed compaction warning'
                 terminal.send('preserved streaming draft')
                 stream_gates[0].set()
                 terminal.wait(lambda: '64K/128K' in screen(), 'half-full context did not update')
-                assert '~44% to compact' in screen(), 'headroom did not decrease with usage'
+                assert 'to compact' not in screen(), 'half-full context showed compaction warning'
                 assert b'38;2;240;200;70m' in terminal.output, 'half-full context was not yellow'
                 assert 'preserved streaming draft' in screen(), 'usage update lost active draft'
                 stream_gates[1].set()
+                terminal.wait(lambda: '112K/128K' in screen(), 'near-full context did not update')
+                assert '~6% to compact' in screen(), 'near-full context did not show compaction warning'
+                stream_gates[2].set()
                 terminal.wait(lambda: '128K/128K' in screen(), 'full context did not update')
                 assert '~0% to compact' in screen(), 'full context did not clamp headroom to zero'
                 assert b'38;2;245;80;80m' in terminal.output, 'full context was not red'
-                stream_gates[2].set()
+                stream_gates[3].set()
                 terminal.wait(lambda: 'context response' in screen(), 'response did not finish')
                 terminal.pump(.3)
                 footer = screen().splitlines()[-1]
                 assert footer.index('128K/128K') < footer.index('💬'), 'meter was not left of the title'
                 terminal.send('\x15next request\r')
                 terminal.wait(lambda: '32K/128K' in screen(), 'context usage accumulated across requests')
-                assert '~69% to compact' in screen(), 'headroom did not recover for smaller context'
+                assert 'to compact' not in screen(), 'compaction warning remained after context usage dropped'
                 terminal.pump(.3)
                 terminal.send('/exit\r')
                 terminal.wait(lambda: terminal.process.poll() is not None, 'exit stalled')

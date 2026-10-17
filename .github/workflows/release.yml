@@ -84,6 +84,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Test Windows profile checkpoint guard
+        if: runner.os == 'Windows'
+        run: cargo test profile_
+
       - name: Build and Upload Release Asset
         uses: taiki-e/upload-rust-binary-action@v1
         with:

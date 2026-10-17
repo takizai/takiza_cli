@@ -66,7 +66,22 @@ fn scan(workspace: &Path) -> Result<BTreeMap<PathBuf, Entry>> {
     scan_controlled(workspace, None)
 }
 
+// A terminal opened from the Windows Start menu commonly starts in USERPROFILE.
+// Snapshotting that directory reaches protected AppData and registry files.
+// Reject the whole snapshot rather than silently omitting unreadable files,
+// which would make a later restore unsafe.
+#[cfg(any(windows, test))]
+fn ensure_project_directory(workspace: &Path, profile: Option<&Path>) -> Result<()> {
+    if let Some(profile) = profile.and_then(|path| path.canonicalize().ok()) {
+        anyhow::ensure!(workspace.canonicalize()? != profile, "{}", crate::i18n::tr(
+            "Checkpoints are disabled in the Windows user profile root. Start Takiza from a project directory to enable file recovery."));
+    }
+    Ok(())
+}
+
 fn scan_controlled(workspace: &Path, control: Option<&CaptureControl>) -> Result<BTreeMap<PathBuf, Entry>> {
+    #[cfg(windows)]
+    ensure_project_directory(workspace, std::env::var_os("USERPROFILE").as_deref().map(Path::new))?;
     let mut entries = BTreeMap::new();
     let mut pending = vec![PathBuf::new()];
     while let Some(parent) = pending.pop() {
@@ -377,6 +392,30 @@ fn restore_entries(workspace: &Path, point: &Checkpoint, current: &BTreeMap<Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_root_is_rejected_but_project_directories_are_allowed() {
+        let profile = Workspace::new();
+        fs::create_dir_all(profile.0.join("AppData/Local/Microsoft/Edge")).unwrap();
+        fs::create_dir_all(profile.0.join("project")).unwrap();
+        let error = ensure_project_directory(&profile.0, Some(&profile.0)).unwrap_err();
+        assert!(error.to_string().contains("project"));
+        assert!(!directory(&profile.0).exists());
+        ensure_project_directory(&profile.0.join("."), Some(&profile.0)).unwrap_err();
+        ensure_project_directory(&profile.0.join("project"), Some(&profile.0)).unwrap();
+        ensure_project_directory(&profile.0, None).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_profile_is_rejected_before_scanning_even_when_cancelled() {
+        let profile = PathBuf::from(std::env::var_os("USERPROFILE").expect("Windows user profile"));
+        // Cancellation also prevents traversal if the profile guard regresses.
+        let control = CaptureControl { cancel: tokio_util::sync::CancellationToken::new() };
+        control.cancel.cancel();
+        let error = scan_controlled(&profile, Some(&control)).unwrap_err();
+        assert!(error.to_string().contains("project"));
+    }
 
     #[test]
     fn capture_continues_after_ten_seconds_and_can_still_be_cancelled() {

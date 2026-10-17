@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.10
+
+- Show the percentage remaining before automatic compaction only when 10% or less of the context window remains; the token counter stays visible.
+- Windows checkpoints detect launches from the user profile root before scanning protected application data. A translated message explains how to enable file recovery by starting Takiza in a project directory; chat and tools remain available.
+
 ## 0.1.9
 
 - New configurations include Exa MCP for keyless web search and page fetching. The server is an editable `mcpServers.exa` entry in `config.json`, with only `web_search_exa` and `web_fetch_exa` enabled.
