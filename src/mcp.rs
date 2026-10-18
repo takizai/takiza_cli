@@ -20,6 +20,48 @@ use tokio::{
     sync::Mutex,
 };
 
+fn sanitize_diagnostic(message: &str) -> String {
+    use std::sync::LazyLock;
+    // Provider text is untrusted. Remove terminal escapes before collapsing
+    // whitespace, and redact URL credentials/queries and common secret fields.
+    static ESCAPES: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|.)").unwrap()
+    });
+    static URLS: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r#"https?://[^\s<>\"']+"#).unwrap());
+    static SECRETS: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+        r#"(?i)(\b(?:authorization|proxy-authorization|x-api-key|api[_-]?key|exaApiKey|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|token)\b[\"']?\s*[:=]\s*)(?:[\"'][^\"']*[\"']|(?:Bearer\s+|Basic\s+)?[^\s,;}]+)"#
+    ).unwrap()
+    });
+    static BEARER: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+").unwrap());
+    let clean = ESCAPES.replace_all(message, "");
+    let clean: String = clean
+        .chars()
+        .filter(|c| !c.is_control() || c.is_whitespace())
+        .filter(|c| !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        .collect();
+    let clean = URLS.replace_all(&clean, |captures: &regex::Captures<'_>| {
+        let Ok(mut url) = mcp_reqwest::Url::parse(&captures[0]) else {
+            return "[URL redacted]".into();
+        };
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        url.to_string()
+    });
+    let clean = SECRETS.replace_all(&clean, "${1}[redacted]");
+    let clean = BEARER.replace_all(&clean, "${1} [redacted]");
+    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut output: String = clean.chars().take(2000).collect();
+    if clean.chars().count() > 2000 {
+        output.push('…');
+    }
+    output
+}
+
 #[derive(Clone)]
 struct SecureStore {
     account: String,
@@ -75,6 +117,52 @@ pub struct Server {
     error: Option<String>,
 }
 impl Server {
+    fn diagnostic(&self, error: &(dyn std::error::Error + 'static)) -> String {
+        let mut messages = Vec::new();
+        let mut current = Some(error);
+        while let Some(error) = current {
+            let message = error.to_string();
+            if !messages
+                .iter()
+                .any(|previous: &String| previous.contains(&message))
+            {
+                messages.push(message);
+            }
+            if messages.len() >= 8 {
+                break;
+            }
+            current = error.source();
+        }
+        let mut detail = messages.join(": ");
+        // Redact configured credentials even if the provider echoes them without
+        // a recognizable field name. Never print the configuration itself.
+        let mut secrets = Vec::new();
+        match &self.config {
+            McpConfig::Http { url, auth } => {
+                secrets.push(url.clone());
+                if let Ok(url) = mcp_reqwest::Url::parse(url) {
+                    secrets.extend(url.query_pairs().map(|(_, value)| value.into_owned()));
+                    if !url.username().is_empty() {
+                        secrets.push(url.username().to_owned());
+                    }
+                    if let Some(password) = url.password() {
+                        secrets.push(password.to_owned());
+                    }
+                }
+                if let HttpAuth::Token { variable } = auth {
+                    if let Ok(value) = std::env::var(variable) {
+                        secrets.push(value);
+                    }
+                }
+            }
+            McpConfig::Stdio { env, .. } => secrets.extend(env.values().cloned()),
+        }
+        secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        for secret in secrets.into_iter().filter(|value| !value.is_empty()) {
+            detail = detail.replace(&secret, "[redacted]");
+        }
+        sanitize_diagnostic(&detail)
+    }
     pub fn new(config: McpConfig) -> Self {
         let store = match &config {
             McpConfig::Http {
@@ -133,8 +221,16 @@ impl Server {
                     self.attempted = false;
                     self.error = None;
                 }
-                _ => {
-                    self.error = Some(crate::i18n::tr("OAuth login failed or timed out").into());
+                Ok(Err(error)) => {
+                    self.error = Some(format!(
+                        "{}: {}",
+                        crate::i18n::tr("OAuth login failed"),
+                        self.diagnostic(error.as_ref())
+                    ));
+                }
+                Err(_) => {
+                    self.error =
+                        Some(crate::i18n::tr("OAuth login task stopped unexpectedly").into());
                 }
             }
         }
@@ -153,12 +249,17 @@ impl Server {
                 self.error = None;
                 self.refresh().await;
             }
-            // SDK errors can contain untrusted bodies and URLs. Keep credentials
-            // and provider messages out of chat and application logs.
-            _ => {
-                self.error = Some(
-                    crate::i18n::tr("Connection failed. Check configuration or run login.").into(),
-                );
+            Ok(Err(error)) => {
+                self.error = Some(format!(
+                    "{}: {}",
+                    crate::i18n::tr("MCP connection failed"),
+                    self.diagnostic(error.as_ref())
+                ));
+                self.tools.clear();
+            }
+            Err(_) => {
+                self.error =
+                    Some(crate::i18n::tr("MCP connection timed out after 20 seconds").into());
                 self.tools.clear();
             }
         }
@@ -249,9 +350,18 @@ impl Server {
                     self.error = None;
                 }
             }
-            _ => {
+            Ok(Err(error)) => {
                 self.tools.clear();
-                self.error = Some(crate::i18n::tr("Tool discovery failed").into());
+                self.error = Some(format!(
+                    "{}: {}",
+                    crate::i18n::tr("Tool discovery failed"),
+                    self.diagnostic(&error)
+                ));
+            }
+            Err(_) => {
+                self.tools.clear();
+                self.error =
+                    Some(crate::i18n::tr("Tool discovery timed out after 10 seconds").into());
             }
         }
     }
@@ -272,22 +382,28 @@ impl Server {
                 rmcp::service::PeerRequestOptions::with_timeout(Duration::from_secs(55)),
             )
             .await
-            .map_err(|_| {
-                "MCP call failed; execution may have occurred. Do not retry automatically."
-                    .to_string()
+            .map_err(|error| {
+                format!(
+                    "MCP call failed: {}. Execution may have occurred. Do not retry automatically.",
+                    self.diagnostic(&error)
+                )
             })?;
         let mut guard = McpCancelGuard {
             peer: handle.peer.clone(),
             id: Some(handle.id.clone()),
         };
-        let result = handle.await_response().await.map_err(|_| {
-            "MCP call failed; execution may have occurred. Do not retry automatically.".to_string()
+        let result = handle.await_response().await.map_err(|error| {
+            format!(
+                "MCP call failed: {}. Execution may have occurred. Do not retry automatically.",
+                self.diagnostic(&error)
+            )
         })?;
         guard.id = None;
         let rmcp::model::ServerResult::CallToolResult(result) = result else {
             return Err("MCP returned an unsupported tool response".into());
         };
         render_result(serde_json::to_value(result).map_err(|e| e.to_string())?)
+            .map_err(|error| self.diagnostic(anyhow!(error).as_ref()))
     }
     pub async fn login(&mut self, _name: &str) -> Result<String> {
         let McpConfig::Http {
@@ -443,6 +559,64 @@ impl Drop for McpCancelGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_preserve_provider_reason_and_remove_credentials_and_terminal_codes() {
+        let message = "HTTP 429: \u{1b}[31mQuota exceeded\u{1b}[0m\nUse https://user:pass@example.com/mcp?exaApiKey=url-secret#private Authorization: Bearer header-secret x-api-key=another-secret {\"access_token\":\"json-secret\"} Bearer raw-secret";
+        let clean = sanitize_diagnostic(message);
+        assert!(clean.contains("HTTP 429: Quota exceeded"), "{clean}");
+        assert!(clean.contains("https://example.com/mcp"), "{clean}");
+        for secret in [
+            "user:pass",
+            "url-secret",
+            "private",
+            "header-secret",
+            "another-secret",
+            "json-secret",
+            "raw-secret",
+            "\u{1b}",
+            "\n",
+        ] {
+            assert!(!clean.contains(secret), "{clean}");
+        }
+        assert!(sanitize_diagnostic(&"я".repeat(3000)).chars().count() <= 2001);
+        let server = Server::new(McpConfig::Stdio {
+            command: "unused".into(),
+            args: vec![],
+            env: std::collections::BTreeMap::from([("API_KEY".into(), "opaque-secret".into())]),
+        });
+        assert_eq!(
+            server.diagnostic(anyhow!("Rejected opaque-secret").as_ref()),
+            "Rejected [redacted]"
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_status_shows_http_provider_error_without_suggesting_login() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let _ = socket.read(&mut request).await.unwrap();
+            let body = "Quota exceeded; try later. api_key=provider-secret";
+            socket.write_all(format!("HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        let mut server = Server::new(McpConfig::Http {
+            url: format!("http://{address}/mcp"),
+            auth: HttpAuth::None,
+        });
+        server.connect(Path::new(".")).await;
+        let status = server.status();
+        assert!(!server.connected());
+        assert!(server.tools.is_empty());
+        assert!(status.contains("429"), "{status}");
+        assert!(status.contains("Quota exceeded; try later"), "{status}");
+        assert!(!status.contains("provider-secret"), "{status}");
+        assert!(!status.contains("login"), "{status}");
+        task.await.unwrap();
+    }
     fn fixture(mode: &str) -> (String, Vec<String>) {
         (
             "python3".into(),

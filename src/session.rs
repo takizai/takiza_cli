@@ -343,7 +343,7 @@ mod tests {
         let workspace = std::env::temp_dir().join(format!("takiza-unused-chat-{}-{}",
             std::process::id(), Local::now().timestamp_nanos_opt().unwrap()));
         let mut session = Session::new("test-model".into());
-        session.messages.push(ChatMessage {
+        session.messages.push(ChatMessage { provider_data: None,
             role: "system".into(), content: Some("instructions".into()), image_urls: Vec::new(),
             tool_calls: None, tool_call_id: None, name: None,
         });
@@ -382,7 +382,7 @@ mod tests {
         let ws = &test_dir;
 
         let mut s1 = Session::new("llama3".to_string());
-        s1.messages.push(ChatMessage {
+        s1.messages.push(ChatMessage { provider_data: None,
             image_urls: Vec::new(),
             role: "user".to_string(),
             content: Some("Hello Takiza!".to_string()),
@@ -390,7 +390,7 @@ mod tests {
             tool_call_id: None,
             name: None,
         });
-        s1.messages.push(ChatMessage {
+        s1.messages.push(ChatMessage { provider_data: None,
             image_urls: Vec::new(),
             role: "assistant".to_string(),
             content: Some("Hello! How can I help you?".to_string()),
@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn test_build_history_from_messages_fallback() {
         let mut s = Session::new("test-model".to_string());
-        s.messages.push(ChatMessage {
+        s.messages.push(ChatMessage { provider_data: None,
             image_urls: Vec::new(),
             role: "user".to_string(),
             content: Some("First prompt".to_string()),
@@ -467,7 +467,7 @@ mod tests {
             tool_call_id: None,
             name: None,
         });
-        s.messages.push(ChatMessage {
+        s.messages.push(ChatMessage { provider_data: None,
             image_urls: Vec::new(),
             role: "assistant".to_string(),
             content: Some("Answer".to_string()),

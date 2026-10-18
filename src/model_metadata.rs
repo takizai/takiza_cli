@@ -4,18 +4,18 @@ use serde_json::Value;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::{collections::HashMap, sync::{Mutex, OnceLock}};
+use std::{collections::{HashMap, HashSet}, sync::{Mutex, OnceLock}};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct Key { endpoint: String, model: String, api_key: String, proxy: Option<String> }
+struct Key { api_type: crate::providers::ApiType, headers: std::collections::BTreeMap<String, String>, endpoint: String, model: String, api_key: String, proxy: Option<String> }
 impl Key {
     fn from_config(config: &Config) -> Self {
-        Self { endpoint: crate::config::normalize_base_url(&config.base_url), model: config.model.clone(),
+        Self { api_type: config.api_type, headers: config.provider_headers.clone(), endpoint: crate::config::normalize_base_url(&config.base_url), model: config.model.clone(),
             api_key: config.api_key.clone(), proxy: config.proxy.clone() }
     }
     fn cache_id(&self) -> String {
         // Include credentials and routing in the scope without writing either to disk.
-        let scope = serde_json::to_vec(&(&self.endpoint, &self.model, &self.api_key, &self.proxy)).unwrap();
+        let scope = serde_json::to_vec(&(&self.api_type, &self.headers, &self.endpoint, &self.model, &self.api_key, &self.proxy)).unwrap();
         format!("{:x}", Sha256::digest(scope))
     }
 }
@@ -43,6 +43,8 @@ fn write_learned(path: &Path, tokens: u64, time: u64) -> std::io::Result<()> {
 #[derive(Default)]
 struct State {
     current: Option<Key>,
+    configured: Option<u64>,
+    warned: HashSet<(Key, u64, u64)>,
     // Missing entry = not requested; None = loading; Some(None) = unavailable.
     entries: HashMap<Key, Option<Option<u64>>>,
     learned: HashMap<Key, u64>,
@@ -70,6 +72,7 @@ pub fn ensure(config: &Config) {
     {
         let mut state = state().lock().unwrap();
         state.current = Some(key.clone());
+        state.configured = config.context_window;
         if state.entries.contains_key(&key) { return; }
         if !state.learned.contains_key(&key) {
             if let Some(limit) = read_learned(&cache_path(&key), now()) { state.observe(key.clone(), limit); }
@@ -91,10 +94,24 @@ pub fn take_changed() -> bool { std::mem::take(&mut state().lock().unwrap().chan
 
 pub fn current_limit() -> Option<u64> {
     let state = state().lock().unwrap();
-    state.current.as_ref().and_then(|key| state.limit(key))
+    effective_limit(state.configured, state.current.as_ref().and_then(|key| state.limit(key)))
 }
 pub fn limit_for(config: &Config) -> Option<u64> {
-    state().lock().unwrap().limit(&Key::from_config(config))
+    effective_limit(config.context_window, state().lock().unwrap().limit(&Key::from_config(config)))
+}
+fn effective_limit(configured: Option<u64>, reported: Option<u64>) -> Option<u64> {
+    configured.into_iter().chain(reported).min()
+}
+
+/// Warn once per requested limit and confirmed provider cap. Never rewrite preferences.
+pub fn take_warning(config: &Config) -> Option<String> {
+    let requested = config.context_window?;
+    let key = Key::from_config(config);
+    let mut state = state().lock().unwrap();
+    let supported = state.limit(&key)?;
+    if requested <= supported || !state.warned.insert((key, requested, supported)) { return None; }
+    Some(crate::i18n::tf!("Configured context window {requested} exceeds the limit of {model} ({supported}). This chat uses {supported} tokens; config.json is unchanged.",
+        requested = requested, model = config.model, supported = supported))
 }
 
 /// Only called for an actual provider overflow response, never for compaction itself.
@@ -200,6 +217,25 @@ pub fn format_limit(tokens: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn global_context_override_never_raises_a_confirmed_model_cap() {
+        assert_eq!(effective_limit(Some(128000),Some(1000000)),Some(128000));
+        assert_eq!(effective_limit(Some(1000000),Some(256000)),Some(256000));
+        assert_eq!(effective_limit(Some(128000),None),Some(128000));
+        assert_eq!(effective_limit(None,Some(256000)),Some(256000));
+        assert_eq!(effective_limit(None,None),None);
+        let mut config=crate::providers::tests::config();
+        config.base_url="http://context-override-test.invalid/v1".into();config.context_window=Some(1000000);
+        let key=Key::from_config(&config);
+        state().lock().unwrap().entries.insert(key.clone(),Some(Some(256000)));
+        assert_eq!(limit_for(&config),Some(256000));
+        assert!(take_warning(&config).is_some());assert!(take_warning(&config).is_none());
+        assert_eq!(config.context_window,Some(1000000));
+        state().lock().unwrap().observe(key,64000);
+        assert_eq!(limit_for(&config),Some(64000));
+        assert!(take_warning(&config).is_some());
+        assert_eq!(config.context_window,Some(1000000));
+    }
     use serde_json::json;
     #[test]
     fn overflow_requires_an_explicit_context_cap() {
@@ -222,7 +258,7 @@ mod tests {
 
     #[test]
     fn learned_caps_survive_metadata_races_and_are_scoped() {
-        let key = Key { endpoint: "https://provider/v1".into(), model: "test".into(),
+        let key = Key { api_type: Default::default(), headers: Default::default(), endpoint: "https://provider/v1".into(), model: "test".into(),
             api_key: "secret".into(), proxy: None };
         let mut state = State { current: Some(key.clone()), ..State::default() };
         state.entries.insert(key.clone(), None);
@@ -235,7 +271,9 @@ mod tests {
         assert_eq!(state.limit(&key), Some(64000));
         state.entries.insert(key.clone(), Some(Some(32000)));
         assert_eq!(state.limit(&key), Some(32000));
-        for other in [Key { model: "other".into(), ..key.clone() },
+        for other in [Key { api_type: crate::providers::ApiType::AnthropicMessages, ..key.clone() },
+            Key { headers: std::collections::BTreeMap::from([("x-route".into(),"other".into())]), ..key.clone() },
+            Key { model: "other".into(), ..key.clone() },
             Key { endpoint: "https://other/v1".into(), ..key.clone() },
             Key { api_key: "other".into(), ..key.clone() },
             Key { proxy: Some("http://proxy".into()), ..key.clone() }] {

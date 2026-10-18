@@ -82,6 +82,10 @@ impl CliArgs {
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct Config {
+    pub context_window: Option<u64>,
+    pub api_type: crate::providers::ApiType,
+    pub provider_id: Option<String>,
+    pub provider_headers: std::collections::BTreeMap<String, String>,
     pub api_key: String,
     pub base_url: String,
     pub model: String,
@@ -111,24 +115,26 @@ impl Config {
 
         let prefs = crate::theme::UserPreferences::load();
 
-        let api_key = prefs.api_key
+        let active = prefs.active_provider.as_ref().and_then(|id| prefs.providers.get(id));
+        let api_key = if let Some(provider) = active { provider.key() } else { prefs.api_key.clone()
             .or_else(|| std::env::var("OPENAI_API_KEY").ok())
             .or_else(|| std::env::var("GROQ_API_KEY").ok())
             .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
             .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
-            .unwrap_or_default();
+            .unwrap_or_default() };
         
-        let base_url = normalize_base_url(&prefs.base_url
+        let base_url = normalize_base_url(&active.map(|p| p.base_url.clone()).or_else(|| prefs.base_url.clone())
             .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
             .unwrap_or_else(|| "https://anymodel.org/v1".to_string()));
 
-        let model = prefs.model
+        let model = active.map(|p| p.model.clone()).or_else(|| prefs.model.clone())
             .or_else(|| std::env::var("OPENAI_MODEL").ok())
             .unwrap_or_else(|| "llama-3.3-70b-versatile".to_string());
 
         let mode = prefs.mode
             .as_deref()
             .and_then(crate::theme::AppMode::from_str_loose)
+            .filter(|mode| mode.is_available())
             .unwrap_or_default();
 
         let proxy = std::env::var("TAKIZA_PROXY")
@@ -167,6 +173,10 @@ impl Config {
             .or_else(|| Some("medium".to_string()));
 
         Self {
+            context_window: prefs.context_window,
+            api_type: active.map(|p| p.api_type).unwrap_or_default(),
+            provider_id: prefs.active_provider.clone(),
+            provider_headers: active.map(|p| p.headers.clone()).unwrap_or_default(),
             api_key,
             base_url,
             model,

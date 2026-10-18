@@ -18,13 +18,16 @@ Requires Node.js 18 or newer. Prebuilt binaries are included for Linux x64
 (glibc and musl), Linux ARM64 (glibc), macOS Intel and Apple Silicon, and Windows x64.
 Rust is not required. Installation needs no build scripts or extra downloads.
 
-Configure your model provider and API key using Takiza's setup flow.
+Configure saved provider profiles, API keys and models using `/provider`.
+Supports Chat Completions, OpenAI Responses and Anthropic Messages APIs.
+With a third-party provider, `/mode` is unavailable and `/usage` directs you
+to the provider dashboard for current usage and limits.
 
 New configuration files include Exa MCP for web search and page fetching without
 a separate API key, subject to anonymous usage limits. Existing configurations
 keep their MCP settings; see the full documentation to add or disable Exa.
 
-Version 0.1.10 contains binaries from the corresponding
-[GitHub release](https://github.com/takizai/takiza_cli/releases/tag/v0.1.10).
+Version 0.1.11 contains binaries from the corresponding
+[GitHub release](https://github.com/takizai/takiza_cli/releases/tag/v0.1.11).
 
 [Source and full documentation](https://github.com/takizai/takiza_cli)

@@ -227,7 +227,7 @@ def run(binary, cols, rows):
             assert any('│ > /tools' in line for line in screen.text), 'Tab did not complete selected command'
             assert not any('commands)' in line for line in screen.text), 'Tab left stale dropdown rows'
             terminal.send('\x15/usa\r')
-            terminal.wait(lambda: b'Token & Quota Usage' in terminal.output, '/usage was delayed by the active response')
+            terminal.wait(lambda: b'Check your provider dashboard' in terminal.output, '/usage was delayed by the active response')
             assert len(requests) == 1, '/usage interrupted or submitted a model request'
             terminal.send('\r')
             terminal.send('черновик')

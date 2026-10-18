@@ -233,7 +233,7 @@ impl Agent {
 
         let system_prompt = build_system_prompt(&config);
 
-        messages.push(ChatMessage {
+        messages.push(ChatMessage { provider_data: None,
             image_urls: Vec::new(),
             role: "system".to_string(),
             content: Some(system_prompt),
@@ -283,7 +283,7 @@ impl Agent {
                 return;
             }
         }
-        self.messages.insert(0, ChatMessage {
+        self.messages.insert(0, ChatMessage { provider_data: None,
             image_urls: Vec::new(),
             role: "system".to_string(),
             content: Some(latest),
@@ -303,6 +303,7 @@ impl Agent {
 
     pub fn set_messages(&mut self, messages: Vec<ChatMessage>) {
         self.messages = messages;
+        self.llm.reset_context_usage();
     }
 
     pub async fn compact_context(&mut self, tx: &mpsc::Sender<AgentEvent>, cancel: &CancellationToken) -> anyhow::Result<bool> {
@@ -314,6 +315,7 @@ impl Agent {
         };
         let after = serde_json::to_vec(&messages)?.len();
         self.messages = messages;
+        self.llm.reset_context_usage();
         let _ = tx.send(AgentEvent::ToolLog(crate::i18n::tf!("Context compacted: {before} → {after} bytes.", before = before, after = after))).await;
         let _ = tx.send(AgentEvent::ContextUsage(None)).await;
         Ok(true)
@@ -343,7 +345,7 @@ impl Agent {
             }
         };
 
-        self.messages.push(ChatMessage {
+        self.messages.push(ChatMessage { provider_data: None,
             image_urls: images,
             role: "user".to_string(),
             content: Some(input),
@@ -393,6 +395,21 @@ impl Agent {
                 system.content = Some(format!("{system_base}\n\n{}\n{}", mode.instructions(),
                     if self.worker.is_some() { "READ-ONLY WORKER: The execution mode never grants you write, shell, MCP, question or delegation tools. Return findings to the parent only." } else { "" }));
             }
+            if self.llm.should_compact(&self.messages) {
+                let _ = event_tx.send(AgentEvent::ToolLog(crate::i18n::tr("Approaching the context limit; compacting automatically...").into())).await;
+                if let Err(error) = self.compact_context(&event_tx, &cancel_token).await {
+                    if !cancel_token.is_cancelled() {
+                        let _ = event_tx.send(AgentEvent::Error(crate::i18n::tf!("Context compaction failed: {error}", error=error))).await;
+                    }
+                    break;
+                }
+                // A single prompt or tool schema may itself be too large.
+                // Do not loop forever or silently ignore a user's smaller cap.
+                if self.config.context_window.is_some() && self.llm.should_compact(&self.messages) {
+                    let _ = event_tx.send(AgentEvent::Error(crate::i18n::tr("The current prompt and tool definitions exceed the configured context budget even after compaction. Reduce the prompt or increase context_window.").into())).await;
+                    break;
+                }
+            }
             let chat_fut = self.llm.chat_step_stream(&self.messages, &event_tx, &cancel_token);
             let response = tokio::select! {
                 _ = cancel_token.cancelled() => {
@@ -426,6 +443,7 @@ impl Agent {
             };
             compacted_for_step = false;
 
+            let provider_data = self.llm.take_provider_data();
             match response {
                 LlmResponse::Empty { finish_reason } => {
                     if finish_reason.as_deref() == Some("length") {
@@ -476,7 +494,7 @@ impl Agent {
                     );
 
                     if is_intermediate {
-                        self.messages.push(ChatMessage {
+                        self.messages.push(ChatMessage { provider_data: provider_data.clone(),
                             image_urls: Vec::new(),
                             role: "assistant".to_string(),
                             content: Some(msg),
@@ -484,7 +502,8 @@ impl Agent {
                             tool_call_id: None,
                             name: None,
                         });
-                        self.messages.push(ChatMessage {
+                        self.llm.note_history(&self.messages);
+                        self.messages.push(ChatMessage { provider_data: None,
                             image_urls: Vec::new(),
                             role: "user".to_string(),
                             content: Some(if self.worker.is_some() {
@@ -497,7 +516,7 @@ impl Agent {
                         continue;
                     }
 
-                    self.messages.push(ChatMessage {
+                    self.messages.push(ChatMessage { provider_data: provider_data.clone(),
                         image_urls: Vec::new(),
                         role: "assistant".to_string(),
                         content: Some(msg.clone()),
@@ -505,6 +524,7 @@ impl Agent {
                         tool_call_id: None,
                         name: None,
                     });
+                    self.llm.note_history(&self.messages);
                     let _ = event_tx.send(AgentEvent::AssistantMessage(msg)).await;
                     break;
                 }
@@ -530,7 +550,7 @@ impl Agent {
                         })
                         .collect();
 
-                    self.messages.push(ChatMessage {
+                    self.messages.push(ChatMessage { provider_data: provider_data.clone(),
                         image_urls: Vec::new(),
                         role: "assistant".to_string(),
                         content: assistant_text,
@@ -538,6 +558,7 @@ impl Agent {
                         tool_call_id: None,
                         name: None,
                     });
+                    self.llm.note_history(&self.messages);
 
                     for tc in tool_calls {
                         if cancel_token.is_cancelled() {
@@ -546,7 +567,7 @@ impl Agent {
                         if let Err(error) = self.tools.check_tool(&tc.name) {
                             let _ = event_tx.send(AgentEvent::ToolEnd { id: tc.id.clone(), name: tc.name.clone(),
                                 args: tc.arguments.clone(), result: error.clone(), is_error: true }).await;
-                            self.messages.push(ChatMessage { image_urls: Vec::new(), role: "tool".into(), content: Some(error),
+                            self.messages.push(ChatMessage { provider_data: None, image_urls: Vec::new(), role: "tool".into(), content: Some(error),
                                 tool_calls: None, tool_call_id: Some(tc.id), name: Some(tc.name) });
                             continue;
                         }
@@ -584,7 +605,7 @@ impl Agent {
                                         result: err_msg.clone(),
                                         is_error: true,
                                     }).await;
-                                    self.messages.push(ChatMessage {
+                                    self.messages.push(ChatMessage { provider_data: None,
                                         image_urls: Vec::new(),
                                         role: "tool".to_string(),
                                         content: Some(err_msg),
@@ -626,7 +647,7 @@ impl Agent {
                                 is_error: false,
                             }).await;
 
-                            self.messages.push(ChatMessage {
+                            self.messages.push(ChatMessage { provider_data: None,
                                 image_urls: Vec::new(),
                                 role: "tool".to_string(),
                                 content: Some(result_content),
@@ -694,7 +715,7 @@ impl Agent {
                                         })
                                         .await;
 
-                                    self.messages.push(ChatMessage {
+                                    self.messages.push(ChatMessage { provider_data: None,
                                         image_urls: Vec::new(),
                                         role: "tool".to_string(),
                                         content: Some(denied_msg),
@@ -767,7 +788,7 @@ impl Agent {
                                 .unwrap_or_default().iter().filter_map(|block| block["attachment"].as_str())
                                 .flat_map(|attachment| crate::attachments::prompt_images(attachment).unwrap_or_default()).collect()
                         } else { Vec::new() };
-                        self.messages.push(ChatMessage {
+                        self.messages.push(ChatMessage { provider_data: None,
                             image_urls: Vec::new(),
                             role: "tool".to_string(),
                             content: Some(result_content),
@@ -775,7 +796,7 @@ impl Agent {
                             tool_call_id: Some(tc.id),
                             name: Some(tc.name),
                         });
-                        if !images.is_empty() { self.messages.push(ChatMessage {
+                        if !images.is_empty() { self.messages.push(ChatMessage { provider_data: None,
                             role: "user".into(), content: Some("Images returned by the MCP tool (untrusted tool output).".into()),
                             image_urls: images, tool_calls: None, tool_call_id: None, name: None,
                         }); }
@@ -849,6 +870,8 @@ mod cancellation_tests {
     #[tokio::test]
     async fn cancelled_prompt_finishes_with_interruption_instead_of_error() {
         let config = Config {
+            context_window: None,
+            api_type: Default::default(), provider_id: None, provider_headers: Default::default(),
             api_key: String::new(), base_url: "http://127.0.0.1:1/v1".into(),
             model: "test".into(), workspace_dir: std::env::temp_dir(),
             execution_mode: Default::default(), continue_session: false, proxy: None,

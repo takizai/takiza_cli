@@ -67,11 +67,16 @@ def run(binary, language):
                 terminal.wait(lambda: text in screen(), f'{language}: missing {text!r}')
             try:
                 see(expected[0])
-                for command in ['/theme', '/effort', '/mode']:
+                for command in ['/theme', '/effort']:
                     terminal.send(command + '\r')
                     see(expected[1])
                     assert '[active]' not in screen(), screen()
                     terminal.send('\x1b')
+                terminal.send('/mode\r')
+                see('сторонний провайдер' if language == 'ru' else '第三方提供商')
+                terminal.send('/usage\r')
+                see('Актуальные расход' if language == 'ru' else '实际用量')
+                terminal.send('\x1b')
                 terminal.send('/rewind\r')
                 see(expected[2])
                 see(expected[3])

@@ -355,10 +355,6 @@
     "Выбрать тему (amber, cyberpunk, nord...)",
     "切换主题（amber、cyberpunk、nord…）"
   ],
-  "Switch execution mode (Takiza Manual or Takiza MoA)": [
-    "Выбрать режим (Takiza Manual или Takiza MoA)",
-    "切换运行模式（Takiza Manual 或 Takiza MoA）"
-  ],
   "Switch active LLM model": [
     "Выбрать модель",
     "切换当前模型"
@@ -1247,10 +1243,6 @@
     "  /theme [name]       - Посмотреть или выбрать тему",
     "  /theme [name]       - 查看或切换主题"
   ],
-  "  /mode [manual|moa]  - Switch execution mode (Takiza Manual: pick model, Takiza MoA: auto)": [
-    "  /mode [manual|moa]  - Выбрать режим (Manual: вручную, MoA: автоматически)",
-    "  /mode [manual|moa]  - 切换模式（Manual：手动，MoA：自动）"
-  ],
   "  /model <name>       - Switch model (e.g. /model gpt-4o, /model claude-3-5-sonnet)": [
     "  /model <name>       - Сменить модель (например, /model gpt-4o)",
     "  /model <name>       - 切换模型（如 /model gpt-4o）"
@@ -1783,10 +1775,6 @@
     "Янтарные фонари, приглушённый лиловый и ледяной голубой Ангары",
     "温暖琥珀色路灯、柔和丁香紫活动提示与安加拉冰蓝边框"
   ],
-  "Unknown theme: '{}'. Available themes: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n": [
-    "Неизвестная тема: '{}'. Доступные темы: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n",
-    "未知主题： '{}'. 可用主题： amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n"
-  ],
   "No servers configured. Edit config.json.": [
     "Серверы не настроены. Измените config.json.",
     "未配置服务器。请编辑 config.json。"
@@ -1818,6 +1806,26 @@
   "Tool discovery failed": [
     "Не удалось получить список инструментов",
     "工具发现失败"
+  ],
+  "MCP connection failed": [
+    "Ошибка подключения MCP",
+    "MCP 连接失败"
+  ],
+  "MCP connection timed out after 20 seconds": [
+    "Истекло время подключения MCP: 20 секунд",
+    "MCP 连接超时：20 秒"
+  ],
+  "Tool discovery timed out after 10 seconds": [
+    "Истекло время получения списка инструментов: 10 секунд",
+    "获取工具列表超时：10 秒"
+  ],
+  "OAuth login failed": [
+    "Ошибка входа OAuth",
+    "OAuth 登录失败"
+  ],
+  "OAuth login task stopped unexpectedly": [
+    "Процесс входа OAuth неожиданно завершился",
+    "OAuth 登录任务意外停止"
   ],
   "Open this link to log in:": [
     "Откройте ссылку для входа:",
@@ -1983,17 +1991,50 @@
     "  Ctrl+O              - Раскрыть или свернуть вывод инструментов и команд (3 строки)",
     "  Ctrl+O              - 展开或收起工具和命令输出（预览 3 行）"
   ],
-  "Write outside workspace": ["Запись вне workspace", "写入工作区之外"],
-  "Requested path": ["Запрошенный путь", "请求路径"],
-  "Resolved path": ["Фактический путь", "解析后的路径"],
-  "No content changes.": ["Содержимое не меняется.", "内容没有变化。"],
-  "File write permission": ["Разрешение на запись файла", "文件写入权限"],
-  "Changes · {}–{} / {}": ["Изменения · {}–{} / {}", "更改 · {}–{} / {}"],
-  "↑↓ Select · Enter · PgUp/PgDn Changes · Esc Deny": ["↑↓ Выбрать · Enter · PgUp/PgDn Изменения · Esc Отказать", "↑↓ 选择 · Enter · PgUp/PgDn 更改 · Esc 拒绝"],
-  "Approval: AUTO-APPROVE (commands, external file writes and MCP calls)\n": ["Подтверждения: АВТО (команды, запись вне workspace и MCP-вызовы)\n", "审批：自动批准（命令、工作区外写入和 MCP 调用）\n"],
-  "Approval: ASK (commands, external file writes and untrusted MCP calls)\n": ["Подтверждения: СПРАШИВАТЬ (команды, запись вне workspace и MCP без доверия)\n", "审批：询问（命令、工作区外写入和未信任的 MCP 调用）\n"],
-  "            Skip permission prompts for commands, external file writes and MCP calls": ["            Не спрашивать подтверждения команд, записи вне workspace и MCP-вызовов", "            跳过命令、工作区外写入和 MCP 调用的审批"],
-  "            (Default: confirm commands, external file writes and untrusted MCP calls)\n": ["            (По умолчанию: подтверждать команды, запись вне workspace и MCP без доверия)\n", "            （默认：确认命令、工作区外写入和未信任的 MCP 调用）\n"],
+  "Write outside workspace": [
+    "Запись вне workspace",
+    "写入工作区之外"
+  ],
+  "Requested path": [
+    "Запрошенный путь",
+    "请求路径"
+  ],
+  "Resolved path": [
+    "Фактический путь",
+    "解析后的路径"
+  ],
+  "No content changes.": [
+    "Содержимое не меняется.",
+    "内容没有变化。"
+  ],
+  "File write permission": [
+    "Разрешение на запись файла",
+    "文件写入权限"
+  ],
+  "Changes · {}–{} / {}": [
+    "Изменения · {}–{} / {}",
+    "更改 · {}–{} / {}"
+  ],
+  "↑↓ Select · Enter · PgUp/PgDn Changes · Esc Deny": [
+    "↑↓ Выбрать · Enter · PgUp/PgDn Изменения · Esc Отказать",
+    "↑↓ 选择 · Enter · PgUp/PgDn 更改 · Esc 拒绝"
+  ],
+  "Approval: AUTO-APPROVE (commands, external file writes and MCP calls)\n": [
+    "Подтверждения: АВТО (команды, запись вне workspace и MCP-вызовы)\n",
+    "审批：自动批准（命令、工作区外写入和 MCP 调用）\n"
+  ],
+  "Approval: ASK (commands, external file writes and untrusted MCP calls)\n": [
+    "Подтверждения: СПРАШИВАТЬ (команды, запись вне workspace и MCP без доверия)\n",
+    "审批：询问（命令、工作区外写入和未信任的 MCP 调用）\n"
+  ],
+  "            Skip permission prompts for commands, external file writes and MCP calls": [
+    "            Не спрашивать подтверждения команд, записи вне workspace и MCP-вызовов",
+    "            跳过命令、工作区外写入和 MCP 调用的审批"
+  ],
+  "            (Default: confirm commands, external file writes and untrusted MCP calls)\n": [
+    "            (По умолчанию: подтверждать команды, запись вне workspace и MCP без доверия)\n",
+    "            （默认：确认命令、工作区外写入和未信任的 MCP 调用）\n"
+  ],
   "Directory access permission": [
     "Разрешение на доступ к директории",
     "目录访问权限"
@@ -2209,5 +2250,205 @@
   "Plan mode blocked '{name}'; no action was executed. Switch to Auto or Allow-all to implement changes.": [
     "Режим «План» заблокировал '{name}'; действие не выполнено. Для внесения изменений переключитесь в «Авто» или «Разрешить всё».",
     "计划模式已阻止 '{name}'；未执行任何操作。请切换到自动或全部允许模式以实施更改。"
+  ],
+  "Provider models: {count}": [
+    "Моделей провайдера: {count}",
+    "提供商模型：{count}"
+  ],
+  "Connection error": [
+    "Ошибка подключения",
+    "连接错误"
+  ],
+  "Provider connection": [
+    "Подключение провайдера",
+    "提供商连接"
+  ],
+  "Connection name:": [
+    "Имя подключения:",
+    "连接名称："
+  ],
+  "API type": [
+    "Тип API",
+    "API 类型"
+  ],
+  "Base URL:": [
+    "Базовый URL:",
+    "基础 URL："
+  ],
+  "API key (empty: keep existing):": [
+    "API-ключ (пусто: сохранить текущий):",
+    "API 密钥（留空保留现有密钥）："
+  ],
+  "API key environment variable (optional):": [
+    "Переменная окружения с ключом (необязательно):",
+    "API 密钥环境变量（可选）："
+  ],
+  "Initial model ID (optional):": [
+    "ID начальной модели (необязательно):",
+    "初始模型 ID（可选）："
+  ],
+  "Add provider...": [
+    "Добавить провайдера…",
+    "添加提供商…"
+  ],
+  "Saved providers": [
+    "Сохранённые провайдеры",
+    "已保存的提供商"
+  ],
+  "Use provider": [
+    "Выбрать провайдера",
+    "使用提供商"
+  ],
+  "Edit connection": [
+    "Изменить подключение",
+    "编辑连接"
+  ],
+  "Models": [
+    "Модели",
+    "模型"
+  ],
+  "Extra HTTP headers": [
+    "Дополнительные HTTP-заголовки",
+    "额外 HTTP 标头"
+  ],
+  "Clear API key": [
+    "Очистить API-ключ",
+    "清除 API 密钥"
+  ],
+  "Delete provider": [
+    "Удалить провайдера",
+    "删除提供商"
+  ],
+  "JSON object (empty: keep, {}: clear):": [
+    "JSON-объект (пусто: сохранить, {}: очистить):",
+    "JSON 对象（留空保留，{} 清除）："
+  ],
+  "Select another provider before deleting the active connection.": [
+    "Перед удалением активного подключения выберите другого провайдера.",
+    "请先切换到其他提供商，再删除当前连接。"
+  ],
+  "Delete provider?": [
+    "Удалить провайдера?",
+    "删除提供商？"
+  ],
+  "Loading provider models...": [
+    "Загрузка моделей провайдера…",
+    "正在加载提供商模型…"
+  ],
+  "Catalog unavailable. Use saved models or add a model manually.": [
+    "Каталог недоступен. Выберите сохранённую модель или добавьте вручную.",
+    "目录不可用。请选择已保存的模型或手动添加。"
+  ],
+  "Search:": [
+    "Поиск:",
+    "搜索："
+  ],
+  "Add model manually...": [
+    "Добавить модель вручную…",
+    "手动添加模型…"
+  ],
+  "Provider models": [
+    "Модели провайдера",
+    "提供商模型"
+  ],
+  "Type to search · ↑↓ · Enter · Ctrl+R Refresh · Esc Back": [
+    "Поиск вводом · ↑↓ · Enter · Ctrl+R Обновить · Esc Назад",
+    "输入搜索 · ↑↓ · Enter · Ctrl+R 刷新 · Esc 返回"
+  ],
+  "Model ID:": [
+    "ID модели:",
+    "模型 ID："
+  ],
+  "Display name:": [
+    "Отображаемое имя:",
+    "显示名称："
+  ],
+  "Saved provider not found. Open /provider to add a connection.": [
+    "Сохранённый провайдер не найден. Откройте /provider, чтобы добавить подключение.",
+    "未找到已保存的提供商。请使用 /provider 添加连接。"
+  ],
+  "Manage saved provider connections": [
+    "Управление подключениями провайдеров",
+    "管理已保存的提供商连接"
+  ],
+  "  /provider [name]    - Manage saved providers or switch connection": [
+    "  /provider [имя]     - Сохранённые провайдеры и выбор подключения",
+    "  /provider [名称]    - 管理已保存的提供商或切换连接"
+  ],
+  "context_window must be an integer larger than the 8192-token response reserve, or null.": [
+    "context_window должен быть целым числом больше резерва ответа в 8192 токена либо null.",
+    "context_window 必须是大于 8192 个响应预留令牌的整数，或为 null。"
+  ],
+  "Configured context window {requested} exceeds the limit of {model} ({supported}). This chat uses {supported} tokens; config.json is unchanged.": [
+    "Заданное окно {requested} превышает лимит модели {model} ({supported}). Для чата применяется {supported} токенов; config.json не изменён.",
+    "配置的上下文窗口 {requested} 超过模型 {model} 的上限（{supported}）。本次对话使用 {supported} 个令牌；config.json 保持不变。"
+  ],
+  "Approaching the context limit; compacting automatically...": [
+    "Контекст приближается к лимиту; запускаю автоматическое сжатие…",
+    "即将达到上下文上限，正在自动压缩…"
+  ],
+  "The current prompt and tool definitions exceed the configured context budget even after compaction. Reduce the prompt or increase context_window.": [
+    "Текущий запрос и описания инструментов превышают заданный бюджет контекста даже после сжатия. Сократите запрос или увеличьте context_window.",
+    "压缩后，当前提示词及工具定义仍超出配置的上下文预算。请缩短提示词或增大 context_window。"
+  ],
+  "Select mode (Takiza MoA is in development)": [
+    "Выбор режима (Takiza MoA в разработке)",
+    "选择模式（Takiza MoA 开发中）"
+  ],
+  "  /mode              - Select mode (Takiza MoA is in development)": [
+    "  /mode              - Выбор режима (Takiza MoA в разработке)",
+    "  /mode              - 选择模式（Takiza MoA 开发中）"
+  ],
+  " [In development]": [
+    " [В разработке]",
+    " [开发中]"
+  ],
+  "In development; temporarily unavailable": [
+    "В разработке; временно недоступен",
+    "开发中；暂不可用"
+  ],
+  "Takiza MoA [In development]": [
+    "Takiza MoA [В разработке]",
+    "Takiza MoA [开发中]"
+  ],
+  "Takiza MoA is in development and temporarily unavailable.": [
+    "Takiza MoA находится в разработке и временно недоступен.",
+    "Takiza MoA 正在开发中，暂不可用。"
+  ],
+  "Unknown theme: '{}'. Available themes: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized\n": [
+    "Неизвестная тема: '{}'. Доступные темы: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized\n",
+    "未知主题： '{}'. 可用主题： amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized\n"
+  ],
+  "Third-party provider": [
+    "Сторонний провайдер",
+    "第三方提供商"
+  ],
+  "A third-party provider is active.": [
+    "Подключён сторонний провайдер.",
+    "当前使用第三方提供商。"
+  ],
+  "A third-party provider is active. Takiza mode selection is unavailable.": [
+    "Подключён сторонний провайдер. Выбор режимов Takiza недоступен.",
+    "当前使用第三方提供商，无法选择 Takiza 模式。"
+  ],
+  "Check your provider dashboard for current usage, balance and limits.": [
+    "Актуальные расход, баланс и лимиты смотрите в личном кабинете провайдера.",
+    "请在提供商控制台查看实际用量、余额和限额。"
+  ],
+  "Takiza mode availability for the current provider": [
+    "Доступность режимов Takiza у текущего провайдера",
+    "当前提供商的 Takiza 模式可用性"
+  ],
+  "  /mode              - Takiza mode availability for the current provider": [
+    "  /mode              - Доступность режимов Takiza у текущего провайдера",
+    "  /mode              - 当前提供商的 Takiza 模式可用性"
+  ],
+  "Show where to check provider usage and limits": [
+    "Где посмотреть расход и лимиты провайдера",
+    "查看提供商用量和限额的方式"
+  ],
+  "  /usage              - Provider usage and limits information": [
+    "  /usage              - Информация о расходе и лимитах провайдера",
+    "  /usage              - 提供商用量和限额信息"
   ]
 }

@@ -9,6 +9,7 @@ mod git;
 mod interactive;
 mod llm;
 mod model_metadata;
+mod providers;
 mod logo;
 mod custom_logo;
 mod terminal_image;
@@ -365,6 +366,22 @@ async fn command_agent<'a>(
     agent.lock().await
 }
 
+fn fresh_connection_chat(config: &Config, session: &mut Session, history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>) {
+    *session = Session::new(config.model.clone());
+    history.lock().unwrap().clear();
+    cli_ui::set_active_chat_title("");
+    cli_ui::set_context_tokens(None);
+}
+
+fn collect_context_updates(config: &Config, history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>) -> bool {
+    let changed = model_metadata::take_changed();
+    if let Some(warning) = model_metadata::take_warning(config) {
+        history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(warning));
+        return true;
+    }
+    changed
+}
+
 async fn handle_tui_command(
     line: &str, config: &mut Config, user_prefs: &mut theme::UserPreferences,
     agent: &Arc<Mutex<Agent>>, current_session: &mut Session,
@@ -614,7 +631,7 @@ async fn handle_tui_command_inner(
                 } else {
                     clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
-                    command_message!("{}", crate::i18n::tf!("Unknown theme: '{}'. Available themes: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized, evening-irkutsk\n", parts[1]));
+                    command_message!("{}", crate::i18n::tf!("Unknown theme: '{}'. Available themes: amber, cyberpunk, emerald, nord, monochrome, dracula, rose, ocean, sakura, solarized\n", parts[1]));
                 }
             } else {
                 let ctx = interactive::ScreenContext::from_config(&config);
@@ -629,101 +646,8 @@ async fn handle_tui_command_inner(
         }
 
         if line == "/mode" || line.starts_with("/mode ") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            let ctx = interactive::ScreenContext::from_config(&config);
-            if parts.len() > 1 {
-                let sub = parts[1];
-                if let Some(mode) = theme::AppMode::from_str_loose(sub) {
-                    match mode {
-                        theme::AppMode::Manual => {
-                            if parts.len() > 2 {
-                                let chosen = parts[2].to_string();
-                                config.mode = theme::AppMode::Manual;
-                                config.model = chosen.clone();
-                                user_prefs.mode = Some("manual".to_string());
-                                user_prefs.model = Some(chosen.clone());
-                                let _ = user_prefs.save();
-                                let mut locked = command_agent(agent, active, current_session, history, config).await;
-                                locked.reset(config.clone());
-                                *current_session = Session::new(config.model.clone());
-                                *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                                cli_ui::print_user_cmd(&line);
-                                command_message!("{}", crate::i18n::tf!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nActive model: \x1b[1;38;2;0;220;255m{}\x1b[0m", config.model));
-                                if let Some(curated) = interactive::CURATED_MODELS.iter().find(|m| interactive::is_curated_model_match(m.id, &chosen)) {
-                                    if curated.is_expensive {
-                                        command_message!("{}", crate::i18n::tf!("  \x1b[1;38;2;255;95;80m⚠ WARNING:\x1b[0m High-tier model ($10/1M in, $50/1M out). Quota and token limits will be consumed significantly faster!"));
-                                    }
-                                }
-                                command_message!();
-                            } else if let Ok(Some(curated)) = interactive::select_curated_model_interactive(&ctx, &config.model) {
-                                config.mode = theme::AppMode::Manual;
-                                config.model = curated.id.to_string();
-                                user_prefs.mode = Some("manual".to_string());
-                                user_prefs.model = Some(curated.id.to_string());
-                                let _ = user_prefs.save();
-                                let mut locked = command_agent(agent, active, current_session, history, config).await;
-                                locked.reset(config.clone());
-                                *current_session = Session::new(config.model.clone());
-                                *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                                cli_ui::print_user_cmd(&line);
-                                command_message!("{}", crate::i18n::tf!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nSelected Model: \x1b[1;38;2;0;220;255m{} ({})\x1b[0m • {}", curated.name, curated.provider, i18n::tr(curated.description)));
-                                if curated.is_expensive {
-                                    command_message!("{}", crate::i18n::tf!("  \x1b[1;38;2;255;95;80m⚠ WARNING:\x1b[0m High-tier model ($10/1M in, $50/1M out). Quota and token limits will be consumed significantly faster!"));
-                                }
-                                command_message!();
-                            } else {
-                                *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                            }
-                        }
-                        theme::AppMode::MoA => {
-                            config.mode = theme::AppMode::MoA;
-                            user_prefs.mode = Some("moa".to_string());
-                            let _ = user_prefs.save();
-                            *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                            cli_ui::print_user_cmd(&line);
-                            command_message!("{}", crate::i18n::tf!("Mode switched to: \x1b[1mTakiza MoA\x1b[0m\n  \x1b[1;38;2;40;220;120m⚡ ~45% Cheaper:\x1b[0m Smart task orchestration — routine search and file inspection run on fast models, while complex code routes to flagships without token waste!\n"));
-                        }
-                    }
-                } else {
-                    clear_screen_and_banner(&config);
-                    cli_ui::print_user_cmd(&line);
-                    command_message!("{}", crate::i18n::tf!("Unknown mode: '{}'. Available modes: manual, moa\n", sub));
-                }
-            } else if let Ok(Some(chosen_mode)) = interactive::select_mode_interactive(&ctx, config.mode) {
-                match chosen_mode {
-                    theme::AppMode::Manual => {
-                        if let Ok(Some(curated)) = interactive::select_curated_model_interactive(&ctx, &config.model) {
-                            config.mode = theme::AppMode::Manual;
-                            config.model = curated.id.to_string();
-                            user_prefs.mode = Some("manual".to_string());
-                            user_prefs.model = Some(curated.id.to_string());
-                            let _ = user_prefs.save();
-                            let mut locked = command_agent(agent, active, current_session, history, config).await;
-                            locked.reset(config.clone());
-                            *current_session = Session::new(config.model.clone());
-                            *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                            cli_ui::print_user_cmd(&line);
-                            command_message!("{}", crate::i18n::tf!("Mode switched to: \x1b[1mTakiza Manual\x1b[0m\nSelected Model: \x1b[1;38;2;0;220;255m{} ({})\x1b[0m • {}", curated.name, curated.provider, i18n::tr(curated.description)));
-                            if curated.is_expensive {
-                                command_message!("{}", crate::i18n::tf!("  \x1b[1;38;2;255;95;80m⚠ WARNING:\x1b[0m High-tier model ($10/1M in, $50/1M out). Quota and token limits will be consumed significantly faster!"));
-                            }
-                            command_message!();
-                        } else {
-                            *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                        }
-                    }
-                    theme::AppMode::MoA => {
-                        config.mode = theme::AppMode::MoA;
-                        user_prefs.mode = Some("moa".to_string());
-                        let _ = user_prefs.save();
-                        *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                        cli_ui::print_user_cmd(&line);
-                        command_message!("{}", crate::i18n::tf!("Mode switched to: \x1b[1mTakiza MoA\x1b[0m\n  \x1b[1;38;2;40;220;120m⚡ ~45% Cheaper:\x1b[0m Smart task orchestration — routine search and file inspection run on fast models, while complex code routes to flagships without token waste!\n"));
-                    }
-                }
-            } else {
-                *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-            }
+            *output_row.lock().unwrap() = clear_screen_and_banner(config);
+            command_message!("{}", crate::i18n::tr("A third-party provider is active. Takiza mode selection is unavailable."));
             return Ok(CommandResult::Handled);
         }
 
@@ -813,25 +737,25 @@ async fn handle_tui_command_inner(
                 config.model = parts[1].to_string();
                 config.mode = theme::AppMode::Manual;
                 user_prefs.mode = Some("manual".to_string());
-                user_prefs.model = Some(config.model.clone());
-                let _ = user_prefs.save();
+                user_prefs.remember_model(config.model.clone());
+                user_prefs.save()?;
                 let mut locked = command_agent(agent, active, current_session, history, config).await;
                 locked.reset(config.clone());
-                *current_session = Session::new(config.model.clone());
+                fresh_connection_chat(config, current_session, history);
                 *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 cli_ui::print_user_cmd(&line);
                 command_message!("{}", crate::i18n::tf!("Switched model to: {}\n", config.model));
             } else {
                 let ctx = interactive::ScreenContext::from_config(&config);
-                if let Ok(Some(chosen_model)) = interactive::select_model(&ctx, &config.base_url, &config.model) {
+                if let Some(chosen_model) = interactive::select_model(&ctx, config, user_prefs)? {
                     config.model = chosen_model.clone();
                     config.mode = theme::AppMode::Manual;
                     user_prefs.mode = Some("manual".to_string());
-                    user_prefs.model = Some(chosen_model);
-                    let _ = user_prefs.save();
+                    user_prefs.remember_model(chosen_model);
+                    user_prefs.save()?;
                     let mut locked = command_agent(agent, active, current_session, history, config).await;
                     locked.reset(config.clone());
-                    *current_session = Session::new(config.model.clone());
+                    fresh_connection_chat(config, current_session, history);
                     *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                     cli_ui::print_user_cmd(&line);
                     command_message!("{}", crate::i18n::tf!("Switched model to: {}\n", config.model));
@@ -885,52 +809,29 @@ async fn handle_tui_command_inner(
             return Ok(CommandResult::Handled);
         }
 
-        if line.starts_with("/provider") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() > 1 {
-                let p = parts[1];
-                if let Some(preset) = interactive::find_provider(p) {
-                    config.base_url = preset.base_url.to_string();
-                    config.model = preset.default_model.to_string();
-                    user_prefs.provider = Some(preset.id.to_string());
-                    user_prefs.base_url = Some(config.base_url.clone());
-                    user_prefs.model = Some(config.model.clone());
-                    let _ = user_prefs.save();
-
-                    let mut locked = command_agent(agent, active, current_session, history, config).await;
-                    locked.reset(config.clone());
-                    *current_session = Session::new(config.model.clone());
-                    *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                    cli_ui::print_user_cmd(&line);
-                    command_message!("{}", crate::i18n::tf!("Switched provider: {}\n  Endpoint: {}\n  Model:    {}\n", preset.name, config.base_url, config.model));
-                } else {
-                    clear_screen_and_banner(&config);
-                    cli_ui::print_user_cmd(&line);
-                    command_message!("{}", crate::i18n::tf!("Unknown provider: {}. Available: groq, openrouter, openai, deepseek, ollama\n", p));
-                }
+        if line == "/provider" || line.starts_with("/provider ") {
+            let ctx = interactive::ScreenContext::from_config(config);
+            let requested = line.strip_prefix("/provider").unwrap().trim();
+            let selected = if requested.is_empty() {
+                interactive::manage_providers(&ctx, user_prefs, config)?
             } else {
-                let ctx = interactive::ScreenContext::from_config(&config);
-                if let Ok(Some(selected_provider)) = interactive::select_provider(&ctx, &config.base_url) {
-                    config.base_url = selected_provider.base_url.clone();
-                    config.model = selected_provider.default_model.clone();
-                    if let Some(key) = selected_provider.api_key {
-                        config.api_key = key.clone();
-                        user_prefs.api_key = Some(key);
-                    }
-                    user_prefs.provider = Some(selected_provider.id.clone());
-                    user_prefs.base_url = Some(config.base_url.clone());
-                    user_prefs.model = Some(config.model.clone());
-                    let _ = user_prefs.save();
-
-                    let mut locked = command_agent(agent, active, current_session, history, config).await;
-                    locked.reset(config.clone());
-                    *current_session = Session::new(config.model.clone());
-                    *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                    cli_ui::print_user_cmd(&line);
-                    command_message!("{}", crate::i18n::tf!("Switched provider: {}\n  Endpoint: {}\n  Model:    {}\n", selected_provider.name, config.base_url, config.model));
-                } else {
-                    *output_row.lock().unwrap() = clear_screen_and_banner(&config);
-                }
+                user_prefs.providers.iter().find(|(id,p)| id.as_str()==requested || p.name.eq_ignore_ascii_case(requested))
+                    .map(|(id,_)|id.clone())
+            };
+            if let Some(id) = selected {
+                user_prefs.activate_provider(&id, config)?;
+                config.mode = theme::AppMode::Manual;
+                user_prefs.mode = Some("manual".into());
+                user_prefs.save()?;
+                let mut locked = command_agent(agent, active, current_session, history, config).await;
+                locked.reset(config.clone());
+                fresh_connection_chat(config, current_session, history);
+                *output_row.lock().unwrap() = clear_screen_and_banner(config);
+                cli_ui::print_user_cmd(&line);
+                command_message!("{}", crate::i18n::tf!("Switched provider: {}\n  Endpoint: {}\n  Model:    {}\n", user_prefs.providers[&id].name, config.base_url, config.model));
+            } else {
+                *output_row.lock().unwrap() = clear_screen_and_banner(config);
+                if !requested.is_empty() { command_message!("{}", crate::i18n::tr("Saved provider not found. Open /provider to add a connection.")); }
             }
             return Ok(CommandResult::Handled);
         }
@@ -941,58 +842,31 @@ async fn handle_tui_command_inner(
             if let Ok(Some(action)) = interactive::show_interactive_status(&ctx, &config, &current_session, msg_count, &branch_tag) {
                 match action {
                     interactive::StatusAction::ChangeProvider => {
-                        let cur_ctx = interactive::ScreenContext::from_config(&config);
-                        if let Ok(Some(selected_provider)) = interactive::select_provider(&cur_ctx, &config.base_url) {
-                            config.base_url = selected_provider.base_url.clone();
-                            config.model = selected_provider.default_model.clone();
-                            if let Some(key) = selected_provider.api_key {
-                                config.api_key = key.clone();
-                                user_prefs.api_key = Some(key);
-                            }
-                            user_prefs.provider = Some(selected_provider.id.clone());
-                            user_prefs.base_url = Some(config.base_url.clone());
-                            user_prefs.model = Some(config.model.clone());
-                            let _ = user_prefs.save();
-
+                        let cur_ctx = interactive::ScreenContext::from_config(config);
+                        if let Some(id) = interactive::manage_providers(&cur_ctx, user_prefs, config)? {
+                            user_prefs.activate_provider(&id, config)?;
+                            config.mode = theme::AppMode::Manual;
+                            user_prefs.mode = Some("manual".into());
+                            user_prefs.save()?;
                             let mut locked = command_agent(agent, active, current_session, history, config).await;
                             locked.reset(config.clone());
-                            *current_session = Session::new(config.model.clone());
+                            fresh_connection_chat(config, current_session, history);
                         }
                     }
                     interactive::StatusAction::ChangeModel => {
                         let cur_ctx = interactive::ScreenContext::from_config(&config);
-                        if let Ok(Some(chosen_model)) = interactive::select_model(&cur_ctx, &config.base_url, &config.model) {
+                        if let Some(chosen_model) = interactive::select_model(&cur_ctx, config, user_prefs)? {
                             config.model = chosen_model.clone();
-                            user_prefs.model = Some(chosen_model);
+                            user_prefs.remember_model(chosen_model);
                             let _ = user_prefs.save();
                             let mut locked = command_agent(agent, active, current_session, history, config).await;
                             locked.reset(config.clone());
-                            *current_session = Session::new(config.model.clone());
+                            fresh_connection_chat(config, current_session, history);
                         }
                     }
                     interactive::StatusAction::ChangeMode => {
-                        let cur_ctx = interactive::ScreenContext::from_config(&config);
-                        if let Ok(Some(chosen_mode)) = interactive::select_mode_interactive(&cur_ctx, config.mode) {
-                            match chosen_mode {
-                                theme::AppMode::Manual => {
-                                    if let Ok(Some(curated)) = interactive::select_curated_model_interactive(&cur_ctx, &config.model) {
-                                        config.mode = theme::AppMode::Manual;
-                                        config.model = curated.id.to_string();
-                                        user_prefs.mode = Some("manual".to_string());
-                                        user_prefs.model = Some(curated.id.to_string());
-                                        let _ = user_prefs.save();
-                                        let mut locked = command_agent(agent, active, current_session, history, config).await;
-                                        locked.reset(config.clone());
-                                        *current_session = Session::new(config.model.clone());
-                                    }
-                                }
-                                theme::AppMode::MoA => {
-                                    config.mode = theme::AppMode::MoA;
-                                    user_prefs.mode = Some("moa".to_string());
-                                    let _ = user_prefs.save();
-                                }
-                            }
-                        }
+                        let ctx = interactive::ScreenContext::from_config(config);
+                        interactive::show_external_mode_notice(&ctx)?;
                     }
                     interactive::StatusAction::ShowUsage => {
                         let cur_ctx = interactive::ScreenContext::from_config(&config);
@@ -1013,9 +887,7 @@ async fn handle_tui_command_inner(
                         }
                         let mut locked = command_agent(agent, active, current_session, history, config).await;
                         locked.reset(config.clone());
-                        *current_session = Session::new(config.model.clone());
-                        cli_ui::set_active_chat_title("");
-                        history.lock().unwrap().clear();
+                        fresh_connection_chat(config, current_session, history);
                     }
                 }
             }
@@ -1031,9 +903,7 @@ async fn handle_tui_command_inner(
             }
             let mut locked = command_agent(agent, active, current_session, history, config).await;
             locked.reset(config.clone());
-            *current_session = Session::new(config.model.clone());
-            cli_ui::set_active_chat_title("");
-            history.lock().unwrap().clear();
+            fresh_connection_chat(config, current_session, history);
             *output_row.lock().unwrap() = clear_screen_and_banner(&config);
             cli_ui::print_user_cmd(&line);
             command_message!("{}", crate::i18n::tf!("Conversation reset. Started a new session.\n"));
@@ -1197,6 +1067,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let mut config = Config::load_with_args(&cli_args);
+    anyhow::ensure!(config.context_window.is_none_or(|limit|limit>llm::AGENT_MAX_OUTPUT_TOKENS),
+        "{}", crate::i18n::tr("context_window must be an integer larger than the 8192-token response reserve, or null."));
+    if user_prefs.providers.is_empty() {
+        user_prefs.migrate_provider(&config);
+        let id = user_prefs.active_provider.clone().unwrap();
+        user_prefs.activate_provider(&id, &mut config)?;
+        user_prefs.save()?;
+    }
+    anyhow::ensure!(user_prefs.active_provider.as_ref().is_some_and(|id|user_prefs.providers.contains_key(id)),
+        "active_provider must identify a saved provider in config.json");
+    user_prefs.providers[user_prefs.active_provider.as_ref().unwrap()].validate()?;
     execution_mode::set_display(config.execution_mode.current());
 
     if !user_prefs.is_workspace_trusted(&config.workspace_dir,
@@ -1306,7 +1187,7 @@ async fn main() -> anyhow::Result<()> {
                 *output_row_for_redraw.lock().unwrap() = new_row;
             }, || {
                 let title_changed = collect_chat_title(&mut pending_title, &mut current_session, &config.workspace_dir, &history);
-                title_changed | model_metadata::take_changed()
+                title_changed | collect_context_updates(&config, &history)
             })?;
 
             match input_res {
@@ -1464,7 +1345,11 @@ async fn main() -> anyhow::Result<()> {
         }
 
         if config.mode == theme::AppMode::MoA {
-            let decision = moa_router::resolve_moa_route(&line, None).await;
+            let mut decision = moa_router::resolve_moa_route(&line, None).await;
+            let available = config.provider_id.as_ref().and_then(|id| user_prefs.providers.get(id));
+            if !available.is_some_and(|provider| provider.models.iter().any(|model|model.id==decision.selected_model)) {
+                decision.selected_model = config.model.clone();
+            }
             if config.model != decision.selected_model {
                 config.model = decision.selected_model.clone();
                 current_session.model = config.model.clone();
@@ -1559,7 +1444,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 _ = title_tick.tick() => {
                     let title_changed = collect_chat_title(&mut pending_title, &mut current_session, &config.workspace_dir, &history);
-                    if title_changed | model_metadata::take_changed() {
+                    if title_changed | collect_context_updates(&config, &history) {
                         let snapshot = history.lock().unwrap().clone();
                         redraw_active_editor(&config, &snapshot, &branch_tag, &output_row, &mut spinner, &mut stream_writer).await;
                     }

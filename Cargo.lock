@@ -2097,7 +2097,7 @@ dependencies = [
 
 [[package]]
 name = "takiza-harness"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2111,6 +2111,7 @@ dependencies = [
  "keyring",
  "libc",
  "quick-xml",
+ "regex",
  "reqwest 0.12.28",
  "reqwest 0.13.5",
  "rmcp",

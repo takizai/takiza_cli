@@ -693,14 +693,14 @@ pub fn help_text() -> String {
     println!("{}", crate::i18n::tr("  Shift+Tab           - Cycle Auto / Plan / Allow-all execution modes"));
     println!("  /permissions auto|plan|allow-all");
     println!("  /agents [id] | /agents stop <id|all>");
-    println!("{}", crate::i18n::tf!("  /mode [manual|moa]  - Switch execution mode (Takiza Manual: pick model, Takiza MoA: auto)"));
+    println!("{}", crate::i18n::tf!("  /mode              - Takiza mode availability for the current provider"));
     println!("{}", crate::i18n::tf!("  /model <name>       - Switch model (e.g. /model gpt-4o, /model claude-3-5-sonnet)"));
-    println!("{}", crate::i18n::tf!("  /provider <name>    - Switch preset provider (openai, openrouter, deepseek, ollama, groq)"));
+    println!("{}", crate::i18n::tf!("  /provider [name]    - Manage saved providers or switch connection"));
     println!("{}", crate::i18n::tf!("  /rewind, /restore   - Restore files and chat from a pre-prompt checkpoint"));
     println!("  /compact            - {}", crate::i18n::tr("Compress model context while keeping the visible conversation"));
     println!("{}", crate::i18n::tf!("  /diff               - View git diff of changes made in the workspace"));
     println!("{}", crate::i18n::tf!("  /status             - View current session info, git status, and token usage"));
-    println!("{}", crate::i18n::tf!("  /usage              - View daily quotas and token usage breakdown (Manual / MoA)"));
+    println!("{}", crate::i18n::tf!("  /usage              - Provider usage and limits information"));
     println!("{}", crate::i18n::tf!("  /sessions           - List saved conversation sessions"));
     println!("{}", crate::i18n::tf!("  /reset              - Reset conversation history to start fresh"));
     println!("{}", crate::i18n::tf!("  /approval           - Toggle auto-approving commands vs asking permissions"));

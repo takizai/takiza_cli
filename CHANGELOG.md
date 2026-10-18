@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+## 0.1.11
+
+- Current API-key connections are treated as third-party providers: `/mode` explains that Takiza mode selection is unavailable, and `/usage` and `/quota` direct users to their provider dashboard instead of showing mock quotas. Settings and status show the same connection type. Saved MoA settings run in Manual for now. Evening Irkutsk is preserved as a hidden theme outside the public theme list.
+
+- MCP connection, discovery and tool-call errors retain the underlying provider or transport reason, with credential redaction and bounded terminal-safe text. Connection and discovery timeouts are reported explicitly instead of suggesting login for every failure.
+
+- Added an application-wide `context_window` override, proactive history compaction and provider-scoped cap warnings. Unsupported values are clamped for runtime use without rewriting the configured limit; unknown model caps use the requested value until a provider reports a lower maximum.
+
+- Added saved provider profiles with independent credentials, API types, custom HTTP headers, model catalogs and remembered model selections. Existing single-provider settings migrate to a default profile.
+- Added native OpenAI Responses and Anthropic Messages transports alongside compatible Chat Completions, including streaming, tools, images, context summaries and conversation titles. Provider continuation items survive saved sessions.
+- Model selection loads the active provider catalog in the background, searches readable names and IDs, and supports manual models when discovery is unavailable. Added Russian and Chinese UI translations and protocol/TUI regression coverage.
+- Fixed visible ANSI reset fragments in provider information panels, including `/usage` and the mode notice opened from `/status`.
+
 ## 0.1.10
 
 - Show the percentage remaining before automatic compaction only when 10% or less of the context window remains; the token counter stays visible.

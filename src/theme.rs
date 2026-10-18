@@ -47,7 +47,6 @@ impl Theme {
             Theme::Ocean,
             Theme::Sakura,
             Theme::Solarized,
-            Theme::EveningIrkutsk,
         ]
     }
 
@@ -226,7 +225,6 @@ impl Theme {
             "ocean" | "8" => Some(Theme::Ocean),
             "sakura" | "9" => Some(Theme::Sakura),
             "solarized" | "10" => Some(Theme::Solarized),
-            "evening-irkutsk" | "evening_irkutsk" | "evening irkutsk" | "irkutsk" | "11" => Some(Theme::EveningIrkutsk),
             _ => None,
         }
     }
@@ -257,6 +255,12 @@ impl Default for AppMode {
 }
 
 impl AppMode {
+    pub fn is_available(self) -> bool {
+        self == Self::Manual
+    }
+
+    // Retained for the future Takiza account mode picker.
+    #[allow(dead_code)]
     pub fn name(&self) -> &'static str {
         match self {
             AppMode::Manual => "Takiza Manual",
@@ -264,10 +268,11 @@ impl AppMode {
         }
     }
 
+    #[allow(dead_code)]
     pub fn description(&self) -> &'static str {
         match self {
             AppMode::Manual => crate::i18n::tr("Manual model selection from frontier LLM catalog"),
-            AppMode::MoA => crate::i18n::tr("Mixture of Agents: smart auto-routing (~45% lower token costs)"),
+            AppMode::MoA => crate::i18n::tr("In development; temporarily unavailable"),
         }
     }
 
@@ -289,8 +294,21 @@ impl AppMode {
     }
 }
 
+// Preserve the rest of the user's preferences when this field is malformed.
+// Startup validation reports the invalid value instead of falling back to a new config.
+fn deserialize_context_window<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    let value=Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.map(|value|value.as_u64().unwrap_or(0)))
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserPreferences {
+    #[serde(default, deserialize_with = "deserialize_context_window")]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub providers: std::collections::BTreeMap<String, crate::providers::Provider>,
+    #[serde(default)]
+    pub active_provider: Option<String>,
     #[serde(default, rename = "mcpServers")]
     pub mcp_servers: std::collections::BTreeMap<String, crate::runtime::McpConfig>,
     #[serde(default, rename = "lspServers")]
@@ -328,6 +346,9 @@ pub struct UserPreferences {
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
+            context_window: None,
+            providers: Default::default(),
+            active_provider: None,
             // Seed new configurations only. Missing/empty maps in saved configs
             // stay empty so removing the default server remains persistent.
             mcp_servers: std::collections::BTreeMap::from([(

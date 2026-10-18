@@ -92,7 +92,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/mode",
-        description: "Switch execution mode (Takiza Manual or Takiza MoA)",
+        description: "Takiza mode availability for the current provider",
         has_args: true,
     },
     SlashCommand {
@@ -107,7 +107,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/provider",
-        description: "Switch preset provider (openai, groq, ollama...)",
+        description: "Manage saved provider connections",
         has_args: true,
     },
     SlashCommand {
@@ -130,7 +130,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/usage",
-        description: "Show daily quotas and token usage breakdown (Takiza Manual / MoA)",
+        description: "Show where to check provider usage and limits",
         has_args: false,
     },
     SlashCommand { name: "/mcp", description: "Manage MCP servers: status, connect, disconnect, restart, login, logout", has_args: true },

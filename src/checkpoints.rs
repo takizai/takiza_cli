@@ -495,7 +495,7 @@ mod tests {
     impl Drop for Workspace { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
 
     fn message(role: &str, text: &str) -> ChatMessage {
-        ChatMessage { role: role.into(), content: Some(text.into()), image_urls: Vec::new(), tool_calls: None, tool_call_id: None, name: None }
+        ChatMessage { provider_data: None, role: role.into(), content: Some(text.into()), image_urls: Vec::new(), tool_calls: None, tool_call_id: None, name: None }
     }
 
     #[test]

@@ -1,3 +1,6 @@
+#[path = "provider_api.rs"]
+mod provider_api;
+pub use provider_api::ProviderData;
 use crate::agent::AgentEvent;
 use crate::config::Config;
 use crate::tools::{get_tool_definitions, ToolCall};
@@ -11,6 +14,8 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_data: Option<ProviderData>,
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
@@ -28,6 +33,7 @@ fn messages_for_api(messages: &[ChatMessage]) -> Vec<Value> {
     messages.iter().map(|message| {
         let mut value = serde_json::to_value(message).expect("ChatMessage serialization");
         value.as_object_mut().unwrap().remove("image_urls");
+        value.as_object_mut().unwrap().remove("provider_data");
         if !message.image_urls.is_empty() {
             let mut content = vec![json!({"type": "text", "text": message.content.as_deref().unwrap_or("")})];
             content.extend(message.image_urls.iter().map(|url| json!({"type": "image_url", "image_url": {"url": url}})));
@@ -105,7 +111,8 @@ pub enum LlmResponse {
 
 pub fn supports_reasoning_effort(model: &str) -> bool {
     let m = model.to_lowercase();
-    m.contains("o1")
+    m.starts_with("gpt-5") || m.starts_with("gpt-6")
+        || m.contains("o1")
         || m.contains("o3")
         || m.contains("o4")
         || m.contains("reasoning")
@@ -166,7 +173,7 @@ fn append_tool_repair_with(messages: &mut Vec<ChatMessage>, error: &InvalidToolC
         id: format!("rejected_{}_{}", messages.len(), i), call_type: "function".into(),
         function: LlmFunctionCall { name: call.name.clone(), arguments: call.arguments.clone() },
     }).collect::<Vec<_>>();
-    messages.push(ChatMessage { role: "assistant".into(), content: None, image_urls: Vec::new(),
+    messages.push(ChatMessage { provider_data: None, role: "assistant".into(), content: None, image_urls: Vec::new(),
         tool_calls: Some(calls.clone()), tool_call_id: None, name: None });
     for call in calls {
         let schema = definitions.as_array().unwrap().iter()
@@ -176,7 +183,7 @@ fn append_tool_repair_with(messages: &mut Vec<ChatMessage>, error: &InvalidToolC
         if call.function.name == "write_file" && schema["properties"]["content"]["type"] == "string" {
             instruction.push_str(" For write_file, content must be the complete file text encoded as a JSON string. Do not nest the tool arguments inside content: {\"path\":...,\"content\":{\"path\":...,\"content\":...}} is invalid. Use exactly one outer path and one string content. Even when writing a JSON file, serialize the document into content; do not place an object or array there. Escape quotes and newlines. Example of argument format only: {\"path\":\"example.json\",\"content\":\"{\\n  \\\"enabled\\\": true\\n}\\n\"}. Replace the example with the actual requested path and file text. Write one file per call; do not wrap multiple files inside content. Keep reasoning brief and issue the corrected call now.");
         }
-        messages.push(ChatMessage { role: "tool".into(), image_urls: Vec::new(), tool_calls: None,
+        messages.push(ChatMessage { provider_data: None, role: "tool".into(), image_urls: Vec::new(), tool_calls: None,
             tool_call_id: Some(call.id), name: None,
             content: Some(json!({"error": error.detail, "executed": false,
                 "batch_executed": false, "tool": call.function.name, "parameters_schema": schema,
@@ -402,6 +409,8 @@ impl StreamThinkParser {
 }
 
 pub struct LlmClient {
+    history_usage: std::sync::Mutex<(Option<u64>, Option<u64>)>,
+    provider_data: std::sync::Mutex<Option<ProviderData>>,
     pub tool_definitions: Value,
     client: Client,
     config: Config,
@@ -472,6 +481,24 @@ fn reported_context_tokens(value: &Value) -> Option<u64> {
 }
 
 impl LlmClient {
+    fn note_context_usage(&self, usage: Option<u64>) {
+        *self.history_usage.lock().unwrap() = (usage, None);
+    }
+    pub fn reset_context_usage(&self) { self.note_context_usage(None); }
+    pub fn note_history(&self, messages: &[ChatMessage]) {
+        self.history_usage.lock().unwrap().1 = Some(crate::context::estimate_tokens(messages, &self.tool_definitions));
+    }
+    pub fn estimated_context_tokens(&self, messages: &[ChatMessage]) -> u64 {
+        let estimated = crate::context::estimate_tokens(messages, &self.tool_definitions);
+        match *self.history_usage.lock().unwrap() {
+            (Some(reported), Some(baseline)) => reported.saturating_add(estimated.saturating_sub(baseline)),
+            _ => estimated,
+        }
+    }
+    pub fn should_compact(&self, messages: &[ChatMessage]) -> bool {
+        self.context_limit().is_some_and(|limit| self.estimated_context_tokens(messages)
+            >= limit.saturating_sub(AGENT_MAX_OUTPUT_TOKENS))
+    }
     fn overflow_error(&self, status: u16, body: &str) -> Option<ContextOverflow> {
         if !context_overflow(status, body) { return None; }
         crate::model_metadata::remember_overflow(&self.config, body);
@@ -498,7 +525,7 @@ impl LlmClient {
 
     async fn model_metadata_request(&self, url: &str) -> Option<Value> {
         let mut request = self.client.get(url).timeout(std::time::Duration::from_secs(3));
-        if !self.config.api_key.is_empty() { request = request.bearer_auth(&self.config.api_key); }
+        request = self.authorize(request);
         request.send().await.ok()?.error_for_status().ok()?.json().await.ok()
     }
 
@@ -531,9 +558,11 @@ impl LlmClient {
                 {"role":"user", "content":format!("Previous summary:\n{previous}\n\nNext transcript chunk:\n{transcript}")}
             ]
         });
+        if self.config.api_type != crate::providers::ApiType::ChatCompletions {
+            return self.native_text(&body, timeout, Some(event_tx), cancel).await;
+        }
         self.configure_summary_reasoning(&mut body);
-        let mut request = self.client.post(format!("{}/chat/completions", self.config.base_url)).timeout(timeout).json(&body);
-        if !self.config.api_key.is_empty() { request = request.bearer_auth(&self.config.api_key); }
+        let request = self.authorize(self.client.post(format!("{}/chat/completions", self.config.base_url)).timeout(timeout)).json(&body);
         let response = tokio::select! {
             _ = cancel.cancelled() => anyhow::bail!(crate::i18n::tr("Context compaction cancelled.")),
             result = request.send() => result.map_err(|error| if error.is_timeout() {
@@ -561,6 +590,7 @@ impl LlmClient {
     pub fn new(mut config: Config) -> Self {
         config.base_url = crate::config::normalize_base_url(&config.base_url);
         let mut builder = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(30))
             .read_timeout(std::time::Duration::from_secs(120));
 
@@ -571,7 +601,9 @@ impl LlmClient {
         }
 
         Self {
+            history_usage: Default::default(),
             tool_definitions: get_tool_definitions(),
+            provider_data: Default::default(),
             client: builder.build().unwrap_or_default(),
             config,
         }
@@ -595,7 +627,7 @@ impl LlmClient {
         let url = format!("{}/chat/completions", self.config.base_url);
         let prompt_clean = prompt.replace('\n', " ").chars().take(300).collect::<String>();
         let messages = vec![
-            ChatMessage {
+            ChatMessage { provider_data: None,
                 image_urls: Vec::new(),
                 role: "system".to_string(),
                 content: Some("You generate concise conversation titles. Return ONLY a 3-6 word title summarizing the user request. No quotes, no markdown, no punctuation, same language as user.".to_string()),
@@ -603,7 +635,7 @@ impl LlmClient {
                 tool_call_id: None,
                 name: None,
             },
-            ChatMessage {
+            ChatMessage { provider_data: None,
                 image_urls: Vec::new(),
                 role: "user".to_string(),
                 content: Some(prompt_clean),
@@ -621,14 +653,14 @@ impl LlmClient {
             "temperature": 0.4,
         });
 
-        let mut req = self.client.post(&url)
+        let req = self.client.post(&url)
             .header("Content-Type", "application/json");
 
-        if !self.config.api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", self.config.api_key));
+        if self.config.api_type != crate::providers::ApiType::ChatCompletions {
+            let raw = self.native_text(&body, std::time::Duration::from_secs(60), None, &CancellationToken::new()).await?;
+            return Ok(raw.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim().trim_matches(['"', '\'']).to_string());
         }
-
-        let resp = req.timeout(std::time::Duration::from_secs(60)).json(&body).send().await
+        let resp = self.authorize(req).timeout(std::time::Duration::from_secs(60)).json(&body).send().await
             .context("Title request failed")?;
         let status = resp.status();
         if !status.is_success() { anyhow::bail!("Title provider returned HTTP {status}"); }
@@ -671,6 +703,9 @@ impl LlmClient {
     }
 
     async fn chat_step_with_usage(&self, messages: &[ChatMessage], event_tx: Option<&mpsc::Sender<AgentEvent>>) -> Result<LlmResponse> {
+        if self.config.api_type != crate::providers::ApiType::ChatCompletions {
+            return self.native_chat(messages, false, event_tx, &CancellationToken::new()).await;
+        }
         let url = format!("{}/chat/completions", self.config.base_url);
         let tools = tools_for_api(&self.tool_definitions);
 
@@ -693,16 +728,12 @@ impl LlmClient {
         let mut attempts = 0;
         let (status, text) = loop {
             attempts += 1;
-            let mut req = self
+            let req = self
                 .client
                 .post(&url)
                 .header("Content-Type", "application/json");
 
-            if !self.config.api_key.is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", self.config.api_key));
-            }
-
-            let resp = req
+            let resp = self.authorize(req)
                 .json(&body)
                 .send()
                 .await
@@ -728,6 +759,8 @@ impl LlmClient {
 
         let json_val: Value = serde_json::from_str(&text)
             .context(format!("Failed to parse JSON response: {}", text))?;
+
+        self.note_context_usage(reported_context_tokens(&json_val));
 
         if let Some(tx) = event_tx {
             let _ = tx.send(AgentEvent::TokenUsage(reported_tokens(&json_val))).await;
@@ -786,7 +819,7 @@ impl LlmClient {
                     // Change the request instead of regenerating the same long
                     // reasoning. This instruction is temporary; it must not
                     // replace the user's latest prompt during later compaction.
-                    retry_messages.push(ChatMessage {
+                    retry_messages.push(ChatMessage { provider_data: None,
                         role: "user".into(),
                         content: Some("Your previous response exhausted the output token allowance before completing an answer or tool call. Keep reasoning brief. Do not repeat the project plan or architecture. Take the next concrete step now using the available tools; perform large tasks incrementally. Write one small file or edit at a time instead of generating the entire project in one call. Ensure every tool call has complete valid JSON arguments matching its schema. If no tool is needed, give a concise answer.".into()),
                         image_urls: Vec::new(), tool_calls: None, tool_call_id: None, name: None,
@@ -837,6 +870,9 @@ impl LlmClient {
         event_tx: &mpsc::Sender<AgentEvent>,
         cancel_token: &CancellationToken,
     ) -> Result<LlmResponse> {
+        if self.config.api_type != crate::providers::ApiType::ChatCompletions {
+            return self.native_chat(messages, true, Some(event_tx), cancel_token).await;
+        }
         let url = format!("{}/chat/completions", self.config.base_url);
         let tools = tools_for_api(&self.tool_definitions);
 
@@ -864,16 +900,12 @@ impl LlmClient {
                 anyhow::bail!("Request cancelled");
             }
             attempts += 1;
-            let mut req = self
+            let req = self
                 .client
                 .post(&url)
                 .header("Content-Type", "application/json");
 
-            if !self.config.api_key.is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", self.config.api_key));
-            }
-
-            let res = req
+            let res = self.authorize(req)
                 .json(&body)
                 .send()
                 .await;
@@ -1074,6 +1106,7 @@ impl LlmClient {
             if chunk_bytes.is_none() { break; }
         }
 
+        self.note_context_usage(context_usage);
         let _ = event_tx.send(AgentEvent::TokenUsage(token_usage)).await;
         if context_usage.is_none() { let _ = event_tx.send(AgentEvent::ContextUsage(None)).await; }
         if !done_stream && finish_reason.is_none() {
@@ -1428,6 +1461,8 @@ mod tests {
             }
         });
         let config = Config {
+            context_window: None,
+            api_type: Default::default(), provider_id: None, provider_headers: Default::default(),
             api_key: "test-key".into(), base_url: format!("http://{address}/v1"),
             model: "vendor/model:free".into(), workspace_dir: std::env::temp_dir(),
             execution_mode: Default::default(), continue_session: false, proxy: None,
@@ -1547,6 +1582,8 @@ mod tests {
             requests
         });
         let config = Config {
+            context_window: None,
+            api_type: Default::default(), provider_id: None, provider_headers: Default::default(),
             api_key: String::new(), base_url: format!("http://{address}/v1"),
             model: "test".into(), workspace_dir: std::env::temp_dir(),
             execution_mode: Default::default(), continue_session: false, proxy: None,

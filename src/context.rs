@@ -4,8 +4,19 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Tokenizer-independent estimate used between provider usage snapshots.
+/// Opaque continuation data and image base64 are not text tokens.
+pub fn estimate_tokens(messages: &[ChatMessage], tools: &serde_json::Value) -> u64 {
+    let bytes = messages.iter().map(|message| {
+        message.content.as_ref().map_or(0, |text|text.len() as u64)
+            + message.tool_calls.as_ref().map_or(0, |calls|serde_json::to_vec(calls).map_or(0, |bytes|bytes.len() as u64))
+            + 36
+    }).sum::<u64>().saturating_add(tools.to_string().len() as u64);
+    bytes.div_ceil(3).saturating_add(messages.iter().map(|message|message.image_urls.len() as u64 * 2048).sum::<u64>())
+}
+
 fn message(role: &str, content: String) -> ChatMessage {
-    ChatMessage { role: role.into(), content: Some(content), image_urls: Vec::new(),
+    ChatMessage { provider_data: None, role: role.into(), content: Some(content), image_urls: Vec::new(),
         tool_calls: None, tool_call_id: None, name: None }
 }
 

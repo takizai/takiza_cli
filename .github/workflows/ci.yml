@@ -56,10 +56,13 @@ jobs:
           python3 tests/tui_active_save_pty.py target/debug/takiza
           python3 tests/tui_command_cancel_pty.py target/debug/takiza
           python3 tests/tui_model_context_pty.py target/debug/takiza
+          python3 tests/tui_providers_pty.py target/debug/takiza
           python3 tests/tui_context_overflow_pty.py target/debug/takiza
+          python3 tests/tui_context_limit_pty.py target/debug/takiza
           python3 tests/tui_output_length_pty.py target/debug/takiza
           python3 tests/tui_execution_modes_pty.py target/debug/takiza
           python3 tests/tui_subagents_pty.py target/debug/takiza
           python3 tests/tui_logo_pty.py target/debug/takiza
           python3 tests/tui_workspace_trust_pty.py target/debug/takiza
           python3 tests/tui_localization_pty.py target/debug/takiza
+          python3 tests/tui_hidden_options_pty.py target/debug/takiza
