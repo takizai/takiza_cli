@@ -9,6 +9,7 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    println!("cargo:rustc-env=TAKIZA_TARGET={}", std::env::var("TARGET").unwrap());
     // Generate format macros from the same catalog as ordinary UI labels.
     // Rust validates all translated placeholders at each call site.
     println!("cargo:rerun-if-changed=src/locales/ui.json");

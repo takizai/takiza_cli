@@ -7,6 +7,7 @@ pub struct CliArgs {
     pub auto_approve: bool,
     pub show_help: bool,
     pub show_version: bool,
+    pub update: bool,
     pub prompt: Option<String>,
 }
 
@@ -21,6 +22,10 @@ impl CliArgs {
         T: Into<String>,
     {
         let args: Vec<String> = args.into_iter().map(|s| s.into()).collect();
+        // Reserve only the subcommand itself; sentences beginning with update
+        // and prompts supplied alongside session/options remain ordinary prompts.
+        let update = args.first().is_some_and(|arg| arg == "update")
+            && args[1..].iter().all(|arg| matches!(arg.as_str(), "--help" | "-h"));
         let mut continue_session = false;
         let mut session_id = None;
         let mut auto_approve = false;
@@ -62,7 +67,7 @@ impl CliArgs {
             }
         }
 
-        let prompt = if prompt_parts.is_empty() {
+        let prompt = if update || prompt_parts.is_empty() {
             None
         } else {
             Some(prompt_parts.join(" "))
@@ -74,6 +79,7 @@ impl CliArgs {
             auto_approve,
             show_help,
             show_version,
+            update,
             prompt,
         }
     }
@@ -216,6 +222,17 @@ fn parse_max_steps(value: Option<&str>) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn update_subcommand_does_not_consume_regular_prompts() {
+        assert!(super::CliArgs::parse_from(["update"]).update);
+        let help = super::CliArgs::parse_from(["update", "--help"]);
+        assert!(help.update && help.show_help);
+        for args in [vec!["update the docs"], vec!["update", "the", "docs"], vec!["--continue", "update"]] {
+            let parsed = super::CliArgs::parse_from(args);
+            assert!(!parsed.update);
+            assert!(parsed.prompt.unwrap().contains("update"));
+        }
+    }
     use super::*;
 
     #[test]

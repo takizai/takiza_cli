@@ -32,6 +32,23 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith('/a/v1/models'):
             assert self.headers.get('Authorization') == 'Bearer key-a-only'
             self.reply({'data': [{'id': 'a-deployment', 'name': 'Friendly GPT'}]})
+        elif self.path.startswith('/c/v1/models'):
+            assert self.headers.get('Authorization') == 'Bearer key-c-secret'
+            self.reply({'data': [{'id': 'c-deployment', 'name': 'Friendly Responses'}]})
+        elif self.path.startswith('/public/v1/models'):
+            assert self.headers.get('Authorization') is None, 'another provider key leaked into public catalog'
+            assert self.headers.get('x-api-key') is None
+            self.reply({'data': [{'id': 'public-model', 'name': 'Public Model'}]})
+        elif self.path.startswith('/env/v1/models'):
+            assert self.headers.get('Authorization') == 'Bearer env-catalog-secret'
+            self.reply({'data': [{'id': 'env-model', 'name': 'Environment Model'}]})
+        elif self.path.startswith('/locked/v1/models'):
+            assert self.headers.get('Authorization') is None
+            self.send_response(401)
+            self.end_headers()
+        elif self.path.startswith('/missing/v1/models'):
+            self.send_response(404)
+            self.end_headers()
         else:
             self.reply({})
 
@@ -44,6 +61,7 @@ class Handler(BaseHTTPRequestHandler):
         if not body.get('tools'):
             self.reply({'content': [{'type': 'text', 'text': 'Provider test'}], 'stop_reason': 'end_turn'})
             return
+        assert any(tool['name'] == 'web_search' for tool in body['tools']), 'Takiza search was omitted from provider request'
         turns.append(body)
         events = [
             {'type': 'message_start', 'message': {'usage': {'input_tokens': 100, 'output_tokens': 0}}},
@@ -97,7 +115,8 @@ if __name__ == '__main__':
                       'api_key': 'stale-key-must-not-be-used'}
             config_path = workspace / '.takiza/config.json'
             config_path.write_text(json.dumps(config))
-            terminal = Terminal(binary, workspace, 110, 30, initial_prompt=None)
+            terminal = Terminal(binary, workspace, 110, 30, initial_prompt=None,
+                                env_overrides={'TAKIZA_TEST_CATALOG_KEY': 'env-catalog-secret'})
             def screen():
                 return '\n'.join(Screen(terminal.output, 110, 30).text)
             def saved():
@@ -122,15 +141,16 @@ if __name__ == '__main__':
                 terminal.send('\x1b[B\r')  # OpenAI Responses
                 terminal.wait(lambda: 'Base URL:' in screen(), 'endpoint input missing')
                 terminal.send('\x15' + f'http://127.0.0.1:{server.server_port}/c/v1' + '\r')
-                terminal.wait(lambda: 'API key (empty:' in screen(), 'secret input missing')
+                terminal.wait(lambda: 'API key (optional):' in screen(), 'optional secret input missing')
                 terminal.send('key-c-secret')
                 terminal.wait(lambda: '************' in screen(), 'API key was not masked')
                 assert 'key-c-secret' not in screen(), 'API key was displayed'
                 terminal.send('\r')
                 terminal.wait(lambda: 'environment variable' in screen(), 'env key input missing')
                 terminal.send('\r')
-                terminal.wait(lambda: 'Initial model ID' in screen(), 'model input missing')
-                terminal.send('c-deployment\r')
+                terminal.wait(lambda: 'Friendly Responses' in screen(), 'creation did not load the model catalog')
+                assert len(saved()['providers']) == 2, 'unfinished connection was saved before model selection'
+                terminal.send('Friendly Responses\r')
                 terminal.wait(lambda: saved()['active_provider'].startswith('provider-'), 'new connection was not saved')
                 prefs = saved()
                 assert len(prefs['providers']) == 3
@@ -155,12 +175,68 @@ if __name__ == '__main__':
                 terminal.send('\r')
                 terminal.wait(lambda: 'environment variable' in screen(), 'edit env key missing')
                 terminal.send('\r')
-                terminal.wait(lambda: 'Initial model ID' in screen(), 'edit model missing')
-                terminal.send('\r')
+                terminal.wait(lambda: 'Friendly Responses' in screen(), 'edit model selector missing')
+                terminal.send('Friendly Responses\r')
                 terminal.wait(lambda: 'Switched provider:' in screen(), 'edited connection not activated')
                 current = saved()['providers'][saved()['active_provider']]
                 assert current['api_type'] == 'openai_responses', 'editing reset the API type'
                 assert current['api_key'] == 'key-c-secret', 'editing cleared the API key'
+                assert current['model'] == 'c-deployment'
+                assert current['models'][0]['name'] == 'Friendly Responses', 'draft catalog was not saved'
+
+                def add_draft(name, prefix, key_env=''):
+                    count = len(saved()['providers'])
+                    terminal.send('/provider\r')
+                    terminal.wait(lambda: 'Saved providers' in screen(), 'manager did not reopen for draft')
+                    terminal.send('\x1b[B' * count + '\r')
+                    terminal.wait(lambda: 'Connection name:' in screen(), 'draft name input missing')
+                    terminal.send(name + '\r')
+                    terminal.wait(lambda: 'API type' in screen(), 'draft API selector missing')
+                    terminal.send('\r')
+                    terminal.wait(lambda: 'Base URL:' in screen(), 'draft endpoint input missing')
+                    terminal.send('\x15' + f'http://127.0.0.1:{server.server_port}/{prefix}/v1' + '\r')
+                    terminal.wait(lambda: 'API key (optional):' in screen(), 'draft optional key input missing')
+                    terminal.send('\r')
+                    terminal.wait(lambda: 'environment variable' in screen(), 'draft key environment input missing')
+                    terminal.send(key_env + '\r')
+                    return count
+
+                count = add_draft('Public Connection', 'public')
+                terminal.wait(lambda: 'Public Model' in screen(), 'anonymous catalog missing')
+                assert len(saved()['providers']) == count, 'public draft saved too early'
+                terminal.send('Public Model\r')
+                terminal.wait(lambda: len(saved()['providers']) == count + 1, 'public connection not saved')
+                public = saved()['providers'][saved()['active_provider']]
+                assert public['api_key'] == '' and public['model'] == 'public-model'
+
+                count = add_draft('Environment Connection', 'env', 'TAKIZA_TEST_CATALOG_KEY')
+                terminal.wait(lambda: 'Environment Model' in screen(), 'environment-authenticated catalog missing')
+                terminal.send('Environment Model\r')
+                terminal.wait(lambda: len(saved()['providers']) == count + 1, 'environment-key connection not saved')
+                env_provider = saved()['providers'][saved()['active_provider']]
+                assert env_provider['api_key'] == ''
+                assert env_provider['api_key_env'] == 'TAKIZA_TEST_CATALOG_KEY'
+                assert env_provider['model'] == 'env-model'
+
+                count = add_draft('Locked Connection', 'locked')
+                terminal.wait(lambda: 'Catalog requires authorization.' in screen(), 'missing catalog auth diagnostic')
+                terminal.send('manual-model\r')
+                terminal.wait(lambda: 'Model ID:' in screen(), 'manual fallback missing')
+                terminal.send('\r')
+                terminal.wait(lambda: 'Display name:' in screen(), 'manual display name missing')
+                terminal.send('\r')
+                terminal.wait(lambda: len(saved()['providers']) == count + 1, 'manual fallback not saved')
+                locked = saved()['providers'][saved()['active_provider']]
+                assert locked['model'] == 'manual-model'
+
+                before = saved()
+                add_draft('Cancelled Connection', 'missing')
+                terminal.wait(lambda: 'Catalog unavailable.' in screen(), 'generic catalog error missing')
+                terminal.send('\x1b')
+                terminal.wait(lambda: 'Saved providers' in screen(), 'cancel did not return to providers')
+                assert saved() == before, 'cancelled draft changed saved configuration'
+                terminal.send('\x1b')
+                terminal.pump(.2)
                 terminal.send('/provider Connection A\r')
                 terminal.wait(lambda: saved()['active_provider'] == 'a', 'switch back failed')
                 terminal.send('/model\r')
@@ -174,7 +250,7 @@ if __name__ == '__main__':
                 sessions = [json.loads(p.read_text()) for p in (workspace / '.takiza/sessions').glob('*.json')]
                 assert any(any(m.get('provider_data') for m in s['messages']) for s in sessions), 'native continuation data not persisted'
                 assert len(turns) == 2
-                print('PASS providers: profiles, credentials, live catalogs, names/IDs, native tools, signed history, wizard, masking, persistence')
+                print('PASS providers: profiles, credentials, live catalogs, names/IDs, native tools, signed history, wizard selection, public/auth catalogs, manual fallback, draft cancellation, masking, persistence')
             except Exception:
                 print(screen())
                 raise

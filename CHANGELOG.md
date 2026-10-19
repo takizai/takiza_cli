@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.12
+
+- Provider creation/editing now opens a searchable model catalog using the draft connection's optional API key or key environment variable. Anonymous catalogs work without credentials; authorization failures are distinguished from unavailable catalogs, with manual model entry preserved. Cancelling the model picker discards the draft without saving it.
+
+- Added `takiza update` with installation-channel detection: npm updates preserve their prefix/project, standalone binaries use verified GitHub release archives, and Cargo installs retain their original source/root. npm and standalone releases check for automatic updates daily and install after normal exit; `auto_update: false` in global or workspace JSON disables automatic updates. Source builds and temporary npx installations are excluded.
+
+- Replaced unreliable keyless Bing RSS search with public Brave Search HTML. Added `TAKIZA_SEARCH_PROVIDER=free` to force keyless search without removing configured API keys. Only organic result cards are parsed; unrecognized/challenge pages fail explicitly. Clarified that `web_search` is an ordinary Takiza function independent of the model provider’s native browsing API.
+
 ## 0.1.11
 
 - Current API-key connections are treated as third-party providers: `/mode` explains that Takiza mode selection is unavailable, and `/usage` and `/quota` direct users to their provider dashboard instead of showing mock quotas. Settings and status show the same connection type. Saved MoA settings run in Manual for now. Evening Irkutsk is preserved as a hidden theme outside the public theme list.

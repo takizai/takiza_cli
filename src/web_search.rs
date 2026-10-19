@@ -1,37 +1,19 @@
 //! Web search shared by the terminal and desktop agents.
 use reqwest::{Client, Url};
-use serde::Deserialize;
+use scraper::{Html, Selector};
 use serde_json::Value;
 use std::{collections::HashSet, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
-const SEARCH_ENDPOINT: &str = "https://www.bing.com/search";
+const SEARCH_ENDPOINT: &str = "https://search.brave.com/search";
+const KEYLESS_PROVIDER: &str = "Brave Search (HTML)";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchResult {
     title: String,
     url: String,
     snippet: String,
-}
-
-#[derive(Deserialize)]
-struct Feed {
-    channel: FeedChannel,
-}
-#[derive(Deserialize)]
-struct FeedChannel {
-    #[serde(rename = "item", default)]
-    items: Vec<FeedItem>,
-}
-#[derive(Deserialize)]
-struct FeedItem {
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    link: String,
-    #[serde(default)]
-    description: String,
 }
 
 fn parameters(args: &Value) -> Result<(&str, usize), String> {
@@ -95,21 +77,39 @@ fn normalize(results: Vec<SearchResult>, count: usize) -> Vec<SearchResult> {
         .collect()
 }
 
-fn parse_feed(body: &str, count: usize) -> Result<Vec<SearchResult>, String> {
-    let feed: Feed = quick_xml::de::from_str(body)
-        .map_err(|_| "Search provider returned an invalid RSS response (possibly a block page). Try again later or configure BRAVE_SEARCH_API_KEY.".to_string())?;
-    Ok(normalize(
-        feed.channel
-            .items
-            .into_iter()
-            .map(|item| SearchResult {
-                title: item.title,
-                url: item.link,
-                snippet: item.description,
+fn parse_search_html(body: &str, count: usize) -> Result<Vec<SearchResult>, String> {
+    let page = Html::parse_document(body);
+    // Only organic web results. Navigation, ads, AI answers and the serialized
+    // page state are not search evidence. Avoid generated CSS class names.
+    let results = Selector::parse(".snippet[data-type='web']").unwrap();
+    let links = Selector::parse("a[href]").unwrap();
+    let titles = Selector::parse(".search-snippet-title").unwrap();
+    let descriptions = Selector::parse(".generic-snippet .content").unwrap();
+    let results = normalize(
+        page.select(&results)
+            .filter_map(|result| {
+                let (link, title) = result
+                    .select(&links)
+                    .find_map(|link| link.select(&titles).next().map(|title| (link, title)))?;
+                Some(SearchResult {
+                    title: title.text().collect::<Vec<_>>().join(" "),
+                    url: link.value().attr("href")?.to_string(),
+                    snippet: result
+                        .select(&descriptions)
+                        .next()
+                        .map(|node| node.text().collect::<Vec<_>>().join(" "))
+                        .unwrap_or_default(),
+                })
             })
             .collect(),
         count,
-    ))
+    );
+    if results.is_empty() {
+        // An HTTP 200 can also contain a challenge or changed markup. Never
+        // turn that into a successful search or invent results from other links.
+        return Err("Brave Search returned no usable web results. The page may be a CAPTCHA, have no matches, or use an unsupported layout. Search could not be verified.".into());
+    }
+    Ok(results)
 }
 
 fn parse_brave(body: &str, count: usize) -> Result<Vec<SearchResult>, String> {
@@ -179,29 +179,39 @@ fn format_results(query: &str, provider: &str, results: &[SearchResult]) -> Stri
     output
 }
 
+fn select_provider(
+    choice: &str,
+    tavily_key: Option<String>,
+    brave_key: Option<String>,
+) -> Result<(&'static str, &'static str, Option<String>), String> {
+    let tavily_key = tavily_key.filter(|key| !key.trim().is_empty());
+    let brave_key = brave_key.filter(|key| !key.trim().is_empty());
+    match choice.trim().to_ascii_lowercase().as_str() {
+        "free" | "brave-html" => Ok((SEARCH_ENDPOINT, KEYLESS_PROVIDER, None)),
+        "" | "auto" if tavily_key.is_some() => Ok(("https://api.tavily.com/search", "Tavily", tavily_key)),
+        "tavily" => Ok(("https://api.tavily.com/search", "Tavily", Some(tavily_key.ok_or("Tavily requires TAVILY_API_KEY. Set TAKIZA_SEARCH_PROVIDER=free for keyless search.")?))),
+        "brave-api" => Ok((
+            "https://api.search.brave.com/res/v1/web/search",
+            "Brave Search",
+            Some(brave_key.ok_or("Brave Search API requires BRAVE_SEARCH_API_KEY. Set TAKIZA_SEARCH_PROVIDER=free for keyless search.")?),
+        )),
+        "" | "auto" if brave_key.is_some() => Ok(("https://api.search.brave.com/res/v1/web/search", "Brave Search", brave_key)),
+        "" | "auto" => Ok((SEARCH_ENDPOINT, KEYLESS_PROVIDER, None)),
+        _ => Err("Invalid TAKIZA_SEARCH_PROVIDER. Use free, brave-html, tavily, brave-api or auto.".into()),
+    }
+}
+
 pub async fn search(
     args: &Value,
     proxy: Option<&str>,
     cancel: Option<CancellationToken>,
 ) -> Result<String, String> {
     let (query, count) = parameters(args)?;
-    let tavily_key = std::env::var("TAVILY_API_KEY")
-        .ok()
-        .filter(|key| !key.trim().is_empty());
-    let brave_key = std::env::var("BRAVE_SEARCH_API_KEY")
-        .ok()
-        .filter(|key| !key.trim().is_empty());
-    let (endpoint, provider, api_key) = if tavily_key.is_some() {
-        ("https://api.tavily.com/search", "Tavily", tavily_key)
-    } else if brave_key.is_some() {
-        (
-            "https://api.search.brave.com/res/v1/web/search",
-            "Brave Search",
-            brave_key,
-        )
-    } else {
-        (SEARCH_ENDPOINT, "Bing RSS", None)
-    };
+    let (endpoint, provider, api_key) = select_provider(
+        &std::env::var("TAKIZA_SEARCH_PROVIDER").unwrap_or_default(),
+        std::env::var("TAVILY_API_KEY").ok(),
+        std::env::var("BRAVE_SEARCH_API_KEY").ok(),
+    )?;
     search_with_provider(
         query,
         count,
@@ -276,7 +286,7 @@ async fn search_request(
         if api_key.is_some() {
             "application/json"
         } else {
-            "application/rss+xml,application/xml;q=0.9"
+            "text/html"
         },
     );
     if let Some(key) = api_key {
@@ -296,7 +306,7 @@ async fn search_request(
                 .query(&[("count", count)]);
         }
     } else {
-        request = request.query(&[("format", "rss")]);
+        request = request.query(&[("source", "web")]);
     }
     // Provider errors must not echo credentials, response bodies, or request URLs.
     let mut response = request.send().await.map_err(|error| {
@@ -329,7 +339,7 @@ async fn search_request(
     } else if api_key.is_some() {
         parse_brave(&body, count)?
     } else {
-        parse_feed(&body, count)?
+        parse_search_html(&body, count)?
     };
     Ok(format_results(query, provider, &results))
 }
@@ -338,6 +348,32 @@ async fn search_request(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn html_result(title: &str, url: &str, snippet: &str) -> String {
+        format!(
+            r#"<div class="snippet svelte-generated" data-type="web"><a href="{url}"><div class="title search-snippet-title">{title}</div></a><div class="generic-snippet"><div class="content">{snippet}</div></div></div>"#
+        )
+    }
+
+    #[test]
+    fn free_search_ignores_keys_while_auto_preserves_explicit_api_configuration() {
+        let key = || Some("fixture-key".to_string());
+        let free = select_provider("free", key(), key()).unwrap();
+        assert_eq!(free, (SEARCH_ENDPOINT, KEYLESS_PROVIDER, None));
+        assert_eq!(select_provider("", None, None).unwrap(), free);
+        assert_eq!(
+            select_provider("auto", Some(" ".into()), None).unwrap(),
+            free
+        );
+        assert_eq!(select_provider("auto", key(), key()).unwrap().1, "Tavily");
+        assert_eq!(
+            select_provider("auto", None, key()).unwrap().1,
+            "Brave Search"
+        );
+        assert!(select_provider("tavily", None, key()).is_err());
+        assert!(select_provider("brave-api", key(), None).is_err());
+        assert!(select_provider("unsupported", None, None).is_err());
+    }
 
     #[test]
     fn validates_queries_and_result_limits() {
@@ -357,14 +393,38 @@ mod tests {
         }
     }
     #[test]
-    fn rss_decodes_entities_filters_bad_links_and_deduplicates() {
-        let body = r#"<rss><channel><item><title>Rust &amp; 🦀</title><link>https://rust-lang.org/?a=1&amp;b=2</link><description><![CDATA[Fast language]]></description></item><item><title>Duplicate</title><link>https://rust-lang.org/?a=1&amp;b=2</link></item><item><title>Invalid</title><link>javascript:alert(1)</link></item><item><title>Docs</title><link>https://doc.rust-lang.org/</link></item></channel></rss>"#;
-        let results = parse_feed(body, 5).unwrap();
+    fn html_decodes_entities_filters_bad_links_and_deduplicates() {
+        let body = [
+            html_result(
+                "Rust &amp; 🦀",
+                "https://rust-lang.org/?a=1&amp;b=2",
+                "Fast <strong>language</strong>",
+            ),
+            html_result("Duplicate", "https://rust-lang.org/?a=1&amp;b=2", ""),
+            html_result("Invalid", "javascript:alert(1)", ""),
+            html_result("Credentials", "https://user:password@example.com/", ""),
+            html_result("Docs", "https://doc.rust-lang.org/", ""),
+        ]
+        .join("");
+        let results = parse_search_html(&body, 5).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].title, "Rust & 🦀");
         assert_eq!(results[0].url, "https://rust-lang.org/?a=1&b=2");
-        assert_eq!(parse_feed(body, 1).unwrap().len(), 1);
-        assert!(parse_feed("<html>captcha</html>", 5).is_err());
+        assert_eq!(results[0].snippet, "Fast language");
+        assert_eq!(parse_search_html(&body, 1).unwrap().len(), 1);
+    }
+    #[test]
+    fn html_does_not_turn_challenges_navigation_ads_or_ai_answers_into_search_results() {
+        for body in [
+            "<html><title>Captcha</title><a href='https://example.com/'>Continue</a></html>",
+            "<html><a href='https://example.com/'>Home</a></html>",
+            &html_result("Ad", "https://example.com/ad", "Advertisement").replace("data-type=\"web\"", "data-type=\"ad\""),
+            "<div class='ai-answer'><a href='https://example.com/'>Generated answer</a></div>",
+            "<html><script>{\"url\":\"https://example.com\",\"title\":\"Not a result\"}</script></html>",
+            "<rss><channel><item><title>Irrelevant cached RSS</title><link>https://example.com/</link></item></channel></rss>",
+        ] {
+            assert!(parse_search_html(body, 5).is_err(), "{body}");
+        }
     }
     #[test]
     fn brave_results_and_empty_searches_are_honest() {
@@ -450,7 +510,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_query_encoding_and_source_output() {
-        let body = br#"<rss><channel><item><title>Source</title><link>https://example.com/</link><description>Evidence</description></item></channel></rss>"#.to_vec();
+        let body = html_result("Source", "https://example.com/", "Evidence").into_bytes();
         let (endpoint, received, task) = http_fixture(200, Some(body)).await;
         let query = "Rust & C++ / docs? # 🦀";
         let result = search_with_provider(query, 1, None, &endpoint, "Fixture", None, None)
@@ -472,8 +532,10 @@ mod tests {
             .any(|(key, value)| key == "q" && value == query));
         assert!(url
             .query_pairs()
-            .any(|(key, value)| key == "format" && value == "rss"));
+            .any(|(key, value)| key == "source" && value == "web"));
         assert!(!request.to_lowercase().contains("authorization:"));
+        assert!(!request.to_lowercase().contains("x-subscription-token:"));
+        assert!(request.to_lowercase().contains("accept: text/html"));
         task.await.unwrap();
     }
 
@@ -582,5 +644,30 @@ mod tests {
         assert!(result.contains("https://"));
         assert!(!result.contains("Results: 0"));
         println!("{result}");
+    }
+
+    #[tokio::test]
+    #[ignore = "live keyless network regression; never uses search API keys"]
+    async fn live_keyless_mirea_search() {
+        for query in [
+            "MIREA",
+            "МИРЭА поступление",
+            "MIREA Russian Technological University",
+        ] {
+            let result = search_with_provider(
+                query,
+                5,
+                None,
+                SEARCH_ENDPOINT,
+                KEYLESS_PROVIDER,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(result.contains("mirea.ru"), "Query: {query}\n{result}");
+            assert!(result.contains("Provider: Brave Search (HTML)"));
+            println!("{result}");
+        }
     }
 }

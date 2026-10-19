@@ -1,4 +1,16 @@
 {
+  "API key (optional):": [
+    "API-ключ (необязательно):",
+    "API 密钥（可选）："
+  ],
+  "Catalog requires authorization. Set an API key in the connection, or add a model manually.": [
+    "Каталог требует авторизации. Укажите API-ключ в подключении или добавьте модель вручную.",
+    "模型目录需要授权。请在连接中设置 API 密钥，或手动添加模型。"
+  ],
+  "            Check for updates and install using the original installation channel": [
+    "            Проверить обновления и установить через исходный канал установки",
+    "            检查更新并通过原安装渠道安装"
+  ],
   "Agent task failed unexpectedly: {error}": [
     "Задача агента аварийно завершилась: {error}",
     "代理任务意外失败：{error}"

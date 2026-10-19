@@ -77,7 +77,7 @@ pub fn get_tool_definitions() -> Value {
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "Search the internet for current or unfamiliar information. Use when the user asks to search/browse online, or your knowledge is insufficient or may be outdated. Returns source titles, URLs and snippets, not full pages.",
+                "description": "Search the internet for current or unfamiliar information. This is a callable Takiza function, independent of the model provider's built-in browsing. No API key or MCP connection is required; Takiza handles the search request. Use when the user asks to search/browse online, or your knowledge is insufficient or may be outdated. Returns source titles, URLs and snippets, not full pages.",
                 "parameters": {
                     "type": "object",
                     "properties": {

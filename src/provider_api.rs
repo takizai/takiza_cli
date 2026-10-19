@@ -66,6 +66,9 @@ impl LlmClient {
                 .authorize(self.client.get(url).timeout(Duration::from_secs(10)))
                 .send()
                 .await?;
+            if matches!(response.status().as_u16(), 401 | 403) {
+                return Err(crate::providers::ModelCatalogAuthRequired(response.status().as_u16()).into());
+            }
             anyhow::ensure!(
                 response.status().is_success(),
                 "Model catalog returned HTTP {}",
@@ -613,6 +616,20 @@ impl NativeStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_requests_include_takiza_web_search_without_provider_native_browsing() {
+        for api in [ApiType::OpenaiResponses, ApiType::AnthropicMessages] {
+            let mut config = crate::providers::tests::config();
+            config.api_type = api;
+            let client = LlmClient::new(config);
+            let body = client.native_body(&[message("user", "Search for MIREA")], 8192, true, false).unwrap();
+            let tool = body["tools"].as_array().unwrap().iter()
+                .find(|tool| tool["name"] == "web_search").expect("Takiza web_search is supplied to the model");
+            let schema = if api == ApiType::OpenaiResponses { &tool["parameters"] } else { &tool["input_schema"] };
+            assert_eq!(schema["properties"]["query"]["type"], "string");
+            assert_eq!(schema["required"], json!(["query"]));
+        }
+    }
     #[test]
     fn proactive_budget_uses_usage_plus_new_history_and_resets_after_compaction() {
         let mut config=crate::providers::tests::config();config.context_window=Some(32768);

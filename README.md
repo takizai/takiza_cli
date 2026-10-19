@@ -31,6 +31,13 @@ HTTP-заголовки и очистка ключа. `/provider <имя или 
 подключение напрямую. Переключение начинает новый чат и возвращает последнюю
 выбранную модель этого провайдера.
 
+При создании или редактировании подключения после адреса и необязательного
+API-ключа открывается каталог моделей с поиском по названию и ID. Если каталог
+доступен без авторизации, ключ можно оставить пустым; иначе укажите ключ или
+переменную окружения. При HTTP 401/403 показывается сообщение о необходимости
+авторизации. Если каталог недоступен, модель можно добавить вручную. Провайдер
+и его каталог сохраняются после выбора модели; отмена не сохраняет черновик.
+
 Поддерживаются три типа API:
 
 | Тип в форме | `api_type` | Запросы |
@@ -280,6 +287,46 @@ takiza
 
 ---
 
+## Обновление
+
+```sh
+takiza update
+```
+
+Команда проверяет стабильную версию и обновляет Takiza через исходный канал:
+для npm — `npm install` в том же глобальном префиксе или локальном проекте,
+для отдельного бинарника из GitHub Releases — скачивание архива для текущей
+платформы, проверка SHA-256 и замена исполняемого файла. Ключ модели не нужен.
+При ошибке npm/Cargo или недостаточных правах команда завершается с ошибкой;
+повышение прав автоматически не запускается.
+
+Автообновления включены по умолчанию для npm и отдельных release-бинарников.
+Проверка идёт в фоне не чаще раза в сутки и не задерживает запуск чата.
+Новая версия устанавливается после обычного выхода из приложения и используется
+при следующем запуске. Незавершённая проверка при выходе отменяется. Сетевые
+ошибки фоновой проверки не прерывают чат; ошибки установки показываются после выхода.
+
+Чтобы отключить автообновления, добавьте в существующий `config.json`:
+
+```json
+{
+  "auto_update": false
+}
+```
+
+Параметр читается из `~/.config/takiza/config.json` (на Windows также используется
+`USERPROFILE`) и `.takiza/config.json` текущего проекта. `false` в любом из этих
+файлов отключает автообновления. Ручной `takiza update` остаётся доступен.
+Для временного отключения можно задать `TAKIZA_NO_UPDATE=1`; в CI автообновление
+тоже отключено. Настройки, API-ключи и сессии обновлятор не изменяет.
+
+Для `npx` используйте `npx --yes takiza@latest`: временный кеш не обновляется
+автоматически. Сборки из `target/debug` и `target/release` нужно пересобрать из
+обновлённых исходников. Установку через Cargo команда распознаёт по receipt
+`.crates2.json` и повторяет `cargo install` с тем же `--root` и источником;
+для `cargo install --path` сначала обновите исходный checkout самостоятельно.
+Установки из исходников автоматически не пересобираются.
+
 ## Бенчмарки: сравнение харнессов (Takiza, OpenCode, Pi, OpenClaude)
 
 Результат агентского запуска складывается из двух частей: модели и харнесса — системного промпта, набора инструментов, цикла Function Calling, обработки ошибок и отмены. Поэтому корректное сравнение агентов всегда фиксирует одну из этих переменных: либо «разные модели на одном харнессе», либо «разные харнессы на одной модели». Второй тип — честный способ сравнивать именно агентские оболочки, а не зашитые в них модели.
@@ -487,10 +534,30 @@ Tavily uses `search_depth=basic` and disables automatic parameter selection,
 so each search consumes one API credit. Results include titles, URLs and snippets;
 Takiza does not request generated answers, images or raw page contents.
 
-Provider priority is Tavily, then `BRAVE_SEARCH_API_KEY` (Brave Search API), then
-Bing RSS when neither key is configured. Failed authenticated searches are reported
-without silently switching providers. Provider availability, limits and applicable usage terms
+Without search API keys, `web_search` reads public Brave Search HTML results.
+It requires no registration, API subscription or Exa MCP connection. Only organic
+web-result cards are returned; navigation, ads and AI answers are omitted. This
+is best-effort HTML search, not a guaranteed API: CAPTCHA, HTTP failures and
+unrecognized layouts are reported as tool failures. Bing RSS is no longer used
+because it can return unrelated results even for exact queries.
+
+To force the keyless backend even when API keys are configured:
+
+```dotenv
+TAKIZA_SEARCH_PROVIDER=free
+```
+
+`TAKIZA_SEARCH_PROVIDER` accepts `free` (alias `brave-html`), `tavily`, `brave-api`
+and `auto`. The default `auto` preserves configured API keys: Tavily first, then
+`BRAVE_SEARCH_API_KEY`, then public Brave HTML. Explicit API choices require the
+corresponding key. Failed authenticated searches are reported without silently
+switching providers. Provider availability, limits and applicable usage terms
 still apply; provider errors appear as ordinary tool failures.
+
+This tool uses ordinary function calling and is independent of the model
+provider's native browsing/grounding API. A model claiming it lacks native search
+does not mean the Takiza function is unavailable; check `/tools` and the actual
+tool result.
 
 При выходе через `/exit` или Ctrl+C в пустом поле ввода Takiza сохраняет чат и выводит статистику в обычной консоли: токены, число запросов и вызовов инструментов, время текущего запуска. Если провайдер не сообщил весь расход, выводится нижняя граница или отметка о недоступной статистике. Команда `takiza --session <id>` из сообщения продолжает именно этот чат в том же каталоге. Во время ответа Ctrl+C останавливает текущий запрос; Esc также отменяет выполнение.
 

@@ -28,6 +28,7 @@ mod runtime;
 mod lsp;
 mod mcp;
 mod web_search;
+mod update;
 mod moa_router;
 pub mod skills;
 
@@ -1010,12 +1011,23 @@ async fn handle_tui_command_inner(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli_args = config::CliArgs::parse();
+    let automatic = if !cli_args.update && !cli_args.show_help && !cli_args.show_version {
+        update::Automatic::start()
+    } else { None };
+    let result = run(cli_args).await;
+    if let Some(automatic) = automatic { automatic.finish(result.is_ok()).await; }
+    result
+}
+
+async fn run(cli_args: config::CliArgs) -> anyhow::Result<()> {
 
     i18n::set_current(theme::UserPreferences::load().language);
     if cli_args.show_help {
         println!("{}", crate::i18n::tf!("Takiza Code v{} - Autonomous AI Software Engineering Agent\n", env!("TAKIZA_VERSION")));
         println!("{}", crate::i18n::tf!("USAGE:"));
         println!("    takiza [OPTIONS] [PROMPT]\n");
+        println!("    takiza update");
+        println!("{}\n", crate::i18n::tr("            Check for updates and install using the original installation channel"));
         println!("{}", crate::i18n::tf!("OPTIONS:"));
         println!("{}", crate::i18n::tf!("    -c, --continue, --resume"));
         println!("{}", crate::i18n::tf!("            Continue previous conversation session from where you left off\n"));
@@ -1038,6 +1050,8 @@ async fn main() -> anyhow::Result<()> {
         println!("takiza {}", env!("TAKIZA_VERSION"));
         return Ok(());
     }
+
+    if cli_args.update { return update::manual().await; }
 
     if let Some(id) = &cli_args.session_id {
         anyhow::ensure!(!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit() || byte == b'_'),

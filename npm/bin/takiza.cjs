@@ -4,6 +4,7 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawn, execFileSync } = require('node:child_process');
+const updater = require('./update.cjs');
 
 function terminalCleanup() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return () => {};
@@ -42,6 +43,14 @@ function targetFor(platform, arch, glibc) {
 }
 
 function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 1 && args[0] === 'update') {
+    updater.manual().catch(error => {
+      console.error(`Takiza update failed: ${error.message}`);
+      process.exitCode = 1;
+    });
+    return;
+  }
   let glibc = false;
   if (process.platform === 'linux') {
     try { glibc = !!process.report.getReport().header.glibcVersionRuntime; } catch {}
@@ -65,7 +74,11 @@ function main() {
   }
   const restoreTerminal = terminalCleanup();
   process.once('exit', restoreTerminal);
-  const child = spawn(binary, process.argv.slice(2), { stdio: 'inherit', windowsHide: false });
+  const finishUpdate = updater.startAutomatic(args);
+  const child = spawn(binary, args, {
+    stdio: 'inherit', windowsHide: false,
+    env: { ...process.env, TAKIZA_INSTALL_CHANNEL: 'npm', TAKIZA_NPM_BINARY: binary },
+  });
   const handlers = new Map();
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     const handler = () => { if (!child.killed) child.kill(signal); };
@@ -76,11 +89,13 @@ function main() {
     restoreTerminal();
     console.error(`Cannot start Takiza: ${error.message}`);
     process.exitCode = 1;
+    finishUpdate?.(false);
   });
   child.once('exit', (code, signal) => {
     if (signal) restoreTerminal(); else process.removeListener('exit', restoreTerminal);
     for (const [name, handler] of handlers) process.removeListener(name, handler);
     process.exitCode = code ?? ({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal] || 1);
+    finishUpdate?.(code === 0 && !signal);
   });
 }
 

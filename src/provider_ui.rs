@@ -65,6 +65,7 @@ fn connection_error(ctx: &ScreenContext, error: impl std::fmt::Display) -> std::
 fn edit_provider(
     ctx: &ScreenContext,
     initial: Option<&crate::providers::Provider>,
+    config: &Config,
 ) -> std::io::Result<Option<crate::providers::Provider>> {
     use crate::providers::{ApiType, Provider};
     let title = crate::i18n::tr("Provider connection");
@@ -104,7 +105,11 @@ fn edit_provider(
     let Some(key) = connection_input(
         ctx,
         title,
-        crate::i18n::tr("API key (empty: keep existing):"),
+        crate::i18n::tr(if initial.is_some() {
+            "API key (empty: keep existing):"
+        } else {
+            "API key (optional):"
+        }),
         "",
         true,
     )?
@@ -121,17 +126,7 @@ fn edit_provider(
     else {
         return Ok(None);
     };
-    let Some(model) = connection_input(
-        ctx,
-        title,
-        crate::i18n::tr("Initial model ID (optional):"),
-        initial.map(|p| p.model.as_str()).unwrap_or(""),
-        false,
-    )?
-    else {
-        return Ok(None);
-    };
-    let provider = Provider {
+    let mut provider = Provider {
         name,
         api_type,
         base_url: crate::config::normalize_base_url(&base_url),
@@ -141,14 +136,37 @@ fn edit_provider(
             key
         },
         api_key_env: (!env.is_empty()).then_some(env),
-        model,
+        model: initial.map(|p| p.model.clone()).unwrap_or_default(),
         headers: initial.map(|p| p.headers.clone()).unwrap_or_default(),
         models: initial.map(|p| p.models.clone()).unwrap_or_default(),
     };
+    if initial.is_some_and(|previous| {
+        previous.api_type != provider.api_type
+            || previous.base_url != provider.base_url
+            || previous.api_key != provider.api_key
+            || previous.api_key_env != provider.api_key_env
+    }) {
+        provider.models.clear();
+        provider.model.clear();
+    }
     if let Err(error) = provider.validate() {
         connection_error(ctx, error)?;
         return Ok(None);
     }
+    // Discover against the draft's own endpoint and credentials. Catalog and
+    // manual-model edits stay in memory until the whole connection is accepted.
+    let mut draft = theme::UserPreferences::default();
+    let id = "draft".to_string();
+    draft.providers.insert(id.clone(), provider);
+    let mut scoped = config.clone();
+    draft
+        .activate_provider(&id, &mut scoped)
+        .map_err(std::io::Error::other)?;
+    let Some(model) = select_model_inner(ctx, &scoped, &mut draft, false)? else {
+        return Ok(None);
+    };
+    let mut provider = draft.providers.remove(&id).unwrap();
+    provider.model = model;
     Ok(Some(provider))
 }
 
@@ -183,21 +201,10 @@ pub fn manage_providers(
             return Ok(None);
         };
         if index == ids.len() {
-            if let Some(provider) = edit_provider(ctx, None)? {
+            if let Some(provider) = edit_provider(ctx, None, config)? {
                 let id = prefs.next_provider_id();
                 prefs.providers.insert(id.clone(), provider);
                 prefs.save()?;
-                if prefs.providers[&id].model.is_empty() {
-                    let mut scoped = config.clone();
-                    let mut copy = prefs.clone();
-                    copy.activate_provider(&id, &mut scoped)
-                        .map_err(std::io::Error::other)?;
-                    let Some(model) = select_model(ctx, &scoped, prefs)? else {
-                        continue;
-                    };
-                    prefs.providers.get_mut(&id).unwrap().model = model;
-                    prefs.save()?;
-                }
                 return Ok(Some(id));
             }
             continue;
@@ -215,7 +222,7 @@ pub fn manage_providers(
         match connection_menu(ctx, &prefs.providers[id].name, &actions)? {
             Some(0) => return Ok(Some(id.clone())),
             Some(1) => {
-                if let Some(provider) = edit_provider(ctx, prefs.providers.get(id))? {
+                if let Some(provider) = edit_provider(ctx, prefs.providers.get(id), config)? {
                     prefs.providers.insert(id.clone(), provider);
                     prefs.save()?;
                     if prefs.active_provider.as_ref() == Some(id) {
@@ -317,6 +324,15 @@ pub fn select_model(
     config: &Config,
     prefs: &mut theme::UserPreferences,
 ) -> std::io::Result<Option<String>> {
+    select_model_inner(ctx, config, prefs, true)
+}
+
+fn select_model_inner(
+    ctx: &ScreenContext,
+    config: &Config,
+    prefs: &mut theme::UserPreferences,
+    persist: bool,
+) -> std::io::Result<Option<String>> {
     use crate::providers::Model;
     let mut models = config
         .provider_id
@@ -384,8 +400,17 @@ pub fn select_model(
                             .and_then(|id| prefs.providers.get_mut(id))
                         {
                             p.models = models.clone();
-                            prefs.save()?;
+                            if persist {
+                                prefs.save()?;
+                            }
                         }
+                    }
+                    Err(error)
+                        if error
+                            .downcast_ref::<crate::providers::ModelCatalogAuthRequired>()
+                            .is_some() =>
+                    {
+                        status = crate::i18n::tr("Catalog requires authorization. Set an API key in the connection, or add a model manually.").into();
                     }
                     Err(_) => {
                         status = crate::i18n::tr(
@@ -516,7 +541,9 @@ pub fn select_model(
                             } else {
                                 p.models.push(model);
                             }
-                            prefs.save()?;
+                            if persist {
+                                prefs.save()?;
+                            }
                         }
                         return Ok(Some(id));
                     }

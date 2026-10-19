@@ -38,6 +38,7 @@ def run(binary):
         launcher = root / 'package/bin/takiza.cjs'
         launcher.parent.mkdir(parents=True)
         shutil.copy2(Path(__file__).resolve().parent.parent / 'npm/bin/takiza.cjs', launcher)
+        shutil.copy2(Path(__file__).resolve().parent.parent / 'npm/bin/update.cjs', launcher.parent / 'update.cjs')
         for target in ['x86_64-unknown-linux-gnu', 'x86_64-unknown-linux-musl',
                        'aarch64-unknown-linux-gnu', 'x86_64-apple-darwin', 'aarch64-apple-darwin']:
             path = root / 'package/vendor' / target / 'takiza'

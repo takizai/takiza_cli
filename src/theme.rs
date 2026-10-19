@@ -301,8 +301,12 @@ fn deserialize_context_window<'de, D: serde::Deserializer<'de>>(deserializer: D)
     Ok(value.map(|value|value.as_u64().unwrap_or(0)))
 }
 
+fn updates_enabled_by_default() -> bool { true }
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserPreferences {
+    #[serde(default = "updates_enabled_by_default")]
+    pub auto_update: bool,
     #[serde(default, deserialize_with = "deserialize_context_window")]
     pub context_window: Option<u64>,
     #[serde(default)]
@@ -346,6 +350,7 @@ pub struct UserPreferences {
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
+            auto_update: true,
             context_window: None,
             providers: Default::default(),
             active_provider: None,
@@ -552,6 +557,17 @@ mod tests {
         assert!(matches!(loaded.mcp_servers.get("exa"), Some(
             crate::runtime::McpConfig::Http { auth: crate::runtime::HttpAuth::None, .. }
         )));
+    }
+
+    #[test]
+    fn auto_update_defaults_on_and_opt_out_survives_save() {
+        let mut value = serde_json::to_value(UserPreferences::default()).unwrap();
+        value.as_object_mut().unwrap().remove("auto_update");
+        assert!(serde_json::from_value::<UserPreferences>(value.clone()).unwrap().auto_update);
+        value["auto_update"] = serde_json::json!(false);
+        let loaded = serde_json::from_value::<UserPreferences>(value).unwrap();
+        assert!(!loaded.auto_update);
+        assert_eq!(serde_json::to_value(loaded).unwrap()["auto_update"], false);
     }
 
     #[test]

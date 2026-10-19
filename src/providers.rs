@@ -3,6 +3,15 @@ use crate::{config::Config, theme::UserPreferences};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[derive(Debug)]
+pub struct ModelCatalogAuthRequired(pub u16);
+impl std::fmt::Display for ModelCatalogAuthRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Model catalog requires authorization (HTTP {})", self.0)
+    }
+}
+impl std::error::Error for ModelCatalogAuthRequired {}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiType {
