@@ -346,7 +346,7 @@ fn select_model_inner(
             Model {
                 id: config.model.clone(),
                 name: config.model.clone(),
-                context_window: None,
+                context_window: None, metadata: Default::default(),
             },
         );
     }
@@ -534,7 +534,7 @@ fn select_model_inner(
                             let model = Model {
                                 id: id.clone(),
                                 name,
-                                context_window: None,
+                                context_window: None, metadata: Default::default(),
                             };
                             if let Some(existing) = p.models.iter_mut().find(|m| m.id == id) {
                                 *existing = model;

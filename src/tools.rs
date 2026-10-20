@@ -72,7 +72,7 @@ fn file_change_diff(path: &str, before: &str, after: &str) -> Option<String> {
 }
 
 pub fn get_tool_definitions() -> Value {
-    json!([
+    let mut definitions = json!([
         {
             "type": "function",
             "function": {
@@ -299,7 +299,9 @@ pub fn get_tool_definitions() -> Value {
                 }
             }
         }
-    ])
+    ]);
+    definitions.as_array_mut().unwrap().push(crate::grill_me::definition());
+    definitions
 }
 
 #[derive(Clone)]
@@ -489,6 +491,7 @@ impl ToolExecutor {
                 self.exec_run_command(&args, event_tx.as_ref(), cancel_token)
                     .await
             }
+            "grill-me" => Err("grill-me requires the interactive agent questionnaire handler".into()),
             "ask_question" => {
                 Ok("Interactive questionnaire presented to user.".to_string())
             }

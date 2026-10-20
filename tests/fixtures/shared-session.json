@@ -1,0 +1,15 @@
+{
+  "id":"shared-chat", "created_at":"2026-10-21 00:00:00", "model":"fixture",
+  "title":"Название общей сессии", "started":true,
+  "token_usage":{"total":12,"complete":false},"context_tokens":42,
+  "future_state":{"keep":"both applications"},
+  "messages":[{"role":"user","content":"Проверим общий формат"},{"role":"assistant","content":"Общий ответ"}],
+  "history":[
+    {"type":"UserPrompt","payload":"Проверим общий формат"},
+    {"type":"MoaRouting","payload":{"model":"fixture","category":"code","complexity":"simple","source":null}},
+    {"type":"QuestionInteraction","payload":{"questions":[{"question":"Хранилище?","options":["Локальное"]}],"answers":[{"question_index":0,"question":"Хранилище?","selected_options":["Локальное"],"custom_text":"С шифрованием"}],"skipped":true}},
+    {"type":"FileDiff","payload":"@@ -1 +1 @@\n-old\n+new"},
+    {"type":"AssistantMessage","payload":"Общий ответ"},
+    {"type":"ResponseStats","payload":{"elapsed_ms":1200,"tokens":12,"usage_complete":false}}
+  ]
+}

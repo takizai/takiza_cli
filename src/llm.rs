@@ -109,19 +109,7 @@ pub enum LlmResponse {
     ToolCalls(Vec<ToolCall>, Option<String>),
 }
 
-pub fn supports_reasoning_effort(model: &str) -> bool {
-    let m = model.to_lowercase();
-    m.starts_with("gpt-5") || m.starts_with("gpt-6")
-        || m.contains("o1")
-        || m.contains("o3")
-        || m.contains("o4")
-        || m.contains("reasoning")
-        || m.contains("reasoner")
-        || m.contains("deepseek-r1")
-        || m.contains("claude-3-7")
-        || m.contains("claude-3.7")
-        || m.contains("thinking")
-}
+
 
 #[derive(Debug, PartialEq, Eq)]
 enum ThinkPhase {
@@ -717,13 +705,7 @@ impl LlmClient {
             "max_tokens": AGENT_MAX_OUTPUT_TOKENS,
         });
 
-        if supports_reasoning_effort(&self.config.model) {
-            if let Some(ref effort) = self.config.effort {
-                if !effort.is_empty() {
-                    body["reasoning_effort"] = json!(effort.to_lowercase());
-                }
-            }
-        }
+        crate::reasoning::apply(&mut body, self.config.api_type.as_str(), &self.config.reasoning_levels(), self.config.effort.as_deref());
 
         let mut attempts = 0;
         let (status, text) = loop {
@@ -886,13 +868,7 @@ impl LlmClient {
             "max_tokens": AGENT_MAX_OUTPUT_TOKENS,
         });
 
-        if supports_reasoning_effort(&self.config.model) {
-            if let Some(ref effort) = self.config.effort {
-                if !effort.is_empty() {
-                    body["reasoning_effort"] = json!(effort.to_lowercase());
-                }
-            }
-        }
+        crate::reasoning::apply(&mut body, self.config.api_type.as_str(), &self.config.reasoning_levels(), self.config.effort.as_deref());
 
         let mut attempts = 0;
         let resp = loop {
@@ -1505,8 +1481,8 @@ mod tests {
     #[tokio::test]
     async fn lsp_symbols_schema_is_portable_in_stream_and_nonstream_requests() {
         fn inspect(index: usize, request: &Value) {
-            assert_eq!(request["tools"][13]["function"]["name"], "lsp_symbols");
-            let schema = &request["tools"][13]["function"]["parameters"];
+            let tool = request["tools"].as_array().unwrap().iter().find(|tool| tool["function"]["name"] == "lsp_symbols").expect("lsp_symbols must be advertised");
+            let schema = &tool["function"]["parameters"];
             assert_eq!(schema["type"], "object");
             assert!(schema.get("anyOf").is_none());
             assert_eq!(schema["additionalProperties"], false);

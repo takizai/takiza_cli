@@ -47,6 +47,7 @@ impl ExecutionMode {
                     | "read_skill"
                     | "web_search"
                     | "ask_question"
+                    | "grill-me"
                     | "lsp_hover"
                     | "lsp_definition"
                     | "lsp_references"

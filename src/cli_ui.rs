@@ -2772,7 +2772,11 @@ pub fn ask_interactive_question_with_redraw(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload")]
 pub enum HistoryItem {
+    MoaRouting { model: String, category: String, complexity: String, #[serde(default)] source: Option<String> },
+    QuestionInteraction { #[serde(default)] questions: Vec<crate::agent::QuestionItem>, answers: Vec<crate::agent::QuestionAnswer>, skipped: bool },
+
     UserPrompt(String),
     Thought(String),
     ToolStart {
@@ -2955,6 +2959,14 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
     let mut index = 0;
     while index < history.len() {
         match &history[index] {
+            HistoryItem::MoaRouting { model, .. } => lines.extend(wrap_history_text(&format!("Model: {model}"), width)),
+            HistoryItem::QuestionInteraction { answers, skipped, .. } => {
+                if *skipped { lines.extend(wrap_history_text(crate::i18n::tr("Interview ended early; previous answers were preserved."), width)); }
+                for answer in answers {
+                    let text = format!("{}\n{}\n{}", answer.question, answer.selected_options.join(", "), answer.custom_text.as_deref().unwrap_or(""));
+                    lines.extend(wrap_history_text(&text, width));
+                }
+            },
             HistoryItem::UserPrompt(text) => {
                 lines.push(String::new());
                 let divider = format!("  \x1b[90m{}\x1b[0m", "─".repeat(width));

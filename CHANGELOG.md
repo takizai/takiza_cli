@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.13
+
+- Added the built-in `grill_me` questionnaire tool and `/grill-me [topic]` command, with independent questions, recommended answers, free text and partial-answer cancellation. The tool is available in Plan mode and excluded from read-only helper agents.
+- Matched reasoning effort choices to the active model and provider metadata across compatible Chat Completions, native OpenAI Responses and Anthropic Messages connections. Added namespaced and dated model aliases; unsupported effort values are omitted from requests.
+- Unified project session history with Takiza GUI, reading legacy and tagged transcript formats while preserving metadata. `/resume` hides empty and unreadable sessions without deleting files; user and assistant transcripts remain available in either client.
+- Release publication now waits for tests and all six platform archives to finish.
+
 ## 0.1.12
 
 - Provider creation/editing now opens a searchable model catalog using the draft connection's optional API key or key environment variable. Anonymous catalogs work without credentials; authorization failures are distinguished from unavailable catalogs, with manual model entry preserved. Cancelling the model picker discards the draft without saving it.

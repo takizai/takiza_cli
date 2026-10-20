@@ -725,3 +725,18 @@ rename/format/code actions are not exposed.
 Protocol fixtures run in `cargo test` and require Python 3. They cover stdio,
 Streamable HTTP, pagination, OAuth/PKCE/refresh, disconnection, Unicode positions,
 diagnostics and disk edits. PTY checks live under `tests/tui_*_pty.py`.
+
+Reasoning effort uses the selected model’s reported capabilities or the documented fallback table in `src/reasoning-models.json`, across Chat Completions, Responses and Anthropic Messages. `/effort` lists only that model’s levels; `/effort auto` omits the parameter. Explicit provider capability restrictions take priority. Models with unconfirmed support do not receive effort parameters.
+
+### Встроенный `grill-me`
+
+Попросите Takiza «grill me: проверь мой план» или «проведи интервью по архитектуре».
+Инструмент доступен по умолчанию, без установки скилла или MCP, в том числе в Plan.
+Он открывает раунд из 1–5 независимых вопросов с рекомендуемыми ответами.
+Можно принять рекомендацию, выбрать альтернативу, ввести свой ответ или отменить интервью.
+Ответы возвращаются модели в обычной истории инструментов; следующие вопросы
+учитывают уже принятые решения. Интервью завершается сводкой и согласованием,
+после которого можно переходить к реализации. Инструмент сам не меняет файлы.
+Основано на идее [grill-me / grilling Matt Pocock](https://github.com/mattpocock/skills/blob/main/skills/productivity/grilling/SKILL.md).
+
+Команда `/grill-me [тема]` запускает интервью и доступна в автодополнении и `/help`. Во время ответа она попадает в очередь как обычный запрос. Без темы агент уточняет предмет интервью или использует обсуждаемый план.

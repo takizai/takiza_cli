@@ -9,14 +9,44 @@ on:
       tag:
         description: 'Git tag for the release (e.g. v0.1.0)'
         required: true
-        default: 'v0.1.0'
+        default: 'v0.1.13'
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate versions
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, tomllib
+          from pathlib import Path
+          version = os.environ['RELEASE_TAG'].removeprefix('v')
+          assert tomllib.loads(Path('Cargo.toml').read_text())['package']['version'] == version
+          assert json.loads(Path('npm/package.json').read_text())['version'] == version
+          PYTHON
+      - run: cargo test --locked
+      - run: node --test npm/tests/launcher.cjs
+
   create-release:
-    name: Create GitHub Release
+    needs: validate
+    name: Create Draft Release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -48,6 +78,7 @@ jobs:
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           echo "Checking release for tag: $TAG"
           gh release view "$TAG" || gh release create "$TAG" \
+            --draft --verify-tag \
             --title "Release $TAG" \
             --notes-file release-notes.md
 
@@ -91,8 +122,21 @@ jobs:
       - name: Build and Upload Release Asset
         uses: taiki-e/upload-rust-binary-action@v1
         with:
+          locked: true
           bin: takiza
           target: ${{ matrix.target }}
           archive: $bin-$tag-$target
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
+
+  publish:
+    name: Publish complete release
+    needs: [create-release, upload-assets]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --draft=false

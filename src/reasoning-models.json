@@ -1,0 +1,377 @@
+[
+  {
+    "id": "o1",
+    "levels": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "o3",
+    "levels": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "o3-mini",
+    "levels": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "o4-mini",
+    "levels": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-oss-20b",
+    "levels": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-oss-120b",
+    "levels": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5",
+    "levels": [
+      "minimal",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5-mini",
+    "levels": [
+      "minimal",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5-nano",
+    "levels": [
+      "minimal",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5-pro",
+    "levels": [
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5.1",
+    "levels": [
+      "none",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5.1-codex",
+    "levels": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5-codex",
+    "levels": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "gpt-5.1-codex-max",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
+    "id": "gpt-5.2",
+    "levels": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
+    "id": "gpt-5.4",
+    "levels": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
+    "id": "gpt-5.4-mini",
+    "levels": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
+    "id": "gpt-5.4-nano",
+    "levels": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
+    "id": "gpt-5.5",
+    "levels": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
+    "id": "gpt-5.2-codex",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
+    "id": "gpt-5.3-codex",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
+    "id": "gpt-5.2-pro",
+    "levels": [
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
+    "id": "gpt-5.4-pro",
+    "levels": [
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
+    "id": "gpt-6-astra",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "gpt-6.1-sol",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "gpt-6-sol",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "gpt-6-luna",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-opus-4-5",
+    "levels": [
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "id": "claude-opus-4-6",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-sonnet-4-6",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-opus-4-7",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-opus-4-8",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-opus-5",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-opus-5-5",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-sonnet-5",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-sonnet-5-5",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-haiku-5-5",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-fable-5",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-fable-5-1",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-mythos-5",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "id": "claude-mythos-5-1",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  }
+]

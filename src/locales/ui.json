@@ -2462,5 +2462,33 @@
   "  /usage              - Provider usage and limits information": [
     "  /usage              - Информация о расходе и лимитах провайдера",
     "  /usage              - 提供商用量和限额信息"
+  ],
+  "Model does not support adjustable effort": [
+    "Модель не поддерживает смену effort",
+    "此模型不支持调整推理强度"
+  ],
+  "Unknown effort: {}. Available: {}\n": [
+    "Неизвестный effort: {}. Доступны: {}\n",
+    "未知推理强度：{}。可用值：{}\n"
+  ],
+  "Automatic": [
+    "Автоматически",
+    "自动"
+  ],
+  "Set reasoning effort supported by the selected model (or auto)": [
+    "Установить доступный модели effort (или auto)",
+    "设置所选模型支持的推理强度（或 auto）"
+  ],
+  "Recommended answer:": [
+    "Рекомендуемый ответ:",
+    "建议答案："
+  ],
+  "Stress-test a plan through an interactive interview": [
+    "Проверить план через интерактивное интервью",
+    "通过交互式访谈检验计划"
+  ],
+  "Interview ended early; previous answers were preserved.": [
+    "Интервью завершено досрочно; уже данные ответы сохранены.",
+    "访谈已提前结束，已有回答已保留。"
   ]
 }

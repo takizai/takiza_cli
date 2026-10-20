@@ -212,11 +212,7 @@ impl LlmClient {
         } else {
             json!({"model":self.config.model,"messages":input,"system":system.join("\n\n"),"max_tokens":max_tokens,"stream":stream})
         };
-        if responses && supports_reasoning_effort(&self.config.model) {
-            if let Some(effort) = &self.config.effort {
-                body["reasoning"] = json!({"effort":effort});
-            }
-        }
+        crate::reasoning::apply(&mut body, self.config.api_type.as_str(), &self.config.reasoning_levels(), self.config.effort.as_deref());
         if tools {
             body["tools"] = Value::Array(tools_for_api(&self.tool_definitions).as_array().context("Invalid tools")?.iter().map(|tool| {
                 let function = &tool["function"];

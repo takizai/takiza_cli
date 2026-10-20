@@ -71,6 +71,7 @@ pub struct SlashCommand {
 }
 
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
+    SlashCommand { name:"/grill-me",description:"Stress-test a plan through an interactive interview",has_args:true },
     SlashCommand { name: "/agents", description: "List helpers, inspect a report, or stop a subagent", has_args: true },
     SlashCommand { name: "/permissions", description: "Set execution mode: auto, plan, allow-all (Shift+Tab)", has_args: true },
     SlashCommand { name: "/logo", description: "Set custom artwork (/logo <path>) or restore default (/logo reset)", has_args: true },
@@ -102,7 +103,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/effort",
-        description: "Set reasoning effort (low, medium, high) for reasoning models",
+        description: "Set reasoning effort supported by the selected model (or auto)",
         has_args: true,
     },
     SlashCommand {

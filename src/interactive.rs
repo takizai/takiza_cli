@@ -155,13 +155,14 @@ pub fn configure_interactive(ctx: &ScreenContext, config: &Config, prefs: &theme
         let mut selected = initial.min(6);
         let mut panel = BottomSelectionPanel::default();
         loop {
+            let effort_levels = config.reasoning_levels();
             let entries = [
                 (ConfigAction::Language, crate::i18n::tr("Language"), prefs.language.name().to_string()),
                 (ConfigAction::Theme, crate::i18n::tr("Visual Theme"), prefs.theme.name().to_string()),
                 (ConfigAction::Provider, crate::i18n::tr("Provider"), config.base_url.clone()),
                 (ConfigAction::Model, crate::i18n::tr("Model"), config.model.clone()),
                 (ConfigAction::Mode, crate::i18n::tr("Mode"), crate::i18n::tr("Third-party provider").to_string()),
-                (ConfigAction::Effort, crate::i18n::tr("Reasoning Effort"), crate::i18n::tr(config.effort.as_deref().unwrap_or("default")).to_string()),
+                (ConfigAction::Effort, crate::i18n::tr("Reasoning Effort"), if effort_levels.is_empty() { crate::i18n::tr("Model does not support adjustable effort").into() } else { config.effort.as_deref().filter(|e| effort_levels.iter().any(|l| l == e)).unwrap_or("default").into() }),
                 (ConfigAction::Approval, crate::i18n::tr("Execution mode"), config.execution_mode.current().name().to_string()),
             ];
             let (_, rows) = crate::cli_ui::terminal_size();
@@ -570,137 +571,41 @@ fn show_provider_notice(ctx: &ScreenContext, details: &[&str]) -> std::io::Resul
     result
 }
 
-pub fn select_effort_interactive(ctx: &ScreenContext, current_effort: &str) -> std::io::Result<Option<String>> {
-    enable_raw_mode()?;
-    let efforts = [
-        ("low", crate::i18n::tr("Low"), crate::i18n::tr("Fast response, minimal reasoning tokens")),
-        ("medium", crate::i18n::tr("Medium"), crate::i18n::tr("Balanced reasoning depth (default)")),
-        ("high", crate::i18n::tr("High"), crate::i18n::tr("Deep analysis, exhaustive reasoning")),
-    ];
-    let cur = current_effort.to_lowercase();
-    let mut selected_idx = efforts.iter().position(|&(id, _, _)| id == cur).unwrap_or(1);
-    let mut needs_clear = true;
-
-    loop {
-        let (_term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let box_w = crate::cli_ui::get_box_width();
-        let inner_w = box_w.saturating_sub(4);
-        let th = theme::current();
-        let b_color = th.border_crossterm();
-        let p_color = th.primary_crossterm();
-        let p_ansi = th.primary_ansi();
-
-        let mut out = MenuFrame::default();
-        if needs_clear {
-            queue!(out, cursor::Hide, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-            needs_clear = false;
-        } else {
-            queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
-        }
-        let _ = crate::cli_ui::print_banner_to(&mut out, &ctx.model, &ctx.base_url, &ctx.workspace, &ctx.git_info);
-
-        let two_lines = term_rows >= 22;
-        let item_lines = if two_lines { 2 } else { 1 };
-        let content_rows = efforts.len() * item_lines;
-        let total_box_height = 1 + content_rows + 1;
-        let start_row = term_rows.saturating_sub(total_box_height as u16);
-
-        let title = if ctx.branch_tag.is_empty() {
-            crate::i18n::tr("Select Reasoning Effort").to_string()
-        } else {
-            crate::i18n::tf!("Select Reasoning Effort [{}]", ctx.branch_tag.trim())
-        };
-        draw_bottom_box_top(&mut out, start_row, &title, box_w, p_color, b_color)?;
-
-        let mut cur_row = start_row + 1;
-        for (i, &(id, name, desc)) in efforts.iter().enumerate() {
-            let is_sel = i == selected_idx;
-            let is_curr = id == cur;
-
-            let prefix = if is_sel { "> " } else { "  " };
-            let (mark_str, mark_vis) = if is_curr {
-                (crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m"), crate::markdown::visible_width(crate::i18n::tr("\x1b[1;38;2;40;220;120m[active]\x1b[0m")))
-            } else {
-                ("        ", 8)
-            };
-
-            if two_lines {
-                let line1 = if is_sel {
-                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{}\x1b[1m{:<12}\x1b[0m  {}", prefix, p_ansi, name, mark_str)
-                } else {
-                    format!("\x1b[38;2;160;160;165m{}\x1b[0m\x1b[38;2;220;220;225m{:<12}\x1b[0m  {}", prefix, name, mark_str)
-                };
-                let line1_vis = 2 + 12 + 2 + mark_vis;
-                draw_bottom_box_line(&mut out, cur_row, &line1, line1_vis, box_w, b_color)?;
-                cur_row += 1;
-
-                let desc_max = inner_w.saturating_sub(6);
-                let desc_trunc = truncate_visible(desc, desc_max);
-                let line2 = format!("      \x1b[38;2;130;130;135m{}\x1b[0m", desc_trunc);
-                let line2_vis = 6 + str_width(&desc_trunc);
-                draw_bottom_box_line(&mut out, cur_row, &line2, line2_vis, box_w, b_color)?;
-                cur_row += 1;
-            } else {
-                let fixed_w = 2 + 12 + 2 + mark_vis;
-                let desc_avail = inner_w.saturating_sub(fixed_w + 3);
-                let desc_part = if desc_avail >= 10 {
-                    let desc_trunc = truncate_visible(desc, desc_avail);
-                    (format!("  \x1b[38;2;120;120;125m{}\x1b[0m", desc_trunc), 2 + str_width(&desc_trunc))
-                } else {
-                    (String::new(), 0)
-                };
-
-                let line = if is_sel {
-                    format!("\x1b[1;38;2;255;255;255m{}\x1b[0m{}\x1b[1m{:<12}\x1b[0m  {}{}", prefix, p_ansi, name, mark_str, desc_part.0)
-                } else {
-                    format!("\x1b[38;2;160;160;165m{}\x1b[0m\x1b[38;2;220;220;225m{:<12}\x1b[0m  {}{}", prefix, name, mark_str, desc_part.0)
-                };
-                let line_vis = fixed_w + desc_part.1;
-                draw_bottom_box_line(&mut out, cur_row, &line, line_vis, box_w, b_color)?;
-                cur_row += 1;
+pub fn select_effort_interactive(ctx: &ScreenContext, current_effort: &str, levels: &[String]) -> std::io::Result<Option<String>> {
+    if levels.is_empty() { return Ok(None); }
+    let was_raw = crossterm::terminal::is_raw_mode_enabled()?;
+    if !was_raw { enable_raw_mode()?; }
+    let result = (|| {
+        let mut efforts = vec!["auto".to_string()];
+        efforts.extend_from_slice(levels);
+        let mut selected = efforts.iter().position(|id| id == current_effort).unwrap_or(0);
+        let mut panel = BottomSelectionPanel::default();
+        loop {
+            let (_, rows) = crate::cli_ui::terminal_size();
+            let visible = rows.saturating_sub(13).clamp(1, efforts.len() as u16) as usize;
+            let offset = selected.saturating_sub(visible.saturating_sub(1));
+            let th = theme::current();
+            let lines = efforts.iter().enumerate().skip(offset).take(visible).map(|(index, value)| {
+                let label = if value == "auto" { crate::i18n::tr("Automatic") } else { value.as_str() };
+                (format!("{} {}", if index == selected { "❯" } else { " " }, label),
+                    if index == selected { th.primary_crossterm() } else { th.secondary_crossterm() })
+            }).collect::<Vec<_>>();
+            panel.draw(ctx, crate::i18n::tr("Select Reasoning Effort"), &lines, crate::i18n::tr("↑/↓ · Enter: Select · Esc: Back"))?;
+            match crate::cli_ui::read_event_with_background()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => selected = (selected + efforts.len() - 1) % efforts.len(),
+                    KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1) % efforts.len(),
+                    KeyCode::Enter => return Ok(Some(efforts[selected].clone())),
+                    KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
+                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => return Ok(None),
+                    _ => {},
+                },
+                _ => {},
             }
         }
-
-        draw_bottom_box_bottom(&mut out, cur_row, crate::i18n::tr("Enter: Select  •  Esc: Cancel"), box_w, b_color)?;
-        out.flush()?;
-
-        match crate::cli_ui::read_event_with_background()? {
-            Event::Key(key) => {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if selected_idx > 0 {
-                            selected_idx -= 1;
-                        } else {
-                            selected_idx = efforts.len() - 1;
-                        }
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if selected_idx + 1 < efforts.len() {
-                            selected_idx += 1;
-                        } else {
-                            selected_idx = 0;
-                        }
-                    }
-                    KeyCode::Enter => {
-                        disable_raw_mode()?;
-                        return Ok(Some(efforts[selected_idx].0.to_string()));
-                    }
-                    KeyCode::Esc | KeyCode::Char('q') => {
-                        disable_raw_mode()?;
-                        return Ok(None);
-                    }
-                    _ => {}
-                }
-            }
-            Event::Resize(_, _) => {
-                needs_clear = true;
-            }
-            _ => {}
-        }
-    }
+    })();
+    if !was_raw { disable_raw_mode()?; }
+    result
 }
 
 pub enum SessionAction {
@@ -1234,7 +1139,7 @@ mod tests {
     }
     #[test]
     fn model_names_and_provider_ids_fit_unicode_columns() {
-        let model=crate::providers::Model { id:"vendor/deployment-long-name".into(), name:"模型 · Модель".into(), context_window:None };
+        let model=crate::providers::Model { id:"vendor/deployment-long-name".into(), name:"模型 · Модель".into(), context_window:None, metadata:Default::default() };
         for width in [20,40,60,100] {
             let row=model_columns(&model,width);
             assert!(str_width(&row)<=width, "{row}");

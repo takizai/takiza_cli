@@ -10,6 +10,8 @@ mod interactive;
 mod llm;
 mod model_metadata;
 mod providers;
+mod grill_me;
+mod reasoning;
 mod logo;
 mod custom_logo;
 mod terminal_image;
@@ -20,6 +22,7 @@ mod markdown;
 mod onboarding;
 mod prompt;
 mod session;
+mod session_format;
 mod snow;
 mod theme;
 mod i18n;
@@ -769,21 +772,26 @@ async fn handle_tui_command_inner(
 
         if line.starts_with("/effort") {
             let parts: Vec<&str> = line.split_whitespace().collect();
+            let levels = config.reasoning_levels();
+            if levels.is_empty() {
+                command_message!("{}", crate::i18n::tr("Model does not support adjustable effort"));
+                return Ok(CommandResult::Handled);
+            }
             let chosen_effort = if parts.len() > 1 {
                 let eff = parts[1].to_lowercase();
                 match eff.as_str() {
-                    "low" | "medium" | "high" => Some(eff),
+                    _ if eff == "auto" || levels.contains(&eff) => Some(eff),
                     _ => {
                         *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                         cli_ui::print_user_cmd(&line);
-                        command_message!("{}", crate::i18n::tf!("Unknown effort: {}. Available: low, medium, high\n", parts[1]));
+                        command_message!("{}", crate::i18n::tf!("Unknown effort: {}. Available: {}\n", parts[1], format!("{}, auto", levels.join(", "))));
                         None
                     }
                 }
             } else {
                 let ctx = interactive::ScreenContext::from_config(&config);
-                let cur = config.effort.clone().unwrap_or_else(|| "medium".to_string());
-                match interactive::select_effort_interactive(&ctx, &cur) {
+                let cur = config.effort.clone().unwrap_or_else(|| "auto".to_string());
+                match interactive::select_effort_interactive(&ctx, &cur, &levels) {
                     Ok(Some(eff)) => Some(eff),
                     _ => {
                         *output_row.lock().unwrap() = clear_screen_and_banner(&config);
@@ -793,19 +801,14 @@ async fn handle_tui_command_inner(
             };
 
             if let Some(eff) = chosen_effort {
-                config.effort = Some(eff.clone());
-                user_prefs.effort = Some(eff.clone());
+                config.effort = (eff != "auto").then(|| eff.clone());
+                user_prefs.effort = Some(config.effort.clone().unwrap_or_default());
                 let _ = user_prefs.save();
                 let mut locked = command_agent(agent, active, current_session, history, config).await;
                 locked.reset(config.clone());
                 *output_row.lock().unwrap() = clear_screen_and_banner(&config);
                 cli_ui::print_user_cmd(&line);
-                let is_supported = llm::supports_reasoning_effort(&config.model);
-                if is_supported {
-                    command_message!("{}", crate::i18n::tf!("Set reasoning effort to: {}\n", eff));
-                } else {
-                    command_message!("{}", crate::i18n::tf!("Set reasoning effort to: {} (Note: current model '{}' may not use reasoning effort; setting will apply when switching to o1, o3-mini, claude-3-7, deepseek-r1, etc.)\n", eff, config.model));
-                }
+                command_message!("{}", crate::i18n::tf!("Set reasoning effort to: {}\n", eff));
             }
             return Ok(CommandResult::Handled);
         }
@@ -1224,7 +1227,7 @@ async fn run(cli_args: config::CliArgs) -> anyhow::Result<()> {
             continue;
         }
 
-        if line.starts_with('/') {
+        if line.starts_with('/') && !grill_me::is_command(&line) {
             let outcome = handle_tui_command(&line, &mut config, &mut user_prefs, &agent,
                 &mut current_session, &history, &output_row, &branch_tag, &mut None, &tools_executor).await?;
             if pending_title.as_ref().is_some_and(|(id, _)| *id != current_session.id) {
@@ -1561,7 +1564,7 @@ async fn run(cli_args: config::CliArgs) -> anyhow::Result<()> {
                             cli_ui::set_active_draft(Some(line_editor.draft.clone()));
                             if let Some(submitted) = submitted {
                                 cli_ui::scroll_history(i32::MIN);
-                                if submitted.starts_with('/') {
+                                if submitted.starts_with('/') && !grill_me::is_command(&submitted) {
                                     sig_handle.stop().await;
                                     let status = spinner.as_ref().map(|s| s.message());
                                     if let Some(s) = spinner.take() { s.stop().await; }

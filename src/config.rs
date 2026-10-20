@@ -105,6 +105,15 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn reasoning_levels(&self) -> Vec<String> {
+        let prefs = crate::theme::UserPreferences::load();
+        let metadata = self.provider_id.as_ref().and_then(|id| prefs.providers.get(id))
+            .filter(|p| p.base_url.trim_end_matches('/') == self.base_url.trim_end_matches('/') && p.api_type == self.api_type && p.headers == self.provider_headers)
+            .and_then(|p| p.models.iter().find(|m| m.id == self.model))
+            .and_then(|model| serde_json::to_value(model).ok());
+        crate::reasoning::levels(&self.model, self.api_type.as_str(), metadata.as_ref())
+    }
+
     pub fn load_with_args(cli_args: &CliArgs) -> Self {
         dotenvy::dotenv().ok();
 
@@ -172,11 +181,7 @@ impl Config {
             crate::execution_mode::ExecutionMode::AllowAll
         } else { crate::execution_mode::ExecutionMode::Auto }) });
 
-        let effort = prefs.effort
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| std::env::var("REASONING_EFFORT").ok())
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| Some("medium".to_string()));
+        let effort = crate::reasoning::preference(prefs.effort, std::env::var("REASONING_EFFORT").ok());
 
         Self {
             context_window: prefs.context_window,

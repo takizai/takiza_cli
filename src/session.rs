@@ -27,8 +27,10 @@ pub struct Session {
     #[serde(default)]
     pub title: Option<String>,
     pub messages: Vec<ChatMessage>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::session_format::deserialize_history")]
     pub history: Vec<HistoryItem>,
+    #[serde(default, flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub token_usage: Option<TokenUsage>,
     /// Latest model-reported request context, separate from cumulative billing.
@@ -51,6 +53,7 @@ impl Session {
             title: None,
             messages: Vec::new(),
             history: Vec::new(),
+            extra: Default::default(),
             token_usage: None,
             context_tokens: Some(0),
             started: false,
@@ -71,13 +74,10 @@ impl Session {
                 return trimmed.to_string();
             }
         }
-        for msg in &self.messages {
-            if msg.role == "user" {
-                if let Some(content) = &msg.content {
-                    let title = Self::title_from_prompt(content);
-                    if !title.is_empty() { return title; }
-                }
-            }
+        for prompt in self.messages.iter().filter(|message| message.role == "user").filter_map(|message| message.content.as_deref())
+            .chain(self.history.iter().filter_map(|item| if let HistoryItem::UserPrompt(prompt) = item { Some(prompt.as_str()) } else { None })) {
+            let title = Self::title_from_prompt(prompt);
+            if !title.is_empty() { return title; }
         }
         "Empty conversation".to_string()
     }
@@ -90,6 +90,18 @@ impl Session {
         self.started || self.messages.iter().any(|message| message.role == "user")
             || self.history.iter().any(|item| matches!(item, HistoryItem::UserPrompt(_)))
     }
+
+    pub fn has_conversation(&self) -> bool {
+        self.messages.iter().any(|message| message.role != "system" &&
+            (message.content.as_ref().is_some_and(|text| !text.trim().is_empty()) || !message.image_urls.is_empty()
+                || message.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())))
+            || self.history.iter().any(|item| match item {
+                HistoryItem::UserPrompt(text) | HistoryItem::AssistantMessage(text) => !text.trim().is_empty(),
+                HistoryItem::QuestionInteraction { questions, answers, .. } => !questions.is_empty() || !answers.is_empty(),
+                _ => false,
+            })
+    }
+
 
     pub fn sessions_dir(workspace: &Path) -> PathBuf {
         workspace.join(".takiza").join("sessions")
@@ -170,12 +182,12 @@ impl Session {
             }
         }
         // Sort descending by last modified time (most recently active first)
-        entries_with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
+        entries_with_mtime.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
         entries_with_mtime.into_iter().map(|(_, id)| id).collect()
     }
 
     pub fn list(workspace: &Path) -> Vec<String> {
-        Self::list_by_activity(workspace)
+        Self::list_by_activity(workspace).into_iter().filter(|id| Self::load(workspace,id).is_some_and(|session| session.has_conversation())).collect()
     }
 
     pub fn load(workspace: &Path, id: &str) -> Option<Self> {
@@ -276,6 +288,12 @@ impl Session {
         if !self.history.is_empty() {
             for item in &self.history {
                 match item {
+                    HistoryItem::MoaRouting { model, .. } => md.push_str(&format!("> Model: {model}\n\n")),
+                    HistoryItem::QuestionInteraction { answers, skipped, .. } => {
+                        md.push_str("### Questionnaire\n\n");
+                        if *skipped { md.push_str("Interview ended early.\n\n"); }
+                        for answer in answers { md.push_str(&format!("- {}\n  {}\n  {}\n", answer.question,answer.selected_options.join(", "),answer.custom_text.as_deref().unwrap_or(""))); }
+                    },
                     HistoryItem::UserPrompt(p) => {
                         md.push_str(&format!("### 👤 User\n\n{}\n\n", p));
                     }
@@ -489,3 +507,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/common/session_compat.rs"]
+mod shared_format_tests;

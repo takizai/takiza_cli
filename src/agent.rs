@@ -12,7 +12,7 @@ pub enum PermissionResponse {
     Deny,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QuestionItem {
     pub question: String,
     #[serde(default)]
@@ -31,7 +31,7 @@ pub fn default_true() -> bool {
     true
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QuestionAnswer {
     pub question_index: usize,
     pub question: String,
@@ -176,6 +176,7 @@ fn build_system_prompt(config: &Config) -> String {
         - `run_command(command)`: Execute bash/shell commands in workspace.\n\
         - `web_search(query, num_results)`: Search the internet and return source titles, URLs and snippets.\n\
         - `read_skill(name)`: Read full instructions and rules for a specialized skill (e.g. 'claude-design', 'frontend-excellence').\n\
+        - `grill-me(topic, questions)`: Run a user-requested design interview in rounds of independent decisions with a recommended answer for each. Read facts from the environment yourself. Carry answers forward; stop on cancellation. Summarize decisions and obtain agreement before implementing.\n\
         - `ask_question(questions)`: Present an interactive questionnaire to the user in the terminal (single/multi-choice, custom answers, open-ended questions).\n\n\
         CODE ANALYSIS WITH LSP:\n\
         - When listed, use `lsp_hover` for types and symbol documentation, `lsp_definition` to navigate to a definition, `lsp_references` for semantic usages, `lsp_symbols` to explore file or project symbols, and `lsp_diagnostics` for language-server errors and warnings. Prefer these tools for semantic questions; use file reads and text search for source context and textual matches. Do not invoke LSP for unrelated tasks.\n\
@@ -572,8 +573,14 @@ impl Agent {
                             continue;
                         }
 
-                        if tc.name == "ask_question" {
+                        if tc.name == "ask_question" || tc.name == crate::grill_me::NAME {
+                            let grill_round = if tc.name == crate::grill_me::NAME {
+                                Some(crate::grill_me::Round::parse(&tc.arguments))
+                            } else { None };
                             let parsed_questions: Result<Vec<QuestionItem>, String> = (|| {
+                                if let Some(round) = &grill_round {
+                                    return round.as_ref().map(|round| round.questionnaire()).map_err(Clone::clone);
+                                }
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&tc.arguments) {
                                     if let Some(arr) = val.get("questions").and_then(|q| q.as_array()) {
                                         let items: Result<Vec<QuestionItem>, _> = serde_json::from_value(serde_json::Value::Array(arr.clone()));
@@ -632,12 +639,12 @@ impl Agent {
                                 responder,
                             }).await;
 
-                            let response = match resp_rx.await {
-                                Ok(r) => r,
-                                Err(_) => QuestionResponse { answers: Vec::new(), skipped: true },
+                            let response = crate::grill_me::wait_for_answer(resp_rx, &cancel_token).await;
+                            let answers = questionnaire_result(&response);
+                            let result_content = match &grill_round {
+                                Some(Ok(round)) => round.result(&response, &answers),
+                                _ => answers,
                             };
-
-                            let result_content = questionnaire_result(&response);
 
                             let _ = event_tx.send(AgentEvent::ToolEnd {
                                 id: tc.id.clone(),

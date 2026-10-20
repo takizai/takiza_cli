@@ -1,7 +1,7 @@
 {
   "name": "takiza",
-  "version": "0.1.12",
-  "description": "Takiza Code — AI coding agent for your terminal",
+  "version": "0.1.13",
+  "description": "Takiza Code \u2014 AI coding agent for your terminal",
   "license": "MIT",
   "homepage": "https://github.com/takizai/takiza_cli#readme",
   "repository": {

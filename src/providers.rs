@@ -21,6 +21,10 @@ pub enum ApiType {
     AnthropicMessages,
 }
 impl ApiType {
+    pub fn as_str(self) -> &'static str { match self {
+        Self::ChatCompletions => "chat_completions", Self::OpenaiResponses => "openai_responses", Self::AnthropicMessages => "anthropic_messages",
+    }}
+
     pub const ALL: [Self; 3] = [
         Self::ChatCompletions,
         Self::OpenaiResponses,
@@ -50,6 +54,8 @@ impl ApiType {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Model {
+    #[serde(default, flatten)]
+    pub metadata: BTreeMap<String, serde_json::Value>,
     pub id: String,
     #[serde(default)]
     pub name: String,
@@ -192,6 +198,7 @@ impl UserPreferences {
                     name: id.clone(),
                     id,
                     context_window: None,
+                    metadata: Default::default(),
                 });
             }
         }
@@ -229,6 +236,7 @@ pub fn parse_models(value: &serde_json::Value) -> Vec<Model> {
             id: id.into(),
             name: name.into(),
             context_window: crate::model_metadata::parse_context_limit(value, id),
+            metadata: value.as_object().unwrap().iter().filter(|(key,_)| !matches!(key.as_str(),"id"|"name"|"context_window")).map(|(k,v)|(k.clone(),v.clone())).collect(),
         });
     }
     models.into_values().collect()
