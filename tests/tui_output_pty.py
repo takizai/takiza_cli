@@ -56,8 +56,8 @@ def run(binary):
                 t.send('/exit\r');t.wait(lambda:t.process.poll() is not None,'exit stalled')
                 sid=(workspace/'.takiza/latest_session').read_text().strip()
                 saved=json.loads((workspace/'.takiza/sessions'/f'{sid}.json').read_text())
-                assert any(item.get('AssistantMessage')==BODY for item in saved['history']), 'full response was truncated on disk'
-                assert any('workspaceSymbolProvider' in item.get('ToolLog','') for item in saved['history'])
+                assert any(item.get('type') == 'AssistantMessage' and item.get('payload') == BODY for item in saved['history']), 'full response was truncated on disk'
+                assert any(item.get('type') == 'ToolLog' and 'workspaceSymbolProvider' in item.get('payload', '') for item in saved['history'])
                 print('PASS output: LSP status, assistant reply, help, Ctrl+O both directions, complete saved history')
             except Exception:
                 Path('/tmp/takiza-output-pty.log').write_bytes(t.output); raise

@@ -36,7 +36,7 @@ New configuration files include Exa MCP for web search and page fetching without
 a separate API key, subject to anonymous usage limits. Existing configurations
 keep their MCP settings; see the full documentation to add or disable Exa.
 
-Version 0.1.12 contains binaries from the corresponding
-[GitHub release](https://github.com/takizai/takiza_cli/releases/tag/v0.1.12).
+Version 0.1.14 contains binaries from the corresponding
+[GitHub release](https://github.com/takizai/takiza_cli/releases/tag/v0.1.14).
 
 [Source and full documentation](https://github.com/takizai/takiza_cli)

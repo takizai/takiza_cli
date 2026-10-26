@@ -68,7 +68,7 @@ if __name__ == '__main__':
                     terminal.wait(lambda: terminal.process.poll() is not None, 'exit failed')
                     sid = (workspace / '.takiza/latest_session').read_text()
                     saved = json.loads((workspace / '.takiza/sessions' / (sid + '.json')).read_text())
-                    assert any(literal in item.get('AssistantMessage', '') for item in saved['history'])
+                    assert any(item.get('type') == 'AssistantMessage' and literal in item.get('payload', '') for item in saved['history'])
                     print(f'PASS code wrapping: {cols} columns, stream, complete answer, resize, Ctrl+O, original saved text')
                 finally: release.set(); terminal.close()
     finally: release.set(); server.shutdown()

@@ -1,6 +1,8 @@
 mod agent;
 mod attachments;
 mod checkpoints;
+mod checkpoint_store;
+mod checkpoint_git;
 mod context;
 mod clipboard;
 mod cli_ui;
@@ -314,7 +316,7 @@ impl PromptQueue {
 }
 
 #[derive(PartialEq)]
-enum CommandResult { Handled, Exit, InsertSkill(skills::Skill), RestorePrompt(String) }
+enum CommandResult { Handled, Exit, InsertSkill(skills::Skill), Restored(Option<String>) }
 
 struct ActiveAgent {
     cancel: CancellationToken,
@@ -375,6 +377,20 @@ fn fresh_connection_chat(config: &Config, session: &mut Session, history: &Arc<S
     history.lock().unwrap().clear();
     cli_ui::set_active_chat_title("");
     cli_ui::set_context_tokens(None);
+}
+
+// Match the GUI's background checkpoint operations while keeping terminal
+// progress separate from the saved conversation.
+async fn checkpoint_operation<T: Send + 'static>(
+    message: &'static str, config: &Config, history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>,
+    output_row: &Arc<StdMutex<u16>>, branch_tag: &str,
+    operation: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<T> {
+    let spinner = cli_ui::Spinner::start_with_box(message, "", branch_tag, output_row.clone());
+    let result = tokio::task::spawn_blocking(operation).await.context("Checkpoint task failed");
+    spinner.stop().await;
+    *output_row.lock().unwrap() = redraw_full_screen(config, &history.lock().unwrap());
+    result?
 }
 
 fn collect_context_updates(config: &Config, history: &Arc<StdMutex<Vec<cli_ui::HistoryItem>>>) -> bool {
@@ -482,33 +498,49 @@ async fn handle_tui_command_inner(
             let mut locked = command_agent(agent, active, current_session, history, config).await;
             current_session.messages = locked.get_messages().to_vec();
             current_session.history = history.lock().unwrap().clone();
-            let result = (|| -> anyhow::Result<Option<(Session, Option<String>)>> {
-                let points = checkpoints::list(&config.workspace_dir, &current_session.id)?;
+            let result = async {
+                let workspace = config.workspace_dir.clone();
+                let session_id = current_session.id.clone();
+                let points = checkpoint_operation(crate::i18n::tr("Loading checkpoints..."), config, history, output_row, branch_tag,
+                    move || checkpoints::list(&workspace, &session_id)).await?;
                 let ctx = interactive::ScreenContext::from_config(config);
                 let choices = points.iter().map(|point| format!("{}  {}", point.created_at, point.label)).collect::<Vec<_>>();
                 let Some(selected) = interactive::rewind_menu(&ctx, crate::i18n::tr("Restore workspace checkpoint"), &[], &choices)? else { return Ok(None); };
                 let point = &points[selected];
-                let changes = checkpoints::preview(&config.workspace_dir, point)?;
-                let conversation = checkpoints::conversation_at(point, current_session)?;
-                let prompt = checkpoints::prompt_at(point, current_session);
+                let workspace = config.workspace_dir.clone();
+                let selected_point = point.clone();
+                let session = current_session.clone();
+                let (changes, conversation, prompt) = checkpoint_operation(crate::i18n::tr("Reviewing checkpoint..."), config, history, output_row, branch_tag,
+                    move || {
+                        let changes = checkpoints::preview(&workspace, &selected_point)?;
+                        let conversation = checkpoints::conversation_at(&selected_point, &session)?;
+                        let prompt = checkpoints::prompt_at(&selected_point, &session);
+                        Ok((changes, conversation, prompt))
+                    }).await?;
                 let mut changes = changes;
                 changes.push(crate::i18n::tr("Restore chat to this checkpoint; later prompts, answers and tool results will be removed").into());
                 let options = vec![crate::i18n::tr("Cancel").to_string(), crate::i18n::tr("Restore files and chat").to_string()];
                 if interactive::rewind_menu(&ctx, crate::i18n::tr("Review restore · a safety checkpoint will be saved"), &changes, &options)? != Some(1) { return Ok(None); }
-                checkpoints::restore_session(&config.workspace_dir, point, current_session)?;
-                Ok(Some((conversation, prompt)))
-            })();
+                let workspace = config.workspace_dir.clone();
+                let point = point.clone();
+                let session = current_session.clone();
+                checkpoint_operation(crate::i18n::tr("Restoring files and chat..."), config, history, output_row, branch_tag,
+                    move || checkpoints::restore_session(&workspace, &point, &session)).await?;
+                Ok::<_, anyhow::Error>(Some((conversation, prompt)))
+            }.await;
             let mut outcome = CommandResult::Handled;
             match result {
                 Ok(Some((conversation, prompt))) => {
-                    current_session.history = conversation.build_history_from_messages();
-                    current_session.messages = conversation.messages;
+                    current_session.restore_checkpoint(conversation)?;
                     locked.runtime().reset_documents().await;
+                    locked.reset(config.clone());
                     locked.set_messages(current_session.messages.clone());
                     *history.lock().unwrap() = current_session.history.clone();
+                    cli_ui::set_context_tokens(current_session.context_tokens);
+                    cli_ui::set_active_chat_title(current_session.title.as_deref().unwrap_or(""));
                     cli_ui::scroll_history(i32::MIN);
                     current_session.save(&config.workspace_dir)?;
-                    if let Some(prompt) = prompt { outcome = CommandResult::RestorePrompt(prompt); }
+                    outcome = CommandResult::Restored(prompt);
                 }
                 Ok(None) => {}
                 Err(error) => history.lock().unwrap().push(cli_ui::HistoryItem::ToolLog(crate::i18n::tf!("Restore unavailable: {error:#}", error = error))),
@@ -1236,9 +1268,11 @@ async fn run(cli_args: config::CliArgs) -> anyhow::Result<()> {
             match outcome {
                 CommandResult::Exit => break,
                 CommandResult::InsertSkill(skill) => line_editor.draft.insert_text(&skill.prompt_reference()),
-                CommandResult::RestorePrompt(text) => {
+                CommandResult::Restored(prompt) => {
+                    if let Some((_, task)) = pending_title.take() { task.abort(); }
+                    title_attempted_sessions.remove(&current_session.id);
                     line_editor.draft = prompt::Draft::default();
-                    line_editor.draft.text = text;
+                    line_editor.draft.text = prompt.unwrap_or_default();
                     line_editor.draft.cursor = line_editor.draft.text.chars().count();
                 }
                 CommandResult::Handled => {}
@@ -1576,9 +1610,11 @@ async fn run(cli_args: config::CliArgs) -> anyhow::Result<()> {
                                     exit_requested = outcome == CommandResult::Exit;
                                     match outcome {
                                         CommandResult::InsertSkill(skill) => line_editor.draft.insert_text(&skill.prompt_reference()),
-                                        CommandResult::RestorePrompt(text) => {
+                                        CommandResult::Restored(prompt) => {
+                                            if let Some((_, task)) = pending_title.take() { task.abort(); }
+                                            title_attempted_sessions.remove(&current_session.id);
                                             line_editor.draft = prompt::Draft::default();
-                                            line_editor.draft.text = text;
+                                            line_editor.draft.text = prompt.unwrap_or_default();
                                             line_editor.draft.cursor = line_editor.draft.text.chars().count();
                                         }
                                         _ => {}

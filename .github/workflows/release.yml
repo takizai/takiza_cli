@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Git tag for the release (e.g. v0.1.0)'
         required: true
-        default: 'v0.1.13'
+        default: 'v0.1.14'
 
 permissions:
   contents: write
@@ -43,6 +43,13 @@ jobs:
           PYTHON
       - run: cargo test --locked
       - run: node --test npm/tests/launcher.cjs
+      - name: Test rewind, code copying and attachments in the terminal
+        run: |
+          cargo build --locked
+          python3 tests/tui_rewind_pty.py target/debug/takiza
+          python3 tests/tui_clipboard_pty.py target/debug/takiza
+          python3 tests/tui_code_wrap_pty.py target/debug/takiza
+          python3 tests/tui_images_pty.py target/debug/takiza
 
   create-release:
     needs: validate

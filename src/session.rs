@@ -211,6 +211,7 @@ impl Session {
     }
 
     pub fn delete(workspace: &Path, id: &str) -> std::io::Result<()> {
+        crate::checkpoints::remove_session(workspace, id).map_err(std::io::Error::other)?;
         let dir = Self::sessions_dir(workspace);
         let file_path = dir.join(format!("{}.json", id));
         let md_path = dir.join(format!("{}.md", id));
@@ -273,6 +274,17 @@ impl Session {
             }
         }
         items
+    }
+
+    /// GUI restores the whole saved session. Keep CLI lifetime accounting and
+    /// the started-chat marker while restoring conversation-specific state.
+    pub fn restore_checkpoint(&mut self, mut restored: Self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.id == restored.id, "This checkpoint belongs to another chat");
+        restored.history = restored.build_history_from_messages();
+        restored.started |= self.is_started();
+        restored.token_usage = self.token_usage.clone().or(restored.token_usage);
+        *self = restored;
+        Ok(())
     }
 
     pub fn generate_markdown(&self, workspace: &Path) -> String {
@@ -355,6 +367,59 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restoring_a_checkpoint_replaces_session_metadata_but_preserves_spent_tokens() {
+        let mut before = Session::new("earlier-model".into());
+        before.title = Some("Earlier title".into());
+        before.context_tokens = Some(1200);
+        before.extra.insert("gui_setting".into(), serde_json::json!({"value":"before"}));
+        before.history.push(HistoryItem::UserPrompt("earlier prompt".into()));
+        record_tokens(&mut before.token_usage, Some(200));
+        let mut current = before.clone();
+        current.title = Some("Later title".into());
+        current.model = "later-model".into();
+        current.context_tokens = Some(8000);
+        current.extra.insert("gui_setting".into(), serde_json::json!({"value":"after"}));
+        current.extra.insert("later_only".into(), serde_json::json!(true));
+        current.history.push(HistoryItem::AssistantMessage("later answer".into()));
+        record_tokens(&mut current.token_usage, Some(500));
+        current.restore_checkpoint(before.clone()).unwrap();
+        assert_eq!(current.title, before.title);
+        assert_eq!(current.model, before.model);
+        assert_eq!(current.context_tokens, Some(1200));
+        assert_eq!(current.extra, before.extra);
+        assert_eq!(current.history.len(), 1);
+        assert_eq!(current.token_usage.as_ref().unwrap().total, Some(700));
+        assert!(current.started);
+        let mut another = Session::new("other-model".into());
+        another.id = "another-chat".into();
+        let saved = serde_json::to_value(&current).unwrap();
+        assert!(current.restore_checkpoint(another).is_err());
+        assert_eq!(serde_json::to_value(&current).unwrap(), saved);
+    }
+
+    #[test]
+    fn restoring_an_empty_gui_checkpoint_keeps_the_chat_saved_and_its_context_unknown() {
+        let directory = tempfile::tempdir().unwrap();
+        let before: Session = serde_json::from_value(serde_json::json!({
+            "id":"gui-chat", "created_at":"2026-10-26", "model":"gui-model",
+            "messages":[], "history":[], "gui_extra":{"preserved":true}
+        })).unwrap();
+        let mut current = before.clone();
+        current.history.push(HistoryItem::UserPrompt("later prompt".into()));
+        current.context_tokens = Some(9000);
+        record_tokens(&mut current.token_usage, Some(450));
+        current.restore_checkpoint(before).unwrap();
+        assert!(current.history.is_empty() && current.messages.is_empty());
+        assert!(current.started);
+        assert_eq!(current.context_tokens, None);
+        current.save(directory.path()).unwrap();
+        let saved = Session::load(directory.path(), &current.id).unwrap();
+        assert!(saved.started);
+        assert_eq!(saved.extra["gui_extra"], serde_json::json!({"preserved":true}));
+        assert_eq!(saved.token_usage.unwrap().total, Some(450));
+    }
 
     #[test]
     fn unused_chat_is_not_saved_and_started_chat_survives_rewind_to_empty_history() {

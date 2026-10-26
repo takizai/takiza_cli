@@ -12,6 +12,7 @@ from tui_queue_pty import Terminal, Screen
 finish = threading.Event()
 pulse = threading.Event()
 requests = []
+code_response = None
 
 
 class API(http.server.BaseHTTPRequestHandler):
@@ -33,6 +34,11 @@ class API(http.server.BaseHTTPRequestHandler):
             self.wfile.write(('data: ' + json.dumps({'choices': [{'delta': {'content': text}}]}) + '\n\n').encode())
             self.wfile.flush()
         try:
+            if code_response is not None:
+                token(code_response)
+                self.wfile.write(b'data: [DONE]\n\n')
+                self.wfile.flush()
+                return
             token('COPY_ME Привет\nNEXT_LINE\n')
             end = time.monotonic() + 20
             while not finish.wait(.02):
@@ -164,11 +170,76 @@ def run(binary):
             terminal.close()
 
 
+def run_code(binary):
+    global code_response
+    code = 'def greet():\n\tprint("Привет │ --")  \n\treturn "' + 'long_literal_' * 14 + '"\n\n'
+    other = "printf '%s\\n' 'second';\n"
+    code_response = f'```python\n{code}```\n\n```sh\n{other}```'
+    with tempfile.TemporaryDirectory(prefix='takiza-code-clipboard-') as directory:
+        workspace = Path(directory)
+        (workspace / '.takiza').mkdir()
+        (workspace / '.takiza/config.json').write_text(json.dumps({
+            'agreed_to_terms': True, 'terms_version': '1.0.0', 'theme': 'Monochrome',
+            'mode': 'manual', 'model': 'test-model', 'api_key': 'test-only',
+            'base_url': f'http://127.0.0.1:{server.server_port}/v1',
+        }))
+        tools = workspace / 'test-bin'
+        tools.mkdir()
+        clipboard = workspace / 'clipboard.txt'
+        writer = tools / 'wl-copy'
+        writer.write_text('#!/bin/sh\ncat > "$TAKIZA_TEST_CLIPBOARD"\n')
+        writer.chmod(0o755)
+        terminal = Terminal(binary, workspace, 100, 40, {
+            'PATH': str(tools) + os.pathsep + os.environ['PATH'],
+            'TAKIZA_TEST_CLIPBOARD': str(clipboard),
+        })
+
+        def screen():
+            return Screen(terminal.output, 100, 40).text
+
+        def mouse(button, x, y, release=False):
+            terminal.send(f'\x1b[<{button};{x + 1};{y + 1}{"m" if release else "M"}')
+
+        def locate(text):
+            y = next(y for y, line in enumerate(screen()) if text in line)
+            return screen()[y].index(text), y
+
+        try:
+            terminal.wait(lambda: sum('[Copy]' in line for line in screen()) == 2, 'code copy buttons missing')
+            terminal.pump(.3)
+            buttons = [(line.index('[Copy]'), row) for row, line in enumerate(screen()) if '[Copy]' in line]
+            x, y = buttons[0]
+            mouse(0, x + 2, y)
+            mouse(0, x + 2, y, True)
+            terminal.wait(lambda: clipboard.exists() and clipboard.read_text() == code, 'button changed code tabs, whitespace or newlines')
+            footer = next(row for row, line in enumerate(screen()) if row > y and '╰' in line and '╯' in line)
+            for reverse in [False, True]:
+                start, end = ((99, footer), (0, y)) if reverse else ((0, y), (99, footer))
+                mouse(0, *start)
+                mouse(32, *end)
+                mouse(0, *end, release=True)
+                terminal.wait(lambda: clipboard.read_text() == code.removesuffix('\n'), 'code drag included UI or visual wraps')
+            x, y = locate('Привет │ --')
+            mouse(0, x, y)
+            mouse(32, x + len('Привет │ --') - 1, y)
+            mouse(0, x + len('Привет │ --') - 1, y, True)
+            terminal.wait(lambda: clipboard.read_text() == 'Привет │ --', 'literal border-like code characters were removed')
+            x, y = buttons[1]
+            mouse(0, x, y)
+            mouse(0, x, y, True)
+            terminal.wait(lambda: clipboard.read_text() == other, 'second code button copied the wrong block')
+            print('PASS code clipboard: whole-block buttons, forward/reverse drag, tabs, trailing spaces, soft wraps, literal border characters')
+        finally:
+            terminal.close()
+            code_response = None
+
+
 if __name__ == '__main__':
     binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'target/debug/takiza').resolve()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), API)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         run(binary)
+        run_code(binary)
     finally:
         server.shutdown()

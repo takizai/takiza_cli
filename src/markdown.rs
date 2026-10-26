@@ -1,5 +1,57 @@
 use crate::prompt::{char_width, str_width, truncate_visible};
 use crate::theme;
+use std::{ops::Range, sync::Arc};
+
+#[derive(Clone)]
+pub enum CopyLine {
+    Decoration { button: Option<(Range<usize>, Arc<str>)> },
+    Code { column: usize, cells: Vec<Range<usize>>, offset: usize, code: Arc<str> },
+}
+
+impl CopyLine {
+    pub fn indent(&mut self, columns: usize) {
+        match self {
+            Self::Decoration { button: Some((range, _)) } => { range.start += columns; range.end += columns; },
+            Self::Code { column, .. } => *column += columns,
+            _ => {},
+        }
+    }
+}
+
+pub struct Markdown {
+    pub lines: Vec<String>,
+    pub copy: Vec<(usize, CopyLine)>,
+}
+
+// Map each displayed cell back to the original UTF-8 bytes, including tabs,
+// wide characters and combining marks. Wrapping never changes copied code.
+fn code_rows(raw: &str, width: usize, offset: usize) -> Vec<(String, Vec<Range<usize>>, usize)> {
+    let mut rows = Vec::new();
+    let (mut text, mut cells) = (String::new(), Vec::<Range<usize>>::new());
+    let (mut column, mut source_column, mut row_offset) = (0, 0, offset);
+    for (byte, ch) in raw.char_indices() {
+        let range = offset + byte..offset + byte + ch.len_utf8();
+        let expanded = if ch == '\t' { " ".repeat(4 - source_column % 4) } else { ch.to_string() };
+        for c in expanded.chars() {
+            let size = char_width(c);
+            if column > 0 && column + size > width.max(1) {
+                rows.push((std::mem::take(&mut text), std::mem::take(&mut cells), row_offset));
+                column = 0;
+                row_offset = range.start;
+            }
+            text.push(c);
+            if size == 0 {
+                if let Some(start) = cells.last().map(|cell| cell.start) {
+                    for cell in cells.iter_mut().rev().take_while(|cell| cell.start == start) { cell.end = range.end; }
+                }
+            } else { cells.extend(std::iter::repeat_n(range.clone(), size)); }
+            column += size;
+            source_column += size;
+        }
+    }
+    if !text.is_empty() || rows.is_empty() { rows.push((text, cells, row_offset)); }
+    rows
+}
 
 /// Computes visible width of a string in terminal columns, ignoring ANSI escape sequences.
 #[allow(dead_code)]
@@ -320,6 +372,7 @@ fn table_cells(line: &str) -> Option<Vec<String>> {
         match c {
             '\\' if chars.peek() == Some(&'|') => { cell.push(chars.next().unwrap()); }
             '`' => { code = !code; cell.push(c); }
+            '\t' => cell.push_str("    "),
             '|' if !code => { cells.push(cell.trim().to_string()); cell.clear(); pipes += 1; }
             _ => cell.push(c),
         }
@@ -411,40 +464,26 @@ fn render_table(rows: &[Vec<String>], alignment: &[Alignment], max_width: usize)
 /// Full Markdown document renderer:
 /// Processes headers, bullet lists, numbered lists, blockquotes, horizontal rules,
 /// Wrap literal content without losing spaces or treating Markdown as markup.
+#[cfg(test)]
 fn wrap_literal_line(raw: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    let mut columns = 0;
-    let mut source_columns = 0;
-    for ch in raw.chars() {
-        let expanded = if ch == '\t' { " ".repeat(4 - source_columns % 4) } else { ch.to_string() };
-        for ch in expanded.chars() {
-            let size = char_width(ch);
-            if columns > 0 && columns + size > width {
-                lines.push(std::mem::take(&mut line));
-                columns = 0;
-            }
-            line.push(ch);
-            columns += size;
-            source_columns += size;
-        }
-    }
-    if !line.is_empty() || lines.is_empty() { lines.push(line); }
-    lines
+    code_rows(raw, width, 0).into_iter().map(|(text, _, _)| text).collect()
 }
 
 /// Render Markdown, including fenced blocks with literal soft-wrapped content.
+#[cfg(test)]
 pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
+    render_markdown_with_copy(text, max_width).lines
+}
+
+pub fn render_markdown_with_copy(text: &str, max_width: usize) -> Markdown {
     let mut result_lines = Vec::new();
+    let mut copy = Vec::new();
     let raw_lines: Vec<&str> = text.lines().collect();
 
     let th = theme::current();
     let p_ansi = th.primary_ansi();
     let s_ansi = th.secondary_ansi();
     let code_background = th.code_background_ansi();
-
-    let mut in_code_block = false;
 
     let code_box_w = max_width.saturating_sub(2).min(84);
     let code_inner_w = code_box_w.saturating_sub(4).max(1);
@@ -453,44 +492,62 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
     while let Some(raw) = raw_lines.next() {
         let trimmed = raw.trim();
 
-        // 1. Fenced code block toggle
-        if trimmed.starts_with("```") {
-            if !in_code_block {
-                in_code_block = true;
-                let lang = trimmed.trim_start_matches('`').trim();
-                let code_lang = if lang.is_empty() { "code" } else { lang };
-
-                // Draw code box top: ╭─ [rust] ──────────────────────────────────╮
-                let tag = truncate_visible(&format!(" [{}] ", code_lang), code_box_w.saturating_sub(3));
-                let tag_w = str_width(&tag);
-                let dashes = code_box_w.saturating_sub(tag_w + 3);
-                let top_line = format!(
-                    "  {s_ansi}╭─\x1b[0m{}\x1b[1m{}\x1b[0m{s_ansi}{}╮\x1b[0m",
-                    p_ansi, tag, "─".repeat(dashes)
-                );
-                result_lines.push(top_line);
-            } else {
-                in_code_block = false;
-                // Draw code box bottom: ╰────────────────────────────────────────╯
+        // Consume a whole fenced block so the header can copy its full source,
+        // independently of the viewport and visual soft wraps.
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            let marker = trimmed.chars().next().unwrap();
+            let fence = trimmed.chars().take_while(|&c| c == marker).count();
+            let lang = trimmed[fence..].trim();
+            let code_lang = if lang.is_empty() { "code" } else { lang };
+            let mut body = Vec::new();
+            let mut closed = false;
+            while let Some(line) = raw_lines.next() {
+                let close = line.trim();
+                let count = close.chars().take_while(|&c| c == marker).count();
+                if count >= fence && close[count..].trim().is_empty() { closed = true; break; }
+                body.push(line);
+            }
+            let mut source = body.join("\n");
+            if !body.is_empty() && (closed || text.ends_with('\n')) { source.push('\n'); }
+            let code: Arc<str> = source.into();
+            let label = format!("[{}]", crate::i18n::tr("Copy"));
+            let button = (str_width(&label) + 4 <= code_box_w).then_some(label);
+            let reserved = button.as_ref().map_or(0, |label| str_width(label) + 1);
+            let tag = truncate_visible(&format!(" [{}] ", code_lang), code_box_w.saturating_sub(3 + reserved));
+            let tag_w = str_width(&tag);
+            let dashes = code_box_w.saturating_sub(tag_w + 3 + reserved);
+            let button_column = 2 + 2 + tag_w + dashes;
+            let button_text = button.as_ref().map_or(String::new(), |label| format!("{p_ansi}{label} {s_ansi}"));
+            let top_line = format!(
+                "  {s_ansi}╭─\x1b[0m{}\x1b[1m{}\x1b[0m{s_ansi}{}{button_text}╮\x1b[0m",
+                p_ansi, tag, "─".repeat(dashes)
+            );
+            copy.push((result_lines.len(), CopyLine::Decoration { button: button.map(|label|
+                (button_column..button_column + str_width(&label), Arc::clone(&code))) }));
+            result_lines.push(top_line);
+            let mut offset = 0;
+            for line in code.split_inclusive('\n') {
+                let raw = line.strip_suffix('\n').unwrap_or(line);
+                for (wrapped, cells, row_offset) in code_rows(raw, code_inner_w, offset) {
+                    let pad = code_inner_w.saturating_sub(str_width(&wrapped));
+                    copy.push((result_lines.len(), CopyLine::Code { column: 4, cells, offset: row_offset, code: Arc::clone(&code) }));
+                    result_lines.push(format!(
+                        "  {s_ansi}│\x1b[0m {code_background}{p_ansi}{wrapped}\x1b[0m{} {s_ansi}│\x1b[0m", " ".repeat(pad)));
+                }
+                offset += line.len();
+            }
+            if closed {
                 let dashes = code_box_w.saturating_sub(2);
                 let bottom_line = format!("  {s_ansi}╰{}╯\x1b[0m", "─".repeat(dashes));
+                copy.push((result_lines.len(), CopyLine::Decoration { button: None }));
                 result_lines.push(bottom_line);
             }
             continue;
         }
 
-        // Soft-wrap literal content instead of discarding the rest of a line.
-        if in_code_block {
-            for wrapped in wrap_literal_line(raw, code_inner_w) {
-                let pad = code_inner_w.saturating_sub(str_width(&wrapped));
-                result_lines.push(format!(
-                    "  {s_ansi}│\x1b[0m {code_background}{p_ansi}{wrapped}\x1b[0m{} {s_ansi}│\x1b[0m",
-                    " ".repeat(pad)
-                ));
-            }
-            continue;
-        }
-
+        let expanded = raw.contains('\t').then(|| raw.replace('\t', "    "));
+        let raw = expanded.as_deref().unwrap_or(raw);
+        let trimmed = raw.trim();
         if let Some(header) = table_cells(raw) {
             if let Some(alignment) = raw_lines.peek().and_then(|line| table_alignment(line, header.len())) {
                 raw_lines.next();
@@ -607,7 +664,7 @@ pub fn render_markdown(text: &str, max_width: usize) -> Vec<String> {
         }
     }
 
-    result_lines
+    Markdown { lines: result_lines, copy }
 }
 
 #[cfg(test)]
@@ -765,6 +822,26 @@ mod tests {
         assert!(lines[0].contains("rust"));
         assert!(lines[1].contains("fn main()"));
         assert!(lines.last().unwrap().contains("╰"));
+    }
+
+    #[test]
+    fn copy_buttons_match_visible_columns_and_fences_can_contain_shorter_fences() {
+        let rendered = render_markdown_with_copy("````md\n```rust\nlet x = 1;\n```\n````\n~~~\nsecond\n~~~", 60);
+        let buttons = rendered.copy.iter().filter_map(|(row, entry)| match entry {
+            CopyLine::Decoration { button: Some((columns, code)) } => Some((*row, columns, code)), _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(buttons.len(), 2);
+        assert_eq!(buttons[0].2.as_ref(), "```rust\nlet x = 1;\n```\n");
+        assert_eq!(buttons[1].2.as_ref(), "second\n");
+        for (row, columns, _) in buttons {
+            let plain = crate::cli_ui::plain_terminal_text(&rendered.lines[row]);
+            assert_eq!(plain.chars().skip(columns.start).take(columns.len()).collect::<String>(),
+                format!("[{}]", crate::i18n::tr("Copy")));
+        }
+        let tabs = render_markdown_with_copy("prose\ttext\n\n| A | B |\n|---|---|\n| a\tb | c |\n\n```\n\tcode\n```", 60);
+        assert!(!tabs.lines.join("\n").contains('\t'), "tabs must be expanded for terminal painting only");
+        assert!(tabs.copy.iter().any(|(_, entry)| matches!(entry,
+            CopyLine::Decoration { button: Some((_, code)) } if code.as_ref() == "\tcode\n")));
     }
 
     #[test]

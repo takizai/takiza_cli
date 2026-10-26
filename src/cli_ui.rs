@@ -163,7 +163,13 @@ pub fn coalesce_scroll(mut delta: i32, pending: &mut Option<crossterm::event::Ev
 static INPUT_ROWS: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(3);
 static CONTENT_FRAME: Mutex<Option<(u16, u16, Vec<String>)>> = Mutex::new(None);
 // Preserve the undecorated transcript for mouse selection and clipboard copying.
-static TEXT_FRAME: Mutex<Option<(u16, u16, Vec<String>)>> = Mutex::new(None);
+#[derive(Clone)]
+struct TextFrame {
+    size: (u16, u16),
+    lines: Vec<String>,
+    copy: std::collections::BTreeMap<usize, crate::markdown::CopyLine>,
+}
+static TEXT_FRAME: Mutex<Option<TextFrame>> = Mutex::new(None);
 
 struct SnowSurface {
     top: u16,
@@ -243,6 +249,7 @@ struct MouseSelection {
     end: (u16, u16),
     size: (u16, u16),
     lines: Vec<String>,
+    copy: std::collections::BTreeMap<usize, crate::markdown::CopyLine>,
 }
 
 static MOUSE_SELECTION: Mutex<Option<MouseSelection>> = Mutex::new(None);
@@ -279,9 +286,48 @@ impl MouseSelection {
     }
 
     fn text(&self) -> String {
-        self.lines.iter().enumerate().filter_map(|(row, line)| {
-            self.columns(row as u16).map(|(start, end)| column_slice(&plain_terminal_text(line), start, end).trim_end().to_string())
-        }).collect::<Vec<_>>().join("\n")
+        use crate::markdown::CopyLine;
+        let mut text = String::new();
+        let mut previous: Option<(&Arc<str>, usize)> = None;
+        let mut has_line = false;
+        for (row, line) in self.lines.iter().enumerate() {
+            let Some((start, end)) = self.columns(row as u16) else { continue; };
+            match self.copy.get(&row) {
+                Some(CopyLine::Decoration { .. }) => continue,
+                Some(CopyLine::Code { column, cells, offset, code }) => {
+                    let from = start.saturating_sub(*column);
+                    let to = end.saturating_sub(*column).min(cells.len());
+                    let (a, b) = if from < to { (cells[from].start, cells[to - 1].end) }
+                        else if cells.is_empty() && start <= *column && end > *column { (*offset, *offset) }
+                        else { continue; };
+                    let a = if let Some((_, last)) = previous.filter(|(old, _)| Arc::ptr_eq(old, code)) {
+                        if a >= last { text.push_str(&code[last..a]); }
+                        a.max(last).min(b)
+                    } else {
+                        if has_line { text.push('\n'); }
+                        a
+                    };
+                    text.push_str(&code[a..b]);
+                    previous = Some((code, b));
+                }
+                None => {
+                    if has_line { text.push('\n'); }
+                    text.push_str(column_slice(&plain_terminal_text(line), start, end).trim_end());
+                    previous = None;
+                }
+            }
+            has_line = true;
+        }
+        text
+    }
+
+    fn clicked_code(&self) -> Option<String> {
+        let (row, col) = self.start;
+        if self.start != self.end { return None; }
+        match self.copy.get(&(row as usize))? {
+            crate::markdown::CopyLine::Decoration { button: Some((columns, code)) } if columns.contains(&(col as usize)) => Some(code.to_string()),
+            _ => None,
+        }
     }
 
     fn highlighted(&self) -> Vec<String> {
@@ -305,11 +351,12 @@ pub fn mouse_action(mouse: crossterm::event::MouseEvent) -> Option<MouseAction> 
     let point = (mouse.row.min(content_rows.saturating_sub(1)), mouse.column.min(cols.saturating_sub(1)));
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) if mouse.row < content_rows => {
-            let snapshot = TEXT_FRAME.lock().unwrap().clone().or_else(|| CONTENT_FRAME.lock().unwrap().clone());
-            if let Some((w, h, mut lines)) = snapshot {
+            let snapshot = TEXT_FRAME.lock().unwrap().clone().or_else(||
+                CONTENT_FRAME.lock().unwrap().clone().map(|(w, h, lines)| TextFrame { size: (w, h), lines, copy: Default::default() }));
+            if let Some(TextFrame { size, mut lines, copy }) = snapshot {
                 lines.truncate(content_rows as usize);
                 *MOUSE_SELECTION.lock().unwrap() = Some(MouseSelection {
-                    start: point, end: point, size: (w, h), lines,
+                    start: point, end: point, size, lines, copy,
                 });
             }
         }
@@ -321,6 +368,7 @@ pub fn mouse_action(mouse: crossterm::event::MouseEvent) -> Option<MouseAction> 
                 selection.end = point;
                 // A single click is not a text selection.
                 if selection.end != selection.start { return Some(MouseAction::Copy(selection.text())); }
+                if let Some(code) = selection.clicked_code() { return Some(MouseAction::Copy(code)); }
                 return Some(MouseAction::Clear);
             }
         }
@@ -2833,7 +2881,11 @@ pub fn update_streamed_thought(history: &mut Vec<HistoryItem>, index: &mut Optio
 /// Command output is transcript text, not a second terminal renderer. Strip
 /// control sequences before wrapping, otherwise wrapping can split an escape
 /// and replay cursor movement, screen clearing or terminal mode changes.
-fn plain_terminal_text(text: &str) -> String {
+pub(crate) fn plain_terminal_text(text: &str) -> String {
+    terminal_text(text, false)
+}
+
+fn terminal_text(text: &str, preserve_tabs: bool) -> String {
     let mut plain = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -2874,6 +2926,7 @@ fn plain_terminal_text(text: &str) -> String {
         match c {
             '\n' => plain.push('\n'),
             '\r' if chars.peek() != Some(&'\n') => plain.push('\n'),
+            '\t' if preserve_tabs => plain.push('\t'),
             '\t' => plain.push_str("    "),
             '\x08' => { if !plain.ends_with('\n') { plain.pop(); } }
             _ if !c.is_control() => plain.push(c),
@@ -2952,7 +3005,12 @@ fn file_diff_lines(diff: &str, width: usize, expanded: bool) -> Vec<String> {
     rows
 }
 
+#[cfg(test)]
 fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
+    history_lines_with_copy(history, width, &mut Vec::new())
+}
+
+fn history_lines_with_copy(history: &[HistoryItem], width: usize, copy: &mut Vec<(usize, crate::markdown::CopyLine)>) -> Vec<String> {
     let theme = crate::theme::current();
     let primary = theme.primary_ansi();
     let mut lines = Vec::new();
@@ -2978,8 +3036,12 @@ fn history_lines(history: &[HistoryItem], width: usize) -> Vec<String> {
                 lines.push(String::new());
             }
             HistoryItem::AssistantMessage(text) => {
-                lines.extend(crate::markdown::render_markdown(&plain_terminal_text(text), width.saturating_sub(2).max(1))
-                    .into_iter().map(|line| format!("{ASSISTANT_INDENT}{line}")));
+                let rendered = crate::markdown::render_markdown_with_copy(&terminal_text(text, true), width.saturating_sub(2).max(1));
+                copy.extend(rendered.copy.into_iter().map(|(row, mut entry)| {
+                    entry.indent(str_width(ASSISTANT_INDENT));
+                    (row + lines.len(), entry)
+                }));
+                lines.extend(rendered.lines.into_iter().map(|line| format!("{ASSISTANT_INDENT}{line}")));
                 lines.push(String::new());
             }
             HistoryItem::ResponseStats { elapsed_ms, tokens, usage_complete } => {
@@ -3058,10 +3120,23 @@ struct HistoryLayoutKey {
     expanded: bool,
 }
 
-struct HistoryBlock { source: Vec<HistoryItem>, lines: Vec<String> }
+struct HistoryBlock { source: Vec<HistoryItem>, lines: Vec<String>, copy: Vec<(usize, crate::markdown::CopyLine)> }
 struct HistoryLayout { blocks: Vec<Arc<HistoryBlock>>, ends: Vec<usize>, total: usize }
 
 impl HistoryLayout {
+    fn visible_copy(&self, range: std::ops::Range<usize>) -> std::collections::BTreeMap<usize, crate::markdown::CopyLine> {
+        let mut copy = std::collections::BTreeMap::new();
+        let first = self.ends.partition_point(|&end| end <= range.start);
+        for i in first..self.blocks.len() {
+            let start = if i == 0 { 0 } else { self.ends[i - 1] };
+            if start >= range.end { break; }
+            for (row, entry) in &self.blocks[i].copy {
+                if range.contains(&(start + row)) { copy.insert(start + row - range.start, entry.clone()); }
+            }
+        }
+        copy
+    }
+
     fn visible(&self, range: std::ops::Range<usize>) -> Vec<String> {
         let mut lines = Vec::with_capacity(range.len());
         let first = self.ends.partition_point(|&end| end <= range.start);
@@ -3099,7 +3174,9 @@ impl HistoryLayoutCache {
             let block = if let Some(old) = old.filter(|old| old.source == source) { Arc::clone(old) }
                 else {
                     changed = true;
-                    Arc::new(HistoryBlock { source: source.to_vec(), lines: history_lines(source, key.width) })
+                    let mut copy = Vec::new();
+                    let lines = history_lines_with_copy(source, key.width, &mut copy);
+                    Arc::new(HistoryBlock { source: source.to_vec(), lines, copy })
                 };
             total += block.lines.len();
             ends.push(total);
@@ -3263,7 +3340,10 @@ pub fn redraw_all(
     drop(previous);
     let mut clean = text.clone();
     clean.push(activity_line(width));
-    *TEXT_FRAME.lock().unwrap() = Some((cols, rows, clean));
+    let mut copy = layout.visible_copy(range.start.saturating_sub(banner.len())..range.end.saturating_sub(banner.len()).min(layout.total));
+    let banner_rows = banner.len().saturating_sub(range.start).min(height);
+    if banner_rows > 0 { copy = copy.into_iter().map(|(row, entry)| (row + banner_rows, entry)).collect(); }
+    *TEXT_FRAME.lock().unwrap() = Some(TextFrame { size: (cols, rows), lines: clean, copy });
     remember_snow_surface(0, cols, rows, text, painted);
     range.len().min(height.saturating_sub(1)) as u16
 }
@@ -3783,12 +3863,65 @@ mod scroll_tests {
         let selection = MouseSelection {
             start: (0, 2), end: (1, 3), size: (80, 24),
             lines: vec!["  \x1b[31mПривет  \x1b[0m".into(), "  мир!".into()],
+            copy: Default::default(),
         };
         assert_eq!(selection.text(), "Привет\n  ми");
         let reverse = MouseSelection { start: selection.end, end: selection.start, ..selection.clone() };
         assert_eq!(reverse.text(), selection.text());
         assert!(selection.highlighted()[0].contains("\x1b[7mПривет"));
         assert_eq!(column_slice("界a\u{301}b", 2, 3), "a\u{301}");
+    }
+
+    fn code_selection(markdown: &str, width: usize) -> MouseSelection {
+        let mut copy = Vec::new();
+        let lines = history_lines_with_copy(&[HistoryItem::AssistantMessage(markdown.into())], width, &mut copy);
+        MouseSelection { start: (0, 0), end: (lines.len().saturating_sub(2) as u16, width as u16 + 4),
+            size: (width as u16 + 6, 40), lines, copy: copy.into_iter().collect() }
+    }
+
+    #[test]
+    fn code_selection_preserves_source_indentation_spaces_and_logical_lines() {
+        let code = "\tif ready:\n\t\tprint(\"Привет 界e\u{301} │ -- **literal**\")  \n\n    return 'a very long literal without inserted line breaks'  \n";
+        for width in [18, 35, 80] {
+            let selection = code_selection(&format!("```python\n{code}```"), width);
+            assert_eq!(selection.text(), code.strip_suffix('\n').unwrap(), "width={width}");
+            let reverse = MouseSelection { start: selection.end, end: selection.start, ..selection.clone() };
+            assert_eq!(reverse.text(), selection.text());
+            assert!(!selection.text().contains("╭─"));
+        }
+    }
+
+    #[test]
+    fn code_button_copies_the_entire_block_including_offscreen_lines() {
+        let code = "\tline with trailing spaces  \n".repeat(100);
+        let mut selection = code_selection(&format!("````text\n{code}```\n````"), 60);
+        let (row, column) = selection.copy.iter().find_map(|(row, entry)| match entry {
+            crate::markdown::CopyLine::Decoration { button: Some((columns, _)) } => Some((*row, columns.start)), _ => None,
+        }).unwrap();
+        selection.lines.truncate(row + 2);
+        selection.copy.retain(|line, _| *line < row + 2);
+        selection.start = (row as u16, column as u16);
+        selection.end = selection.start;
+        assert_eq!(selection.clicked_code().unwrap(), format!("{code}```\n"));
+        selection.end.1 += 1;
+        assert!(selection.clicked_code().is_none(), "dragging a button must not copy the whole block");
+    }
+
+    #[test]
+    fn code_copy_handles_partial_streams_and_selection_inside_a_wrapped_line() {
+        let code = "before\n\t界e\u{301}ABCDEFGHIJKLMNOPQRSTUVWXYZ    ";
+        let mut selection = code_selection(&format!("~~~text\n{code}"), 22);
+        let body_rows = selection.copy.iter().filter_map(|(row, entry)| match entry {
+            crate::markdown::CopyLine::Code { cells, column, .. } => Some((*row, *column, cells.clone())), _ => None,
+        }).collect::<Vec<_>>();
+        let (row, column, _) = &body_rows[2];
+        selection.start = (*row as u16, *column as u16 + 1);
+        selection.end = (*row as u16, *column as u16 + 3);
+        assert_eq!(selection.text(), "IJK");
+        let header = selection.copy.values().find_map(|entry| match entry {
+            crate::markdown::CopyLine::Decoration { button: Some((_, code)) } => Some(code), _ => None,
+        }).unwrap();
+        assert_eq!(header.as_ref(), code, "unfinished streaming blocks must not gain a newline");
     }
 }
 

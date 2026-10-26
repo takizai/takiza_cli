@@ -79,11 +79,11 @@ def run(binary, reasoning):
                 saved = json.loads((workspace / '.takiza/sessions' / (session_id + '.json')).read_text())
                 history = saved['history']
                 for text in ['NARRATION_1', 'NARRATION_2', 'FINAL_TOOL_TEXT']:
-                    assert sum(item.get('AssistantMessage') == text for item in history) == 1, (text, history)
+                    assert sum(item.get('type') == 'AssistantMessage' and item.get('payload') == text for item in history) == 1, (text, history)
                 if reasoning:
-                    assert {'REASONING_1', 'REASONING_2'} <= {item.get('Thought') for item in history}
+                    assert {'REASONING_1', 'REASONING_2'} <= {item['payload'] for item in history if item.get('type') == 'Thought'}
                 else:
-                    assert not any(item.get('Thought', '').startswith('NARRATION_') for item in history)
+                    assert not any(item.get('type') == 'Thought' and item.get('payload', '').startswith('NARRATION_') for item in history)
                 print(f'PASS tool text: reasoning={reasoning}, narration, multiple tools, /tools, saved history')
             finally: finish.set(); t.close()
     finally: finish.set(); server.shutdown()
@@ -119,8 +119,8 @@ def run_mcp_repair(binary):
                 t.send('/exit\r'); t.wait(lambda: t.process.poll() is not None, 'exit failed')
                 sid = (workspace / '.takiza/latest_session').read_text()
                 saved = json.loads((workspace / '.takiza/sessions' / (sid + '.json')).read_text())
-                assert sum(item.get('AssistantMessage') == 'NARRATION_BEFORE_MCP' for item in saved['history']) == 1
-                assert {'REASONING_BEFORE_MCP_1', 'REASONING_BEFORE_MCP_2'} <= {item.get('Thought') for item in saved['history']}
+                assert sum(item.get('type') == 'AssistantMessage' and item.get('payload') == 'NARRATION_BEFORE_MCP' for item in saved['history']) == 1
+                assert {'REASONING_BEFORE_MCP_1', 'REASONING_BEFORE_MCP_2'} <= {item['payload'] for item in saved['history'] if item.get('type') == 'Thought'}
                 print('PASS MCP narration: invalid calls, retry deduplication, nonstream repair, one execution, saved history')
             finally: finish.set(); t.close()
     finally: finish.set(); server.shutdown()

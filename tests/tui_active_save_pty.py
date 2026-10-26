@@ -62,13 +62,13 @@ def run(binary):
                 return json.loads((workspace / '.takiza/sessions' / f'{sid}.json').read_text())
             try:
                 terminal.wait(lambda: b'SAVED_PARTIAL_REPLY' in terminal.output, 'active output missing')
-                terminal.wait(lambda: any(item.get('AssistantMessage') == 'SAVED_PARTIAL_REPLY'
+                terminal.wait(lambda: any(item.get('type') == 'AssistantMessage' and item.get('payload') == 'SAVED_PARTIAL_REPLY'
                                          for item in saved()['history']), 'active output not saved')
                 assert b'\x1b]0;Active save test' in terminal.output
                 assert 'Active save test — Takiza Code'.encode() in terminal.output
                 assert (workspace / 'result.txt').read_text() == 'written\n'
-                assert any('ToolEnd' in item for item in saved()['history'])
-                assert any(item.get('Thought') == 'SAVED_REASONING' for item in saved()['history'])
+                assert any(item.get('type') == 'ToolEnd' for item in saved()['history'])
+                assert any(item.get('type') == 'Thought' and item.get('payload') == 'SAVED_REASONING' for item in saved()['history'])
                 # No /exit and no Finished event: simulate a crash during generation.
                 terminal.process.kill()
                 terminal.process.wait(timeout=3)
@@ -85,11 +85,11 @@ def run(binary):
                 resumed.send('/exit\r')
                 resumed.wait(lambda: resumed.process.poll() is not None, 'exit stalled')
                 history = saved()['history']
-                first = next(i for i, item in enumerate(history) if item.get('UserPrompt') == 'FIRST_PROMPT')
-                second = next(i for i, item in enumerate(history) if item.get('UserPrompt') == 'SECOND_PROMPT')
+                first = next(i for i, item in enumerate(history) if item.get('type') == 'UserPrompt' and item.get('payload') == 'FIRST_PROMPT')
+                second = next(i for i, item in enumerate(history) if item.get('type') == 'UserPrompt' and item.get('payload') == 'SECOND_PROMPT')
                 between = history[first + 1:second]
-                assert any('ToolEnd' in item for item in between)
-                assert any(item.get('AssistantMessage') == 'SAVED_PARTIAL_REPLY' for item in between)
+                assert any(item.get('type') == 'ToolEnd' for item in between)
+                assert any(item.get('type') == 'AssistantMessage' and item.get('payload') == 'SAVED_PARTIAL_REPLY' for item in between)
                 print('PASS active save: tool activity, reasoning and partial reply survive hard restart between prompts')
             finally:
                 resumed.close()

@@ -1,9 +1,12 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::path::{Path, PathBuf};
 use std::io::Read;
+use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const IMAGE_MARKER: &str = "[Image: ";
+#[cfg(test)]
 static NEXT_IMAGE: AtomicU64 = AtomicU64::new(0);
 
 pub fn image_type(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
@@ -15,12 +18,24 @@ pub fn image_type(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
 }
 
 pub fn cache_image(bytes: &[u8]) -> Result<String, String> {
-    let (_, extension) = image_type(bytes).ok_or("Unsupported clipboard image; use PNG, JPEG, GIF or WebP.")?;
     let directory = std::env::current_dir().map_err(|e| e.to_string())?.join(".takiza/attachments");
+    cache_image_in(&directory, bytes)
+}
+
+fn cache_image_in(directory: &Path, bytes: &[u8]) -> Result<String, String> {
+    let (_, extension) = image_type(bytes).ok_or("Unsupported clipboard image; use PNG, JPEG, GIF or WebP.")?;
     std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos();
-    let path = directory.join(format!("image-{stamp}-{}.{}", NEXT_IMAGE.fetch_add(1, Ordering::Relaxed), extension));
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    let path = directory.join(format!("image-{:x}.{extension}", Sha256::digest(bytes)));
+    if !path.exists() {
+        use std::io::Write;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(|e| e.to_string())?;
+        temporary.write_all(bytes).map_err(|e| e.to_string())?;
+        match temporary.persist_noclobber(&path) {
+            Ok(_) => {},
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {},
+            Err(error) => return Err(error.to_string()),
+        }
+    }
     Ok(format!("{IMAGE_MARKER}{}] ", serde_json::to_string(&path.to_string_lossy()).map_err(|e| e.to_string())?))
 }
 
@@ -136,6 +151,17 @@ pub fn prompt_images(text: &str) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_pastes_share_one_immutable_attachment() {
+        let directory = tempfile::tempdir().unwrap();
+        let bytes = b"\x89PNG\r\n\x1a\nfixture";
+        let first = cache_image_in(directory.path(), bytes).unwrap();
+        assert_eq!(cache_image_in(directory.path(), bytes).unwrap(), first);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        assert_ne!(cache_image_in(directory.path(), b"\x89PNG\r\n\x1a\nother").unwrap(), first);
+        assert_eq!(prompt_images(&first).unwrap(), [format!("data:image/png;base64,{}", STANDARD.encode(bytes))]);
+    }
 
     #[test]
     fn paths_are_parsed_without_shell_expansion() {

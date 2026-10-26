@@ -328,6 +328,7 @@ def run_rewind(binary, with_git=True):
             git('config', 'user.email', 'test@example.invalid')
             (workspace / '.gitignore').write_text('.takiza/\n')
             (workspace / 'example.txt').write_text('committed baseline')
+            (workspace / 'committed.txt').write_text('unchanged Git content')
             git('add', '.')
             git('commit', '-qm', 'baseline')
             (workspace / 'example.txt').write_text('user staged')
@@ -352,6 +353,12 @@ def run_rewind(binary, with_git=True):
                 terminal.wait(lambda: b'1 queued' in terminal.output, 'busy rewind fixture did not queue prompt')
             assert (workspace / 'example.txt').read_text() == 'agent edit'
             assert (workspace / 'agent-created.txt').exists()
+            if with_git:
+                checkpoints = workspace / '.takiza/checkpoints'
+                initial = json.loads(next(checkpoints.glob('*.json')).read_text())
+                assert initial['format_version'] == 3 and 'committed.txt' in initial['git_files']
+                assert not (checkpoints / initial['id'] / 'files/committed.txt').exists(), 'committed file was copied into .takiza'
+                assert (checkpoints / initial['id'] / 'files/example.txt').read_text() == 'user unstaged'
             terminal.send('/rewind\r')
             terminal.wait(lambda: 'Restore workspace checkpoint' in '\n'.join(Screen(terminal.output, 100, 26).text), 'rewind menu missing')
             lines = Screen(terminal.output, 100, 26).text
@@ -381,11 +388,12 @@ def run_rewind(binary, with_git=True):
             point = json.loads(next((workspace / '.takiza/checkpoints').glob('*.json')).read_text())
             session_path = workspace / '.takiza/sessions' / (point['session_id'] + '.json')
             restored_session = json.loads(session_path.read_text())
-            assert all(not any(key in item for key in ['AssistantMessage', 'Thought', 'ToolStart', 'ToolEnd']) for item in restored_session['history']), 'rewind did not save truncated history'
+            assert all(item.get('type') not in ['AssistantMessage', 'Thought', 'ToolStart', 'ToolEnd'] for item in restored_session['history']), 'rewind did not save truncated history'
             assert all(message['role'] == 'system' for message in restored_session['messages']), 'rewind kept obsolete model context'
             assert '> first' in restored_screen, 'rewind did not put original prompt in the editor'
             if with_git:
                 assert git('show', ':example.txt').stdout == b'user staged'
+                assert (workspace / 'committed.txt').read_text() == 'unchanged Git content'
             # The newest point is the automatic backup; restoring it undoes the rewind.
             terminal.send('\x15/rewind\r')
             terminal.wait(lambda: 'Before restore' in '\n'.join(Screen(terminal.output, 100, 26).text), 'safety checkpoint missing')

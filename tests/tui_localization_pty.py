@@ -64,14 +64,17 @@ def run(binary, language):
             def screen():
                 return '\n'.join(Screen(terminal.output, 120, 36).text)
             def see(text):
-                terminal.wait(lambda: text in screen(), f'{language}: missing {text!r}')
+                terminal.wait(lambda: text in screen(), f'{language}: missing {text!r}\n{screen()}')
             try:
                 see(expected[0])
-                for command in ['/theme', '/effort']:
-                    terminal.send(command + '\r')
-                    see(expected[1])
-                    assert '[active]' not in screen(), screen()
-                    terminal.send('\x1b')
+                terminal.send('/theme\r')
+                see(expected[1])
+                assert '[active]' not in screen(), screen()
+                terminal.send('\x1b')
+                # The fixture model has no effort capabilities. The CLI must
+                # translate the unavailable notice instead of inventing levels.
+                terminal.send('/effort\r')
+                see('Модель не поддерживает смену effort' if language == 'ru' else '此模型不支持调整推理强度')
                 terminal.send('/mode\r')
                 see('сторонний провайдер' if language == 'ru' else '第三方提供商')
                 terminal.send('/usage\r')

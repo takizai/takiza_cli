@@ -134,11 +134,13 @@ esac
             users = [message for message in saved()['messages'] if message['role'] == 'user']
             assert len(users[1]['image_urls']) == 1 and len(users[3]['image_urls']) == 1
             assert 'image_urls' not in users[2]
-            assert len(list((workspace / '.takiza/attachments').glob('*.png'))) == 2
+            cached = list((workspace / '.takiza/attachments').glob('*.png'))
+            assert len(cached) == 1, 'identical clipboard and dropped images must share one cached file'
+            assert cached[0].read_bytes() == PNG
             assert image.read_bytes() == PNG and 'DOCUMENT_CONTENT_MUST_STAY_LOCAL' in document.read_text()
             terminal.send('/exit\r')
             terminal.wait(lambda: terminal.process.poll() is not None, 'exit failed')
-            print('PASS images: binary Ctrl+V, URI file clipboard over thumbnails, quoted drops, queued multimodal API, document paths only, persistence')
+            print('PASS images: binary Ctrl+V, URI file clipboard over thumbnails, quoted drops, queued multimodal API, document paths only, persistence, deduplicated cache')
         finally:
             for gate in gates:
                 gate.set()

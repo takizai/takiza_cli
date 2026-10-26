@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.1.14
+
+- Reduced checkpoint storage: unchanged committed files reuse pinned Git objects instead of copying the repository, while dirty, new and ignored files retain their exact bytes. Projects without usable Git keep standalone snapshots; HEAD, branches and staging remain unchanged.
+- Deduplicated and compressed checkpoint conversations in shared archives, reused unchanged local file copies across chats, and removed a chat's checkpoints and Git references when deleting it. Identical image attachments share one cached file; logs rotate at 2 MiB.
+- Added a Copy button to fenced code blocks. Mouse selections copy original code without borders or display wrapping, preserving tabs, whitespace, Unicode and literal code characters.
+- Aligned rewind session restoration with the GUI: restore metadata and context, reset agent/helper/LSP state, cancel stale title generation and keep already-spent tokens accounted for. Checkpoint listing, preview and restore run in the background with terminal progress.
+- CLI reads existing GUI checkpoints; new checkpoint formats 2–3 require this CLI and are not readable by older CLI or current GUI versions. Existing file snapshots remain supported. New Git-backed checkpoints require their repository's saved Git data.
+- Release validation now includes terminal regressions for rewind, code copying, long code blocks and attachment caching before building and publishing platform archives.
+- Updated saved-transcript regression checks to the shared GUI/CLI history format, fixing CI failures left by the previous release's format migration.
+
 ## 0.1.13
 
 - Added the built-in `grill_me` questionnaire tool and `/grill-me [topic]` command, with independent questions, recommended answers, free text and partial-answer cancellation. The tool is available in Plan mode and excluded from read-only helper agents.
